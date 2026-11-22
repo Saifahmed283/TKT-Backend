@@ -1,0 +1,790 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// USERS & ORGANIZATIONS
+// ─────────────────────────────────────────────────────────────
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  phone        String?
+  platformRole String? // 'super_admin' | null — platform-level role
+  status       UserStatus @default(ACTIVE)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  orgMemberships    OrganizationMember[]
+  eventMemberships  EventMember[]
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+  accessLogs        AccessLog[] @relation("AccessOperator")
+  tasksAssigned     Task[]     @relation("TaskAssignee")
+  tasksCreated      Task[]     @relation("TaskCreator")
+  tasksCompleted    Task[]     @relation("TaskCompleter")
+  taskActivities    TaskActivity[]
+  incidentsCreated  Incident[] @relation("IncidentCreator")
+  incidentsAssigned Incident[] @relation("IncidentAssignee")
+  incidentComments  IncidentComment[]
+  announcements     Announcement[]
+  messagesSent      Message[]
+  devices           Device[]
+  registeredAttendees Attendee[]
+}
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  logoUrl     String?
+  settings    Json?
+  status      OrgStatus @default(ACTIVE)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members     OrganizationMember[]
+  events      Event[]
+  roles       Role[]
+  auditLogs   AuditLog[]
+}
+
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum OrgMemberRole {
+  OWNER
+  ADMIN
+  VIEWER
+}
+
+enum OrgMemberStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+model OrganizationMember {
+  id        String   @id @default(cuid())
+  orgId     String
+  userId    String
+  role      OrgMemberRole @default(VIEWER)
+  status    OrgMemberStatus @default(ACTIVE)
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([userId])
+  @@index([orgId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// RBAC — ROLES
+// ─────────────────────────────────────────────────────────────
+
+enum RoleKind {
+  SYSTEM // catalog role defined in code
+  ORGANIZATION // custom role defined per-organization
+}
+
+enum RoleScope {
+  PLATFORM // super admin
+  ORGANIZATION
+  EVENT
+  TEAM
+  AREA
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  orgId       String? // null → system role (platform-wide catalog)
+  name        String
+  code        String   @unique
+  description String?
+  kind        RoleKind @default(SYSTEM)
+  scope       RoleScope
+  permissions Json // string[] of atomic permission codes
+  system      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  org       Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  memberships EventMember[]
+
+  @@index([orgId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// EVENTS
+// ─────────────────────────────────────────────────────────────
+
+enum EventType {
+  CONFERENCE
+  CONCERT
+  WEDDING
+  SPORTS
+  EXHIBITION
+  CHARITY
+  CORPORATE
+  UNIVERSITY
+  OTHER
+}
+
+enum EventStatus {
+  DRAFT
+  PLANNING
+  READY
+  PUBLISHED
+  LIVE
+  COMPLETED
+  ARCHIVED
+}
+
+model Event {
+  id          String   @id @default(cuid())
+  orgId       String
+  name        String
+  slug        String?
+  description String?
+  type        EventType @default(OTHER)
+  status      EventStatus @default(DRAFT)
+  startAt     DateTime
+  endAt       DateTime?
+  timezone    String   @default("UTC")
+  venueName   String?
+  venueAddress String?
+  coverImageUrl String?
+  branding    Json?
+  settings    Json? // event configuration blob
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members       EventMember[]
+  teams         Team[]
+  areas         Area[]
+  attendees     Attendee[]
+  ticketTypes   TicketType[]
+  tickets       Ticket[]
+  credentials   Credential[]
+  accessLogs    AccessLog[]
+  tasks         Task[]
+  incidents     Incident[]
+  announcements Announcement[]
+  messages      Message[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+
+  @@index([orgId])
+  @@index([status])
+  @@index([startAt])
+}
+
+enum EventMemberStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+model EventMember {
+  id         String   @id @default(cuid())
+  eventId    String
+  userId     String
+  roleId     String
+  teamId     String?
+  status     EventMemberStatus @default(ACTIVE)
+  invitedBy  String?
+  createdAt  DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role  Role  @relation(fields: [roleId], references: [id])
+  team  Team? @relation(fields: [teamId], references: [id])
+  areas MemberArea[]
+
+  @@unique([eventId, userId])
+  @@index([userId])
+  @@index([roleId])
+  @@index([teamId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// TEAMS & AREAS
+// ─────────────────────────────────────────────────────────────
+
+model Team {
+  id        String   @id @default(cuid())
+  eventId   String
+  name      String
+  description String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  event   Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  members EventMember[]
+  areas   TeamArea[]
+  tasks   Task[]
+  incidents Incident[]
+
+  @@unique([eventId, name])
+  @@index([eventId])
+}
+
+enum AreaType {
+  GATE
+  HALL
+  STAGE
+  LOUNGE
+  OFFICE
+  MEDICAL
+  PARKING
+  EXIT
+  SERVICE
+  OTHER
+}
+
+enum AreaAccessPolicy {
+  OPEN
+  TICKETED
+  VIP_ONLY
+  STAFF_ONLY
+  RESTRICTED
+  MEDIA_ONLY
+}
+
+model Area {
+  id          String   @id @default(cuid())
+  eventId     String
+  name        String
+  description String?
+  type        AreaType @default(OTHER)
+  accessPolicy AreaAccessPolicy @default(OPEN)
+  capacity    Int?
+  location    Json? // {"lat":..,"lng":..,"label":"Floor 1"}
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  event        Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  assignments  MemberArea[]
+  teamAssignments TeamArea[]
+  tasks        Task[]
+  incidents    Incident[]
+  accessLogs   AccessLog[]
+
+  @@unique([eventId, name])
+  @@index([eventId])
+}
+
+model MemberArea {
+  id            String   @id @default(cuid())
+  eventMemberId String
+  areaId        String
+
+  member EventMember @relation(fields: [eventMemberId], references: [id], onDelete: Cascade)
+  area   Area        @relation(fields: [areaId], references: [id], onDelete: Cascade)
+
+  @@unique([eventMemberId, areaId])
+  @@index([areaId])
+}
+
+model TeamArea {
+  id     String @id @default(cuid())
+  teamId String
+  areaId String
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  area Area @relation(fields: [areaId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, areaId])
+  @@index([areaId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// ATTENDEES, TICKETS & CREDENTIALS
+// ─────────────────────────────────────────────────────────────
+
+enum AttendeeStatus {
+  INVITED
+  REGISTERED
+  CONFIRMED
+  WAITLISTED
+  CANCELLED
+  CHECKED_IN
+  CHECKED_OUT
+  BLOCKED
+}
+
+model Attendee {
+  id             String   @id @default(cuid())
+  eventId        String
+  name           String
+  email          String?
+  phone          String?
+  category       String? // e.g. VIP, SPEAKER, PRESS, STAFF, GUEST
+  status         AttendeeStatus @default(REGISTERED)
+  notes          String?
+  registeredById String?
+  registeredAt   DateTime @default(now())
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  event       Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  registeredBy User? @relation(fields: [registeredById], references: [id])
+  tickets     Ticket[]
+  credentials Credential[]
+  accessLogs  AccessLog[]
+
+  @@index([eventId])
+  @@index([eventId, email])
+}
+
+model TicketType {
+  id          String   @id @default(cuid())
+  eventId     String
+  name        String
+  description String?
+  price       Decimal? @db.Decimal(10, 2)
+  quota       Int?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  event   Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tickets Ticket[]
+
+  @@index([eventId])
+}
+
+enum TicketStatus {
+  ISSUED
+  ACTIVE
+  CANCELLED
+  REFUNDED
+  CONSUMED
+}
+
+model Ticket {
+  id           String   @id @default(cuid())
+  eventId      String
+  attendeeId   String
+  ticketTypeId String
+  status       TicketStatus @default(ISSUED)
+  price        Decimal? @db.Decimal(10, 2)
+  issuedById   String?
+  issuedAt     DateTime @default(now())
+  metadata     Json?
+
+  attendee   Attendee   @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
+  ticketType TicketType @relation(fields: [ticketTypeId], references: [id])
+  event      Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  credential Credential?
+
+  @@index([eventId])
+  @@index([attendeeId])
+}
+
+enum CredentialType {
+  QR
+  BADGE
+  NFC
+  OTHER
+}
+
+enum CredentialStatus {
+  ISSUED
+  ACTIVE
+  SUSPENDED
+  REVOKED
+  EXPIRED
+  CONSUMED
+}
+
+model Credential {
+  id          String   @id @default(cuid())
+  eventId     String
+  attendeeId  String
+  ticketId    String?
+  type        CredentialType @default(QR)
+  code        String   @unique // QR payload — a signed token
+  status      CredentialStatus @default(ISSUED)
+  validFrom   DateTime
+  validUntil  DateTime?
+  singleUse   Boolean  @default(true)
+  allowReentry Boolean @default(false)
+  areaIds     Json? // area policy — credentials allowed here
+  deviceSync  Json? // last device sync info
+  issuedById  String?
+  issuedAt    DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  event     Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  attendee  Attendee   @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
+  ticket    Ticket?    @relation(fields: [ticketId], references: [id])
+  accessLogs AccessLog[]
+
+  @@unique([ticketId])
+  @@index([eventId])
+  @@index([attendeeId])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────
+// ACCESS CONTROL
+// ─────────────────────────────────────────────────────────────
+
+enum AccessResult {
+  GRANTED
+  DENIED
+}
+
+enum AccessReason {
+  NONE
+  INVALID_CREDENTIAL
+  WRONG_EVENT
+  WRONG_AREA
+  EXPIRED
+  REVOKED
+  SUSPENDED
+  ALREADY_USED
+  OUTSIDE_TIME_WINDOW
+  WRONG_TICKET_ENTITLEMENT
+  INSUFFICIENT_PERMISSION
+  EVENT_NOT_LIVE
+  OVERRIDE
+  ATTENDEE_BLOCKED
+  AREA_INACTIVE
+}
+
+model AccessLog {
+  id             String   @id @default(cuid())
+  eventId        String
+  credentialId   String?
+  attendeeId     String?
+  operatorUserId String?
+  deviceId       String?
+  areaId         String?
+  result         AccessResult
+  reason         AccessReason @default(NONE)
+  timestamp      DateTime   @default(now())
+  offline        Boolean    @default(false)
+  localSignature String? // device-signed proof of a local decision
+  metadata       Json?
+
+  event      Event?     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  credential Credential? @relation(fields: [credentialId], references: [id])
+  attendee   Attendee?  @relation(fields: [attendeeId], references: [id])
+  operator   User?      @relation("AccessOperator", fields: [operatorUserId], references: [id])
+  area       Area?      @relation(fields: [areaId], references: [id])
+
+  @@index([eventId, timestamp])
+  @@index([credentialId])
+  @@index([areaId])
+  @@index([operatorUserId])
+}
+
+model Device {
+  id          String   @id @default(cuid())
+  eventId     String?
+  name        String
+  publicKey   String // ed25519 public key — verifies signed offline logs
+  ownerId     String?
+  lastSeenAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  owner User? @relation(fields: [ownerId], references: [id])
+
+  @@unique([name, publicKey])
+}
+
+// ─────────────────────────────────────────────────────────────
+// TASKS & INCIDENTS
+// ─────────────────────────────────────────────────────────────
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  DONE
+}
+
+model Task {
+  id           String   @id @default(cuid())
+  eventId      String
+  teamId       String?
+  assigneeId   String?
+  areaId       String?
+  title        String
+  description  String?
+  priority     TaskPriority @default(MEDIUM)
+  status       TaskStatus @default(TODO)
+  dueAt        DateTime?
+  checklist    Json? // [{done, text}]
+  evidence     Json? // [{url, label}]
+  completedById String?
+  completedAt  DateTime?
+  createdById  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  event     Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  team      Team?      @relation(fields: [teamId], references: [id])
+  assignee  User?      @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  area      Area?      @relation(fields: [areaId], references: [id])
+  creator   User       @relation("TaskCreator", fields: [createdById], references: [id])
+  completer User?      @relation("TaskCompleter", fields: [completedById], references: [id])
+  activity  TaskActivity[]
+
+  @@index([eventId, status])
+  @@index([assigneeId])
+  @@index([teamId])
+}
+
+model TaskActivity {
+  id        String   @id @default(cuid())
+  taskId    String
+  actorId   String
+  action    String // CREATED, ASSIGNED, STATUS_CHANGED, CHECKLIST_UPDATED, COMPLETED
+  note      String?
+  createdAt DateTime @default(now())
+
+  task  Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actor User @relation(fields: [actorId], references: [id])
+
+  @@index([taskId])
+}
+
+enum IncidentType {
+  SECURITY
+  MEDICAL
+  TECHNICAL
+  REGISTRATION
+  ATTENDEE
+  CROWD
+  EQUIPMENT
+  OPERATIONAL
+  OTHER
+}
+
+enum IncidentPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  ESCALATED
+  RESOLVED
+  CLOSED
+}
+
+model Incident {
+  id             String   @id @default(cuid())
+  eventId        String
+  code           String // INC-0001 (per event)
+  type           IncidentType @default(OTHER)
+  priority       IncidentPriority @default(MEDIUM)
+  status         IncidentStatus @default(OPEN)
+  createdById    String
+  assignedTeamId String?
+  assignedUserId String?
+  areaId         String?
+  title          String
+  description    String?
+  resolution     String?
+  evidence       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  resolvedAt     DateTime?
+
+  event    Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  creator  User     @relation("IncidentCreator", fields: [createdById], references: [id])
+  assignee User?    @relation("IncidentAssignee", fields: [assignedUserId], references: [id])
+  team     Team?    @relation(fields: [assignedTeamId], references: [id])
+  area     Area?    @relation(fields: [areaId], references: [id])
+  comments IncidentComment[]
+
+  @@unique([eventId, code])
+  @@index([eventId, status])
+  @@index([priority])
+}
+
+model IncidentComment {
+  id         String   @id @default(cuid())
+  incidentId String
+  authorId   String
+  body       String
+  createdAt  DateTime @default(now())
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  author   User     @relation(fields: [authorId], references: [id])
+
+  @@index([incidentId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// COMMUNICATIONS & NOTIFICATIONS
+// ─────────────────────────────────────────────────────────────
+
+enum AnnouncementPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model Announcement {
+  id             String   @id @default(cuid())
+  eventId        String
+  authorId       String
+  title          String
+  body           String
+  priority       AnnouncementPriority @default(MEDIUM)
+  targetAudience Json? // {"scope":"ALL_STAFF"} | {"scope":"TEAMS","teamIds":[]} | {"scope":"ROLES","roleIds":[]}
+  createdAt      DateTime @default(now())
+
+  event  Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  author User  @relation(fields: [authorId], references: [id])
+
+  @@index([eventId, createdAt])
+}
+
+enum MessageTarget {
+  ALL_STAFF
+  TEAM
+  USER
+}
+
+model Message {
+  id            String   @id @default(cuid())
+  eventId       String
+  senderId      String
+  target        MessageTarget @default(ALL_STAFF)
+  teamId        String?
+  recipientUserId String?
+  body          String
+  createdAt     DateTime @default(now())
+
+  event   Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  sender  User  @relation(fields: [senderId], references: [id])
+
+  @@index([eventId, createdAt])
+}
+
+model Notification {
+  id      String   @id @default(cuid())
+  userId  String
+  eventId String?
+  type    String // TASK_ASSIGNED, INCIDENT_CRITICAL, ANNOUNCEMENT, CREDENTIAL_REVOKED, EVENT_LIVE, MEMBER_ASSIGNED
+  title   String
+  body    String?
+  data    Json?
+  readAt  DateTime?
+  createdAt DateTime @default(now())
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event Event? @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([eventId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// PUBLIC SITE — REVIEWS, CONTACT, WHEEL
+// ─────────────────────────────────────────────────────────────
+
+model PublicReview {
+  id        String   @id @default(cuid())
+  author    String
+  role      String?
+  content   String
+  rating    Int      @default(5)
+  eventName String?
+  visible   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([visible])
+}
+
+model ContactMessage {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  orgName   String?
+  eventType String?
+  eventDate String?
+  message   String
+  status    String   @default("NEW")
+  createdAt DateTime @default(now())
+
+  @@index([status])
+}
+
+model WheelSpin {
+  id         String   @id @default(cuid())
+  ip         String   @unique
+  spins      Int      @default(0)
+  lastReward String?
+  lastLabel  String?
+  lastCode   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUDIT
+// ─────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String?
+  eventId        String?
+  actorUserId    String?
+  action         String // attendee.updated, ticket.cancelled, ...
+  resourceType   String
+  resourceId     String?
+  previousValue  Json?
+  newValue       Json?
+  timestamp      DateTime @default(now())
+  sourceDevice   String?
+  sourceIp       String?
+  result         String @default("SUCCESS")
+  metadata       Json?
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  event        Event?        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  actor        User?         @relation(fields: [actorUserId], references: [id])
+
+  @@index([organizationId, timestamp])
+  @@index([eventId, timestamp])
+  @@index([actorUserId, timestamp])
+  @@index([action])
+}
