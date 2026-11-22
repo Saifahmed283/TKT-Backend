@@ -124,7 +124,8 @@ export async function publicRoutes(app: FastifyInstance) {
         org: { select: { id: true, name: true, logoUrl: true } },
         ticketTypes: {
           where: { active: true },
-          select: { id: true, name: true, price: true, quota: true, _count: { select: { tickets: true } } },
+          select: { id: true, name: true, description: true, category: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, _count: { select: { tickets: true } } },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         },
         _count: { select: { attendees: true, tickets: true, accessLogs: true } },
       },
@@ -136,11 +137,11 @@ export async function publicRoutes(app: FastifyInstance) {
         const settings = (e.settings as Record<string, any>) ?? {}
         const reg = (settings.registration as RegSettings) ?? {}
         type EventTicketType = (typeof e.ticketTypes)[number]
-        type PublicTicketType = { id: string; name: string; price: string; quota: number | null; sold: number; remaining: number | null; soldOut: boolean }
-        const ticketTypes: PublicTicketType[] = e.ticketTypes.map((t: EventTicketType) => {
+        type PublicTicketType = { id: string; name: string; description: string | null; category: string | null; price: string; currency: string; quota: number | null; sold: number; remaining: number | null; soldOut: boolean; salesStartAt: string | null; salesEndAt: string | null; isPublic: boolean }
+        const ticketTypes: PublicTicketType[] = e.ticketTypes.map((t: any) => {
           const sold = t._count.tickets
           const remaining = t.quota != null ? Math.max(0, t.quota - sold) : null
-          return { id: t.id, name: t.name, price: t.price?.toString() ?? '0', quota: t.quota, sold, remaining, soldOut: t.quota != null && sold >= t.quota }
+          return { id: t.id, name: t.name, description: t.description ?? null, category: t.category ?? null, price: t.price?.toString() ?? '0', currency: t.currency ?? 'USD', quota: t.quota, sold, remaining, soldOut: t.quota != null && sold >= t.quota, salesStartAt: t.salesStartAt?.toISOString() ?? null, salesEndAt: t.salesEndAt?.toISOString() ?? null, isPublic: t.isPublic !== false }
         })
         const soldOut = ticketTypes.some((t: PublicTicketType) => t.quota != null) && ticketTypes.every((t: PublicTicketType) => t.soldOut)
         return {
@@ -190,7 +191,8 @@ export async function publicRoutes(app: FastifyInstance) {
         org: { select: { id: true, name: true, logoUrl: true } },
         ticketTypes: {
           where: { active: true },
-          select: { id: true, name: true, description: true, price: true, quota: true, _count: { select: { tickets: true } } },
+          select: { id: true, name: true, description: true, category: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, _count: { select: { tickets: true } } },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         },
         paymentProviders: {
           where: { isActive: true },
@@ -204,22 +206,25 @@ export async function publicRoutes(app: FastifyInstance) {
     }
     const settings = (event.settings as Record<string, any>) ?? {}
     const reg = (settings.registration as RegSettings) ?? {}
-    type DetailTicketType = (typeof event.ticketTypes)[number]
-    type DetailPublicTicket = { id: string; name: string; description: string | null; price: string; quota: number | null; sold: number; remaining: number | null; soldOut: boolean }
-    const ticketTypes: DetailPublicTicket[] = event.ticketTypes.map((t: DetailTicketType) => {
+    const ticketTypes = event.ticketTypes.map((t: any) => {
       const sold = t._count.tickets
       return {
         id: t.id,
         name: t.name,
         description: t.description,
+        category: t.category ?? null,
         price: t.price?.toString() ?? '0',
+        currency: t.currency ?? 'USD',
         quota: t.quota,
         sold,
         remaining: t.quota != null ? Math.max(0, t.quota - sold) : null,
         soldOut: t.quota != null && sold >= t.quota,
+        salesStartAt: t.salesStartAt?.toISOString() ?? null,
+        salesEndAt: t.salesEndAt?.toISOString() ?? null,
+        isPublic: t.isPublic !== false,
       }
     })
-    const soldOut = ticketTypes.some((t: DetailPublicTicket) => t.quota != null) && ticketTypes.every((t: DetailPublicTicket) => t.soldOut)
+    const soldOut = ticketTypes.some((t: any) => t.quota != null) && ticketTypes.every((t: any) => t.soldOut)
     return {
       data: {
         id: event.id,
@@ -270,8 +275,12 @@ export async function publicRoutes(app: FastifyInstance) {
 
     const ticketType = await prisma.ticketType.findFirst({
       where: { id: body.ticketTypeId, eventId, active: true },
-    })
+    }) as any
     if (!ticketType) throw errors.badRequest('Ticket type not found')
+    if (ticketType.isPublic === false) throw errors.badRequest('This ticket type is not available for public reservation')
+    const nowTs = Date.now()
+    if (ticketType.salesStartAt && nowTs < ticketType.salesStartAt.getTime()) throw errors.badRequest('Ticket sales have not started yet')
+    if (ticketType.salesEndAt && nowTs > ticketType.salesEndAt.getTime()) throw errors.badRequest('Ticket sales have ended')
 
     const soldCount = async () =>
       prisma.ticket.count({

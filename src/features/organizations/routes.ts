@@ -66,8 +66,9 @@ export async function organizationRoutes(app: FastifyInstance) {
         role: true,
         org: {
           select: {
-            id: true, name: true, slug: true, description: true, status: true,
+            id: true, name: true, slug: true, description: true, status: true, createdAt: true,
             _count: { select: { events: true, members: true } },
+            events: { select: { id: true, name: true, status: true }, orderBy: { startAt: 'desc' }, take: 8 },
           },
         },
       },
@@ -77,8 +78,7 @@ export async function organizationRoutes(app: FastifyInstance) {
     return {
       data: rows.map((r: OrgRow) => ({
         ...r.org,
-        _count: { events: r.org._count.events, members: r.org._count.members },
-        myRole: r.role,
+        myRole: { name: r.role },
       })),
     }
   })

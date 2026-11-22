@@ -9,6 +9,7 @@ import { publish, channelFor } from '../../lib/realtime.js'
 import { logActivity } from '../../lib/activity.js'
 
 const EVENT_TYPES = ['CONFERENCE', 'CONCERT', 'WEDDING', 'SPORTS', 'EXHIBITION', 'CHARITY', 'CORPORATE', 'UNIVERSITY', 'OTHER'] as const
+const EVENT_CATEGORIES = ['CONFERENCE', 'EXHIBITION', 'CONCERT', 'FESTIVAL', 'SPORTS', 'CORPORATE', 'UNIVERSITY', 'COMMUNITY', 'PRIVATE', 'OTHER'] as const
 const EVENT_STATUSES = ['DRAFT', 'PLANNING', 'READY', 'PUBLISHED', 'LIVE', 'COMPLETED', 'ARCHIVED'] as const
 
 const STATUS_FLOW: Record<string, string[]> = {
@@ -26,6 +27,7 @@ const createEventSchema = z.object({
   name: z.string().min(2),
   description: z.string().optional(),
   type: z.enum(EVENT_TYPES).default('OTHER'),
+  category: z.enum(EVENT_CATEGORIES).optional(),
   startAt: z.coerce.date(),
   endAt: z.coerce.date().optional(),
   timezone: z.string().default('UTC'),
@@ -37,6 +39,7 @@ const updateEventSchema = z.object({
   name: z.string().min(2).optional(),
   description: z.string().nullable().optional(),
   type: z.enum(EVENT_TYPES).optional(),
+  category: z.enum(EVENT_CATEGORIES).nullable().optional(),
   startAt: z.coerce.date().optional(),
   endAt: z.coerce.date().nullable().optional(),
   timezone: z.string().optional(),
@@ -96,7 +99,7 @@ export async function eventRoutes(app: FastifyInstance) {
           ? {}
           : { OR: [{ orgId: { in: adminOrgIds } }, { id: { in: memberEventIds } }] },
       select: {
-        id: true, name: true, description: true, type: true, status: true,
+        id: true, name: true, description: true, type: true, category: true, status: true,
         startAt: true, endAt: true, timezone: true, venueName: true, coverImageUrl: true,
         org: { select: { id: true, name: true } },
         _count: { select: { attendees: true, tickets: true, tasks: true, incidents: true } },
@@ -117,6 +120,7 @@ export async function eventRoutes(app: FastifyInstance) {
         name: body.name,
         description: body.description,
         type: body.type,
+        category: body.category ?? body.type,
         startAt: body.startAt,
         endAt: body.endAt,
         timezone: body.timezone,

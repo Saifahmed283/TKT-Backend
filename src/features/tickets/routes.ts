@@ -8,9 +8,16 @@ import { writeAudit } from '../../lib/audit.js'
 
 const typeSchema = z.object({
   name: z.string().min(2),
-  description: z.string().optional(),
-  price: z.coerce.number().nonnegative().optional(),
-  quota: z.number().int().positive().optional(),
+  description: z.string().optional().nullable(),
+  category: z.string().max(80).optional().nullable(),
+  price: z.coerce.number().nonnegative().optional().nullable(),
+  currency: z.string().min(3).max(8).optional(),
+  quota: z.number().int().positive().optional().nullable(),
+  salesStartAt: z.coerce.date().optional().nullable(),
+  salesEndAt: z.coerce.date().optional().nullable(),
+  isPublic: z.boolean().optional(),
+  sortOrder: z.number().int().min(0).optional(),
+  active: z.boolean().optional(),
 })
 
 const issueSchema = z.object({
@@ -28,10 +35,11 @@ export async function ticketRoutes(app: FastifyInstance) {
     const types = await prisma.ticketType.findMany({
       where: { eventId },
       select: {
-        id: true, name: true, description: true, price: true, quota: true, active: true,
+        id: true, name: true, description: true, category: true, price: true, currency: true, quota: true,
+        salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, active: true,
         _count: { select: { tickets: true } },
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     })
     return { data: types }
   })
@@ -40,7 +48,8 @@ export async function ticketRoutes(app: FastifyInstance) {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'ticket.issue', { eventId })
     const body = typeSchema.parse(req.body)
-    const type = await prisma.ticketType.create({ data: { eventId, ...body } })
+    if (body.salesStartAt && body.salesEndAt && body.salesStartAt > body.salesEndAt) throw errors.badRequest('salesStartAt must be before salesEndAt')
+    const type = await prisma.ticketType.create({ data: { eventId, ...body, currency: body.currency ?? 'USD' } })
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.type_created', resourceType: 'ticket_type', resourceId: type.id, newValue: body, sourceIp: req.ip })
     return reply.status(201).send({ data: type })
   })
@@ -48,9 +57,12 @@ export async function ticketRoutes(app: FastifyInstance) {
   app.patch('/types/:typeId', async (req) => {
     const { eventId, typeId } = req.params as { eventId: string; typeId: string }
     await requirePermission(req, 'ticket.issue', { eventId })
-    const body = typeSchema.partial().extend({ active: z.boolean().optional() }).parse(req.body)
+    const body = typeSchema.partial().parse(req.body)
     const type = await prisma.ticketType.findFirst({ where: { id: typeId, eventId } })
     if (!type) throw errors.notFound('Ticket type not found')
+    const salesStartAt = body.salesStartAt === undefined ? type.salesStartAt : body.salesStartAt
+    const salesEndAt = body.salesEndAt === undefined ? type.salesEndAt : body.salesEndAt
+    if (salesStartAt && salesEndAt && salesStartAt > salesEndAt) throw errors.badRequest('salesStartAt must be before salesEndAt')
     const updated = await prisma.ticketType.update({ where: { id: typeId }, data: body })
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.type_updated', resourceType: 'ticket_type', resourceId: typeId, newValue: body, sourceIp: req.ip })
     return { data: updated }

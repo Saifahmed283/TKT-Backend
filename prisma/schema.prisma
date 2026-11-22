@@ -172,6 +172,7 @@ model Event {
   slug          String?
   description   String?
   type          EventType   @default(OTHER)
+  category      String?
   status        EventStatus @default(DRAFT)
   startAt       DateTime
   endAt         DateTime?
@@ -377,21 +378,28 @@ model Attendee {
 }
 
 model TicketType {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   eventId     String
   name        String
   description String?
-  price       Decimal? @db.Decimal(10, 2)
-  currency    String   @default("USD")
+  category    String?
+  price       Decimal?  @db.Decimal(10, 2)
+  currency    String    @default("USD")
   quota       Int?
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
+  salesStartAt DateTime?
+  salesEndAt   DateTime?
+  isPublic    Boolean   @default(true)
+  sortOrder   Int       @default(0)
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   event       Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
   tickets     Ticket[]
   accessCodes AccessCode[]
 
   @@index([eventId])
+  @@index([eventId, active, isPublic])
 }
 
 enum TicketStatus {

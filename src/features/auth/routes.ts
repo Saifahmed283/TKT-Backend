@@ -124,7 +124,7 @@ export async function authRoutes(app: FastifyInstance) {
           where: { status: 'ACTIVE' },
           select: {
             id: true, status: true,
-            role: { select: { code: true, name: true, scope: true } },
+            role: { select: { code: true, name: true, scope: true, permissions: true } },
             team: { select: { id: true, name: true } },
             areas: { select: { area: { select: { id: true, name: true, type: true } } } },
             event: { select: { id: true, name: true, status: true, type: true, startAt: true, org: { select: { id: true, name: true } } } },
