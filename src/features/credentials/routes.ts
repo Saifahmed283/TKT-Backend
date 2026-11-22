@@ -8,6 +8,7 @@ import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
 import { credentialCode, verifyCredentialIntegrity, type CredentialPayload } from '../../lib/credentials.js'
 import { logActivity } from '../../lib/activity.js'
+import { AuditActions } from '../../lib/audit-actions.js'
 
 const issueSchema = z.object({
   attendeeId: z.string(),
@@ -152,6 +153,7 @@ export async function credentialRoutes(app: FastifyInstance) {
         attendee: { select: { id: true, name: true, email: true, phone: true, category: true, status: true } },
         ticket: { include: { ticketType: { select: { name: true, price: true } } } },
         accessLogs: { orderBy: { timestamp: 'desc' }, take: 20, include: { area: { select: { name: true } }, operator: { select: { name: true } } } },
+        deliveryLogs: { orderBy: { createdAt: 'desc' }, take: 20 },
       },
     })
     if (!credential) throw errors.notFound('Credential not found')

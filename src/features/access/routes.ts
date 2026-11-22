@@ -5,6 +5,7 @@ import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
+import { AuditActions } from '../../lib/audit-actions.js'
 import { verifyCredentialIntegrity, verifyPayload, publicKeyPem, credentialCode, type CredentialPayload } from '../../lib/credentials.js'
 import { validateAccess, type AccessDecision } from '../../lib/access-engine.js'
 import { createPublicKey, verify } from 'node:crypto'
@@ -524,7 +525,7 @@ async function logAccess(
     organizationId: ctx.organizationId,
     eventId,
     actorUserId: req.user.id,
-    action: decision.result === 'GRANTED' ? 'access.granted' : 'access.denied',
+    action: decision.result === 'GRANTED' ? AuditActions.ACCESS_GRANTED : AuditActions.ACCESS_DENIED,
     resourceType: 'access_log',
     resourceId: log.id,
     newValue: {

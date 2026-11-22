@@ -136,9 +136,13 @@ describe('event isolation & RBAC at API level', () => {
 
     // u1 (org1 admin) shouldn't see org2's event
     const list = await app.inject({ method: 'GET', url: '/events', headers: auth(u1.token) })
+    expectStatus(list, 200)
     const ids = list.json().data.map((e: any) => e.id)
     expect(ids).toContain(evt1)
     expect(ids).not.toContain(evt2)
+
+    const direct = await app.inject({ method: 'GET', url: `/events/${evt2}`, headers: auth(u1.token) })
+    expectStatus(direct, 403)
   })
 
   it('staff cannot assign members without event.members.assign', async () => {
@@ -242,31 +246,37 @@ describe('scanner scope enforcement (API level)', () => {
     const eventId = await createEvent(u.token, orgId, `Event Rev ${Date.now()}`, { live: true })
     await goLive(u.token, eventId)
 
-    const area = (await createArea(u.token, eventId, 'Rev Gate')).json().data
+    const areaRes = await createArea(u.token, eventId, 'Rev Gate')
+    expectStatus(areaRes, 201)
+    const area = areaRes.json().data
     const attendee = await app.inject({
       method: 'POST',
       url: `/events/${eventId}/attendees`,
       headers: auth(u.token),
       payload: { name: 'Rev Attendee' },
     })
+    expectStatus(attendee, 201)
     const ticketType = await app.inject({
       method: 'POST',
       url: `/events/${eventId}/tickets/types`,
       headers: auth(u.token),
       payload: { name: 'GA', price: 10 },
     })
+    expectStatus(ticketType, 201)
     const ticket = await app.inject({
       method: 'POST',
       url: `/events/${eventId}/tickets`,
       headers: auth(u.token),
       payload: { attendeeId: attendee.json().data.id, ticketTypeId: ticketType.json().data.id },
     })
+    expectStatus(ticket, 201)
     const credential = await app.inject({
       method: 'POST',
       url: `/events/${eventId}/credentials`,
       headers: auth(u.token),
       payload: { attendeeId: attendee.json().data.id, ticketId: ticket.json().data.id, areaIds: [area.id] },
     })
+    expectStatus(credential, 201)
     const cred = credential.json().data
 
     // revoke

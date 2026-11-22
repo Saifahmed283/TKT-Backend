@@ -3,9 +3,10 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import { credentialCode, type CredentialPayload } from '../../lib/credentials.js'
-import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
+import { getDeliveryAdapter, ticketEmailShell } from '../../lib/delivery.js'
 import { qrDataUrl } from '../../lib/qr.js'
 import { writeAudit } from '../../lib/audit.js'
+import { AuditActions } from '../../lib/audit-actions.js'
 import { logActivity } from '../../lib/activity.js'
 
 export type ReservationApproval = 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED'
@@ -111,6 +112,25 @@ export function reservationStatePatch(params: { paid: boolean; approved: boolean
   }
 }
 
+type DeliveryRecordInput = {
+  eventId: string
+  ticketId: string
+  credentialId?: string | null
+  channel: 'EMAIL' | 'WHATSAPP' | 'BOTH'
+  status: 'PENDING' | 'SENT' | 'FAILED' | 'SKIPPED'
+  recipient?: string | null
+  provider?: string | null
+  providerMessageId?: string | null
+  error?: string | null
+  attempt: number
+  metadata?: Record<string, unknown>
+  createdById?: string | null
+}
+
+async function recordDeliveryAttempt(input: DeliveryRecordInput) {
+  return prisma.credentialDeliveryAttempt.create({ data: input as any }).catch(() => null)
+}
+
 export async function resendReservationCredential(params: {
   eventId: string
   ticketId: string
@@ -137,7 +157,8 @@ export async function resendReservationCredential(params: {
 
   const qr = await qrDataUrl(ticket.credential.code).catch(() => null)
   const codeOf = reservationCodeOf(ticket as any)
-  const deliveryOk = await sendMail({
+  const attempt = (ticket.deliveryAttempts ?? 0) + 1
+  const delivery = await getDeliveryAdapter('EMAIL').send({
     to: ticket.attendee.email,
     subject: `Your ticket — ${ticket.event.name}`,
     html: ticketEmailShell({
@@ -155,6 +176,7 @@ export async function resendReservationCredential(params: {
       footer: 'TKT · Control center for live events',
     }),
   })
+  const deliveryOk = delivery.ok
 
   const updated = await prisma.ticket.update({
     where: { id: ticket.id },
@@ -167,11 +189,26 @@ export async function resendReservationCredential(params: {
     include: { credential: { select: { id: true, code: true, status: true } } },
   })
 
+  await recordDeliveryAttempt({
+    eventId: ticket.eventId,
+    ticketId: ticket.id,
+    credentialId: ticket.credential.id,
+    channel: 'EMAIL',
+    status: deliveryOk ? 'SENT' : 'FAILED',
+    recipient: ticket.attendee.email,
+    provider: delivery.provider,
+    providerMessageId: delivery.providerMessageId ?? null,
+    error: delivery.error ?? null,
+    attempt,
+    metadata: { resend: true },
+    createdById: params.actorUserId,
+  })
+
   await writeAudit({
     organizationId: ticket.event.orgId,
     eventId: ticket.eventId,
     actorUserId: params.actorUserId,
-    action: deliveryOk ? 'credential.delivery.sent' : 'credential.delivery.failed',
+    action: deliveryOk ? AuditActions.CREDENTIAL_DELIVERY_SENT : AuditActions.CREDENTIAL_DELIVERY_FAILED,
     resourceType: 'ticket',
     resourceId: ticket.id,
     newValue: { channel: 'EMAIL', credentialId: ticket.credential.id, resend: true },
@@ -237,7 +274,8 @@ export async function issueReservationCredential(params: {
   if (sendEmail) {
     const codeOf = reservationCodeOf(ticket)
     const qr = await qrDataUrl(code).catch(() => null)
-    deliveryOk = await sendMail({
+    const attempt = ((ticket as any).deliveryAttempts ?? 0) + 1
+    const delivery = await getDeliveryAdapter('EMAIL').send({
       to: ticket.attendee.email ?? '',
       subject: `Your ticket — ${event.name}`,
       html: ticketEmailShell({
@@ -255,6 +293,7 @@ export async function issueReservationCredential(params: {
         footer: 'TKT · Control center for live events',
       }),
     })
+    deliveryOk = delivery.ok
 
     await prisma.ticket.update({
       where: { id: ticket.id },
@@ -265,13 +304,28 @@ export async function issueReservationCredential(params: {
         deliveryChannel: 'EMAIL',
       },
     }).catch(() => {})
+
+    await recordDeliveryAttempt({
+      eventId: event.id,
+      ticketId: ticket.id,
+      credentialId: credential.id,
+      channel: 'EMAIL',
+      status: deliveryOk ? 'SENT' : 'FAILED',
+      recipient: ticket.attendee.email ?? null,
+      provider: delivery.provider,
+      providerMessageId: delivery.providerMessageId ?? null,
+      error: delivery.error ?? null,
+      attempt,
+      metadata: { source: 'reservation_issue' },
+      createdById: issuerUserId ?? null,
+    })
   }
 
   await writeAudit({
     organizationId: event.orgId,
     eventId: event.id,
     actorUserId: issuerUserId,
-    action: 'credential.issued_via_reservation',
+    action: AuditActions.CREDENTIAL_ISSUED_RESERVATION,
     resourceType: 'credential',
     resourceId: credential.id,
     newValue: { attendeeId: ticket.attendee.id, ticketId: ticket.id, channel: 'public', deliveryOk },
@@ -281,7 +335,7 @@ export async function issueReservationCredential(params: {
       organizationId: event.orgId,
       eventId: event.id,
       actorUserId: issuerUserId,
-      action: deliveryOk ? 'credential.delivery.sent' : 'credential.delivery.failed',
+      action: deliveryOk ? AuditActions.CREDENTIAL_DELIVERY_SENT : AuditActions.CREDENTIAL_DELIVERY_FAILED,
       resourceType: 'ticket',
       resourceId: ticket.id,
       newValue: { channel: 'EMAIL', credentialId: credential.id },
@@ -376,7 +430,7 @@ export async function decideReservation(params: {
       organizationId: event.orgId,
       eventId,
       actorUserId,
-      action: 'reservation.approved',
+      action: AuditActions.RESERVATION_APPROVED,
       resourceType: 'ticket',
       resourceId: decided.ticket.id,
       previousValue: { approval: 'PENDING' },
@@ -385,7 +439,7 @@ export async function decideReservation(params: {
     logActivity(eventId, 'reservation', `Reservation approved · ${reservationCodeOf(decided.ticket) ?? decided.ticket.id.slice(0, 8)}`, params.actorName)
   } else {
     const codeOf = reservationCodeOf(decided.ticket)
-    await sendMail({
+    const rejectionDelivery = await getDeliveryAdapter('EMAIL').send({
       to: decided.ticket.attendee.email ?? '',
       subject: `Reservation update — ${event.name}`,
       html: ticketEmailShell({
@@ -400,18 +454,37 @@ export async function decideReservation(params: {
         ],
         footer: 'TKT · Control center for live events',
       }),
-    }).catch(() => false)
+    }).catch(() => ({ ok: false, provider: 'smtp', providerMessageId: null, error: 'send failed' }))
 
     await prisma.ticket.update({
       where: { id: decided.ticket.id },
-      data: { deliveryStatus: 'SENT', lastDeliveryAt: new Date(), deliveryAttempts: { increment: 1 } },
+      data: {
+        deliveryStatus: rejectionDelivery.ok ? 'SENT' : 'FAILED',
+        lastDeliveryAt: rejectionDelivery.ok ? new Date() : undefined,
+        deliveryAttempts: { increment: 1 },
+        deliveryChannel: 'EMAIL',
+      },
     }).catch(() => {})
+    await recordDeliveryAttempt({
+      eventId,
+      ticketId: decided.ticket.id,
+      credentialId: decided.ticket.credential?.id ?? null,
+      channel: 'EMAIL',
+      status: rejectionDelivery.ok ? 'SENT' : 'FAILED',
+      recipient: decided.ticket.attendee.email ?? null,
+      provider: rejectionDelivery.provider ?? 'smtp',
+      providerMessageId: rejectionDelivery.providerMessageId ?? null,
+      error: rejectionDelivery.error ?? null,
+      attempt: ((decided.ticket as any).deliveryAttempts ?? 0) + 1,
+      metadata: { source: 'reservation_rejected' },
+      createdById: actorUserId,
+    })
 
     await writeAudit({
       organizationId: event.orgId,
       eventId,
       actorUserId,
-      action: 'reservation.rejected',
+      action: AuditActions.RESERVATION_REJECTED,
       resourceType: 'ticket',
       resourceId: decided.ticket.id,
       previousValue: { approval: 'PENDING' },

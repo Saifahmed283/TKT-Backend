@@ -25,28 +25,34 @@ export type MailPayload = {
   text?: string
 }
 
+export type MailSendResult = {
+  ok: boolean
+  messageId?: string | null
+  error?: string | null
+}
+
 /**
  * Send an email. When SMTP is not configured the message is logged instead
- * (dev-friendly fail-open) and `false` is returned.
+ * (dev-friendly fail-open).
  */
-export async function sendMail(payload: MailPayload): Promise<boolean> {
+export async function sendMail(payload: MailPayload): Promise<MailSendResult> {
   const t = getTransporter()
   if (!t) {
     console.log(`[mailer:noop] → ${payload.to} :: ${payload.subject}`)
-    return false
+    return { ok: false, error: 'SMTP not configured' }
   }
   try {
-    await t.sendMail({
+    const info = await t.sendMail({
       from: config.mailer.from,
       to: payload.to,
       subject: payload.subject,
       html: payload.html,
       text: payload.text,
     })
-    return true
+    return { ok: true, messageId: typeof info?.messageId === 'string' ? info.messageId : null }
   } catch (err) {
     console.error('[mailer:error]', err)
-    return false
+    return { ok: false, error: err instanceof Error ? err.message : 'Failed to send email' }
   }
 }
 

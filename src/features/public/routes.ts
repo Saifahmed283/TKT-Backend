@@ -16,6 +16,7 @@ import {
 } from '../reservations/service.js'
 import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
 import { logActivity } from '../../lib/activity.js'
+import { publish, channelFor } from '../../lib/realtime.js'
 
 // ─────────────────────────────────────────────────────────────
 // Prize wheel — segment order must match the frontend wheel
@@ -373,7 +374,21 @@ export async function publicRoutes(app: FastifyInstance) {
       })
       await prisma.ticket.update({
         where: { id: ticket.id },
-        data: { deliveryStatus: sent ? 'SENT' : 'FAILED', lastDeliveryAt: sent ? new Date() : undefined, deliveryAttempts: { increment: 1 } },
+        data: { deliveryStatus: sent.ok ? 'SENT' : 'FAILED', lastDeliveryAt: sent.ok ? new Date() : undefined, deliveryAttempts: { increment: 1 } },
+      }).catch(() => {})
+      await prisma.credentialDeliveryAttempt.create({
+        data: {
+          eventId,
+          ticketId: ticket.id,
+          channel: 'EMAIL',
+          status: sent.ok ? 'SENT' : 'FAILED',
+          recipient: body.email,
+          provider: 'smtp',
+          providerMessageId: sent.messageId ?? null,
+          error: sent.error ?? null,
+          attempt: 1,
+          metadata: { source: 'public_reservation_pending' },
+        } as any,
       }).catch(() => {})
     } else {
       const reservationTicket: ReservationTicket = {
@@ -396,6 +411,12 @@ export async function publicRoutes(app: FastifyInstance) {
     }
 
     logActivity(eventId, 'reservation', `${body.name} reserved ${ticketType.name} · ${code}`, body.name)
+    publish(channelFor.reservation(eventId), 'reservation.created', {
+      ticketId: ticket.id,
+      reservationCode: code,
+      approval: paid ? 'PENDING' : 'APPROVED',
+      paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
+    })
 
     // Capacity reached → lock the reservation pipeline.
     if (ticketType.quota != null && (await soldCount()) >= ticketType.quota) {
@@ -403,6 +424,7 @@ export async function publicRoutes(app: FastifyInstance) {
         where: { id: eventId },
         data: { settings: { ...settings, registration: { ...reg, open: false } } },
       })
+      publish(channelFor.reservation(eventId), 'reservation.capacity_locked', { ticketTypeId: ticketType.id })
     }
 
     return reply.code(201).send({
@@ -445,6 +467,7 @@ export async function publicRoutes(app: FastifyInstance) {
         reservationCode: reservationCodeOf(ticket) ?? code,
         approval: reservationApprovalOf(ticket),
         paymentStatus: reservationPaymentOf(ticket),
+        deliveryStatus: (ticket as any).deliveryStatus ?? null,
         ticketStatus: ticket.status,
         price: ticket.price?.toString() ?? '0',
         ticketName: ticket.ticketType.name,

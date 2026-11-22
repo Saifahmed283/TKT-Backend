@@ -138,4 +138,26 @@ export async function reservationRoutes(app: FastifyInstance) {
       },
     })
   })
+
+  app.get('/:ticketId/deliveries', async (req) => {
+    const { eventId, ticketId } = req.params as { eventId: string; ticketId: string }
+    await requirePermission(req, 'ticket.view', { eventId })
+    const rows = await prisma.credentialDeliveryAttempt.findMany({
+      where: { eventId, ticketId },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      select: {
+        id: true,
+        channel: true,
+        status: true,
+        recipient: true,
+        provider: true,
+        providerMessageId: true,
+        error: true,
+        attempt: true,
+        createdAt: true,
+      },
+    })
+    return { data: rows }
+  })
 }
