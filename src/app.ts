@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify'
+﻿import Fastify, { type FastifyInstance } from 'fastify'
 import cookie from '@fastify/cookie'
 import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
@@ -25,6 +25,11 @@ import { realtimeRoutes } from './features/realtime/routes.js'
 import { publicRoutes } from './features/public/routes.js'
 import { reservationRoutes } from './features/reservations/routes.js'
 import { presenceRoutes } from './features/presence/routes.js'
+import { paymentRoutes } from './features/payments/routes.js'
+import { accessCodeRoutes } from './features/access-codes/routes.js'
+import { deviceRoutes } from './features/devices/routes.js'
+import { workforceRoutes } from './features/workforce/routes.js'
+import { integrationRoutes } from './features/integrations/routes.js'
 import { dashboardRoutes } from './features/dashboard/routes.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -152,6 +157,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(auditRoutes, { prefix: '/events/:eventId/audit-logs' })
   await app.register(reportRoutes, { prefix: '/events/:eventId/reports' })
   await app.register(reservationRoutes, { prefix: '/events/:eventId/reservations' })
+  await app.register(paymentRoutes, { prefix: '/events/:eventId/payments' })
+  await app.register(accessCodeRoutes, { prefix: '/events/:eventId/access-codes' })
+  await app.register(deviceRoutes, { prefix: '/events/:eventId/devices' })
+  await app.register(workforceRoutes, { prefix: '/events/:eventId/workforce' })
+  await app.register(integrationRoutes, { prefix: '/events/:eventId/integrations' })
   await app.register(presenceRoutes, { prefix: '/events/:eventId' })
   await app.register(searchRoutes, { prefix: '/search' })
   await app.register(dashboardRoutes, { prefix: '/dashboard' })

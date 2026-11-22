@@ -159,6 +159,9 @@ async function resolveScanCredential(rawCode: string, eventId: string): Promise<
 const registerSchema = z.object({
   deviceName: z.string().min(2),
   publicKey: z.string().min(10),
+  deviceType: z.enum(['MOBILE', 'TABLET', 'DESKTOP', 'KIOSK', 'OTHER']).optional(),
+  fingerprint: z.string().max(255).optional(),
+  appVersion: z.string().max(64).optional(),
 })
 
 const syncItemSchema = z.object({
@@ -350,13 +353,43 @@ export async function accessRoutes(app: FastifyInstance) {
   })
 
   // â”€â”€ Offline batch sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ?? Device heartbeat (scan ops / network) ????????????????
+  app.post('/device/heartbeat', async (req) => {
+    const { eventId } = req.params as { eventId: string }
+    await requirePermission(req, 'device.heartbeat', { eventId })
+    const body = z.object({
+      deviceId: z.string().min(1),
+      networkStatus: z.enum(['ONLINE', 'OFFLINE', 'UNKNOWN']).optional(),
+      appVersion: z.string().max(64).optional(),
+    }).parse(req.body)
+    const device = await prisma.device.findFirst({ where: { id: body.deviceId, eventId } })
+    if (!device) throw errors.notFound('Device not found')
+    if (device.status === 'REVOKED' || device.status === 'DISABLED') throw errors.forbidden('Device is disabled')
+    const now = new Date()
+    const updated = await prisma.device.update({
+      where: { id: device.id },
+      data: {
+        lastSeenAt: now,
+        lastHeartbeatAt: now,
+        lastIp: req.ip,
+        userAgent: String(req.headers['user-agent'] ?? '').slice(0, 500) || device.userAgent,
+        networkStatus: body.networkStatus ?? 'ONLINE',
+        appVersion: body.appVersion ?? device.appVersion,
+        status: device.status === 'REGISTERED' ? 'ACTIVE' : device.status,
+      },
+      select: { id: true, status: true, lastSeenAt: true, networkStatus: true },
+    })
+    return { data: { ok: true, device: updated } }
+  })
+
   app.post('/sync', async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'access.scan', { eventId })
     const body = syncSchema.parse(req.body)
 
     const device = await prisma.device.findUnique({ where: { id: body.deviceId } })
-    if (!device) throw errors.badRequest('Unknown device')
+    if (!device || device.eventId !== eventId) throw errors.badRequest('Unknown device')
+    if (device.status === 'REVOKED' || device.status === 'DISABLED') throw errors.forbidden('Device is disabled')
 
     const event = await prisma.event.findUnique({ where: { id: eventId } })
     if (!event) throw errors.notFound('Event not found')
@@ -462,7 +495,7 @@ export async function accessRoutes(app: FastifyInstance) {
       })
     }
 
-    await prisma.device.update({ where: { id: device.id }, data: { lastSeenAt: new Date() } })
+    await prisma.device.update({ where: { id: device.id }, data: { lastSeenAt: new Date(), lastHeartbeatAt: new Date(), lastIp: req.ip, networkStatus: 'ONLINE' } })
 
     return reply.send({ data: { results, conflicts, syncedAt: new Date().toISOString() } })
   })

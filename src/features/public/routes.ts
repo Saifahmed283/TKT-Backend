@@ -17,6 +17,9 @@ import {
 import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
 import { logActivity } from '../../lib/activity.js'
 import { publish, channelFor } from '../../lib/realtime.js'
+import { writeAudit } from '../../lib/audit.js'
+import { AuditActions } from '../../lib/audit-actions.js'
+import { canRedeemAccessCode, normalizeAccessCode, redeemAccessCode } from '../access-codes/service.js'
 
 // ─────────────────────────────────────────────────────────────
 // Prize wheel — segment order must match the frontend wheel
@@ -36,6 +39,10 @@ const reservationSchema = z.object({
   email: z.string().email(),
   phone: z.string().optional(),
   ticketTypeId: z.string(),
+  paymentProviderId: z.string().optional().nullable(),
+  paymentReference: z.string().max(200).optional().nullable(),
+  paymentProofUrl: z.string().max(2_000_000).optional().nullable(),
+  paymentAmount: z.coerce.number().nonnegative().optional().nullable(),
 })
 
 const contactSchema = z.object({
@@ -184,6 +191,11 @@ export async function publicRoutes(app: FastifyInstance) {
           where: { active: true },
           select: { id: true, name: true, description: true, price: true, quota: true, _count: { select: { tickets: true } } },
         },
+        paymentProviders: {
+          where: { isActive: true },
+          select: { id: true, name: true, accountName: true, accountNumber: true, paymentPhone: true, paymentLink: true, instructions: true, imageUrl: true },
+          orderBy: { createdAt: 'asc' },
+        },
       },
     })
     if (!event || !['PUBLISHED', 'COMPLETED', 'ARCHIVED'].includes(event.status)) {
@@ -227,6 +239,7 @@ export async function publicRoutes(app: FastifyInstance) {
           availability: availabilityOf({ reg, now: new Date(), eventStartAt: event.startAt, soldOut }),
         },
         ticketTypes,
+        paymentProviders: (event as any).paymentProviders ?? [],
       },
     }
   })
@@ -273,6 +286,16 @@ export async function publicRoutes(app: FastifyInstance) {
     const state = reservationStatePatch({ paid, approved: !paid })
     const emailNorm = normalizeReservationEmail(body.email)
     const phoneNorm = normalizeReservationPhone(body.phone)
+    let paymentProvider: { id: string; name: string } | null = null
+    if (paid) {
+      if (body.paymentProviderId) {
+        paymentProvider = await prisma.paymentProvider.findFirst({ where: { id: body.paymentProviderId, eventId, isActive: true }, select: { id: true, name: true } })
+        if (!paymentProvider) throw errors.badRequest('Payment provider not found')
+      }
+      if (body.paymentProofUrl && !(body.paymentProofUrl.startsWith('data:image/') || body.paymentProofUrl.startsWith('https://'))) {
+        throw errors.badRequest('Payment proof must be an image data URL or https URL')
+      }
+    }
 
     let attendee: any
     let ticket: any
@@ -315,6 +338,11 @@ export async function publicRoutes(app: FastifyInstance) {
             reservationName: body.name.trim(),
             deliveryChannel: 'EMAIL',
             deliveryStatus: 'PENDING',
+            paymentProviderId: paid ? (paymentProvider?.id ?? null) : null,
+            paymentReference: paid ? (body.paymentReference?.trim() || null) : null,
+            paymentProofUrl: paid ? (body.paymentProofUrl || null) : null,
+            paymentAmount: paid ? (body.paymentAmount ?? ticketType.price ?? null) : null,
+            paymentSubmittedAt: paid && (body.paymentReference || body.paymentProofUrl || body.paymentProviderId) ? new Date() : null,
             ...state,
             metadata: {
               reservationCode: code,
@@ -323,6 +351,8 @@ export async function publicRoutes(app: FastifyInstance) {
               email: body.email,
               phone: body.phone ?? null,
               name: body.name,
+              paymentProviderId: paid ? (paymentProvider?.id ?? null) : null,
+              paymentReference: paid ? (body.paymentReference?.trim() || null) : null,
             },
           },
         })
@@ -353,21 +383,24 @@ export async function publicRoutes(app: FastifyInstance) {
       throw err
     }
 
-    // Free tickets → instant QR credential + email. Paid → pending approval.
+    // Free tickets → instant QR credential + email. Paid → pending approval/payment review.
     let qr: string | null = null
     if (paid) {
+      const submittedPayment = Boolean(body.paymentReference || body.paymentProofUrl || paymentProvider)
       const sent = await sendMail({
         to: body.email,
         subject: `Reservation received — ${event.name}`,
         html: ticketEmailShell({
-          preheader: `Your reservation for ${event.name} is awaiting approval`,
+          preheader: `Your reservation for ${event.name} is ${submittedPayment ? 'awaiting payment review' : 'awaiting approval'}`,
           title: 'Reservation received',
-          body: `Your reservation for <strong>${event.name}</strong> is in. The event team will review it shortly — your QR ticket arrives by email once approved.`,
+          body: `Your reservation for <strong>${event.name}</strong> is in. ${submittedPayment ? 'Your payment proof was received and will be reviewed by the event team.' : 'The event team will review it shortly.'} Your QR ticket arrives by email once approved.`,
           rows: [
             { label: 'Event', value: event.name },
             { label: 'Ticket', value: ticketType.name },
             { label: 'Reservation', value: code },
-            { label: 'Status', value: 'Awaiting approval' },
+            ...(paymentProvider ? [{ label: 'Payment method', value: paymentProvider.name }] : []),
+            ...(body.paymentReference?.trim() ? [{ label: 'Payment reference', value: body.paymentReference.trim() }] : []),
+            { label: 'Status', value: submittedPayment ? 'Awaiting payment review' : 'Awaiting approval' },
           ],
           footer: 'TKT · Control center for live events',
         }),
@@ -387,9 +420,17 @@ export async function publicRoutes(app: FastifyInstance) {
           providerMessageId: sent.messageId ?? null,
           error: sent.error ?? null,
           attempt: 1,
-          metadata: { source: 'public_reservation_pending' },
+          metadata: { source: 'public_reservation_pending', submittedPayment },
         } as any,
       }).catch(() => {})
+      if (submittedPayment) {
+        await writeAudit({
+          organizationId: event.orgId, eventId, actorUserId: null,
+          action: AuditActions.PAYMENT_SUBMITTED, resourceType: 'ticket', resourceId: ticket.id,
+          newValue: { paymentProviderId: paymentProvider?.id ?? null, paymentReference: body.paymentReference?.trim() || null, hasProof: Boolean(body.paymentProofUrl) },
+          sourceIp: req.ip,
+        }).catch(() => {})
+      }
     } else {
       const reservationTicket: ReservationTicket = {
         id: ticket.id,
@@ -440,6 +481,72 @@ export async function publicRoutes(app: FastifyInstance) {
     })
   })
 
+  // ── Access code lookup / redemption (VIP / guest controls) ──
+  app.get('/events/:eventId/access-codes/:code', async (req) => {
+    const { eventId, code } = req.params as { eventId: string; code: string }
+    const email = String((req.query as any)?.email ?? '').trim().toLowerCase()
+    const phone = String((req.query as any)?.phone ?? '').trim()
+    const normalized = normalizeAccessCode(code)
+    if (!normalized) throw errors.badRequest('Invalid access code')
+
+    const accessCode = await prisma.accessCode.findFirst({
+      where: { eventId, code: normalized },
+      select: { id: true, code: true, type: true, status: true, fullName: true, email: true, phone: true, attendeeCategory: true, ticketTypeId: true, maxRedemptions: true, redemptionCount: true, expiresAt: true },
+    })
+    if (!accessCode) throw errors.notFound('Access code not found')
+
+    // Protect PII: if code is bound to identity, require matching email or phone query param.
+    const boundEmail = String(accessCode.email ?? '').trim().toLowerCase()
+    const boundPhone = String(accessCode.phone ?? '').replace(/\D/g, '')
+    const claimedPhone = phone.replace(/\D/g, '')
+    if (boundEmail || boundPhone) {
+      const emailOk = boundEmail && email && email === boundEmail
+      const phoneOk = boundPhone && claimedPhone.length >= 6 && claimedPhone === boundPhone
+      if (!emailOk && !phoneOk) throw errors.notFound('Access code not found')
+    }
+
+    const redeemable = canRedeemAccessCode(accessCode)
+    return {
+      data: {
+        id: accessCode.id,
+        code: accessCode.code,
+        type: accessCode.type,
+        status: accessCode.status,
+        fullName: accessCode.fullName,
+        attendeeCategory: accessCode.attendeeCategory,
+        ticketTypeId: accessCode.ticketTypeId,
+        maxRedemptions: accessCode.maxRedemptions,
+        redemptionCount: accessCode.redemptionCount,
+        expiresAt: accessCode.expiresAt,
+        redeemable: redeemable.ok,
+        reason: redeemable.ok ? null : redeemable.reason,
+      },
+    }
+  })
+
+  app.post('/events/:eventId/access-codes/redeem', async (req) => {
+    const { eventId } = req.params as { eventId: string }
+    const body = z.object({
+      code: z.string().min(3),
+      name: z.string().min(2),
+      email: z.string().email().optional().or(z.literal('').transform(() => undefined)),
+      phone: z.string().optional(),
+    }).parse(req.body)
+
+    const event = await prisma.event.findUnique({ where: { id: eventId }, select: { id: true, status: true } })
+    if (!event || !['PUBLISHED', 'LIVE', 'COMPLETED'].includes(event.status)) throw errors.notFound('Event not found')
+
+    const result = await redeemAccessCode({
+      eventId,
+      codeRaw: body.code,
+      fullName: body.name,
+      email: body.email ?? null,
+      phone: body.phone ?? null,
+      sourceIp: req.ip,
+    })
+    return { data: { ok: true, reservationCode: result.ticket.reservationCode ?? null, credentialCode: result.credential.code, attendeeId: result.attendee.id, ticketId: result.ticket.id } }
+  })
+
   // ── Reservation status lookup (re-fetch QR after approval) ──
   app.get('/events/:eventId/reservations/status', async (req) => {
     const { eventId } = req.params as { eventId: string }
@@ -457,6 +564,7 @@ export async function publicRoutes(app: FastifyInstance) {
       include: {
         attendee: { select: { name: true, email: true } },
         ticketType: { select: { name: true, price: true } },
+        paymentProvider: { select: { id: true, name: true } },
         credential: { select: { id: true, code: true, status: true } },
       },
     })
@@ -467,6 +575,9 @@ export async function publicRoutes(app: FastifyInstance) {
         reservationCode: reservationCodeOf(ticket) ?? code,
         approval: reservationApprovalOf(ticket),
         paymentStatus: reservationPaymentOf(ticket),
+        paymentProvider: (ticket as any).paymentProvider ?? null,
+        paymentReference: (ticket as any).paymentReference ?? null,
+        paymentReviewNote: (ticket as any).paymentReviewNote ?? null,
         deliveryStatus: (ticket as any).deliveryStatus ?? null,
         ticketStatus: ticket.status,
         price: ticket.price?.toString() ?? '0',

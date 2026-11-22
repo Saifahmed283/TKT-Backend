@@ -69,12 +69,24 @@ export const PERMISSIONS = {
   'credential.revoke': 'Revoke credentials',
   'credential.export': 'Export credentials',
 
+  // Access codes / VIP / guest controls
+  'access_code.view': 'View access codes',
+  'access_code.create': 'Create access codes',
+  'access_code.update': 'Update access codes',
+  'access_code.revoke': 'Revoke access codes',
+  'access_code.redeem': 'Redeem access codes',
+
   // Access
   'access.scan': 'Scan credentials',
   'access.validate': 'Validate access decisions',
   'access.override': 'Override access decisions',
   'access.revoke': 'Revoke access',
   'access.logs.view': 'View access logs',
+
+  // Devices / scan ops
+  'device.view': 'View devices',
+  'device.manage': 'Register and manage devices',
+  'device.heartbeat': 'Send device heartbeat',
 
   // Tasks
   'task.view': 'View tasks',
@@ -111,6 +123,16 @@ export const PERMISSIONS = {
   'payment.view': 'View payments',
   'expense.create': 'Create expenses',
   'refund.process': 'Process refunds',
+
+  // Workforce / recruitment / ID ops
+  'workforce.view': 'View workforce and recruitment records',
+  'workforce.manage': 'Manage workforce applications and staff profiles',
+  'workforce.convert': 'Convert recruitment applicants into staff',
+  'workforce.id.issue': 'Issue staff ID tokens/cards',
+
+  // Integrations / extras
+  'integration.view': 'View integrations and event extras',
+  'integration.manage': 'Manage integrations and event extras',
 } as const
 
 export type Permission = keyof typeof PERMISSIONS
@@ -203,11 +225,17 @@ export const BASE_ROLES: BaseRoleDefinition[] = [
       'incident.escalate',
       'incident.resolve',
       'attendee.view',
+      'workforce.view',
+      'workforce.manage',
+      'workforce.id.issue',
+      'integration.view',
+      'integration.manage',
       'message.send',
       'announcement.publish',
       'report.view',
       'notification.read',
       'area.view',
+      'device.view',
       'schedule.view',
     ],
   },
@@ -226,6 +254,10 @@ export const BASE_ROLES: BaseRoleDefinition[] = [
       'credential.view',
       'credential.issue',
       'credential.suspend',
+      'access_code.view',
+      'access_code.create',
+      'access_code.update',
+      'access_code.redeem',
       'incident.create',
       'incident.update',
       'message.send',
@@ -245,6 +277,8 @@ export const BASE_ROLES: BaseRoleDefinition[] = [
       'credential.view',
       'attendee.view',
       'area.view',
+      'device.view',
+      'device.heartbeat',
       'incident.create',
       'notification.read',
       'schedule.view',
@@ -400,6 +434,11 @@ export const BASE_ROLES: BaseRoleDefinition[] = [
       'attendee.update',
       'credential.view',
       'credential.issue',
+      'access_code.view',
+      'access_code.create',
+      'access_code.update',
+      'access_code.revoke',
+      'access_code.redeem',
       'area.view',
       'schedule.view',
       'schedule.update',
