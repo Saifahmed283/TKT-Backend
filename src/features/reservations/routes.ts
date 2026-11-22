@@ -67,7 +67,7 @@ export async function reservationRoutes(app: FastifyInstance) {
 
     return {
       data: {
-        rows: rows.map((t) => ({
+        rows: rows.map((t: (typeof rows)[number]) => ({
           id: t.id,
           status: t.status,
           reservationCode: reservationCodeOf(t),

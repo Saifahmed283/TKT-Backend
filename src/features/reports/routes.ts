@@ -29,11 +29,13 @@ export async function reportRoutes(app: FastifyInstance) {
       dayMap.set(day, (dayMap.get(day) ?? 0) + row._count)
     }
 
+    type AttendanceStatusRow = (typeof byStatus)[number]
+    type AttendanceCategoryRow = (typeof byCategory)[number]
     return {
       data: {
         total,
-        byStatus: byStatus.map((r) => ({ status: r.status, count: r._count })),
-        byCategory: byCategory.map((r) => ({ category: r.category ?? 'unspecified', count: r._count })),
+        byStatus: byStatus.map((r: AttendanceStatusRow) => ({ status: r.status, count: r._count })),
+        byCategory: byCategory.map((r: AttendanceCategoryRow) => ({ category: r.category ?? 'unspecified', count: r._count })),
         dailyCheckIns: [...dayMap.entries()].map(([date, count]) => ({ date, count })),
       },
     }
@@ -51,22 +53,27 @@ export async function reportRoutes(app: FastifyInstance) {
       prisma.accessLog.findMany({ where: { eventId }, select: { timestamp: true } }),
     ])
 
+    type HourRow = (typeof byHour)[number]
+    type AreaGroup = (typeof byArea)[number]
+    type ResultRow = (typeof byResult)[number]
+    type ReasonRow = (typeof byReason)[number]
+    type AreaInfo = { id: string; name: string }
     const hourMap = new Map<number, number>()
-    for (const row of byHour) {
+    for (const row of byHour as HourRow[]) {
       const h = row.timestamp.getHours()
       hourMap.set(h, (hourMap.get(h) ?? 0) + 1)
     }
 
-    const areaIds = byArea.map((r) => r.areaId).filter(Boolean) as string[]
-    const areas = areaIds.length
+    const areaIds = byArea.map((r: AreaGroup) => r.areaId).filter((id: string | null): id is string => Boolean(id))
+    const areas: AreaInfo[] = areaIds.length
       ? await prisma.area.findMany({ where: { id: { in: areaIds } }, select: { id: true, name: true } })
       : []
 
     return {
       data: {
-        byResult: byResult.map((r) => ({ result: r.result, count: r._count })),
-        byReason: byReason.map((r) => ({ reason: r.reason, count: r._count })),
-        byArea: byArea.map((r) => ({ areaId: r.areaId, areaName: areas.find((a) => a.id === r.areaId)?.name ?? 'unknown', count: r._count })),
+        byResult: byResult.map((r: ResultRow) => ({ result: r.result, count: r._count })),
+        byReason: byReason.map((r: ReasonRow) => ({ reason: r.reason, count: r._count })),
+        byArea: byArea.map((r: AreaGroup) => ({ areaId: r.areaId, areaName: areas.find((a: AreaInfo) => a.id === r.areaId)?.name ?? 'unknown', count: r._count })),
         byHour: [...hourMap.entries()].sort((a, b) => a[0] - b[0]).map(([hour, count]) => ({ hour, count })),
       },
     }
@@ -85,15 +92,19 @@ export async function reportRoutes(app: FastifyInstance) {
       prisma.incident.findMany({ where: { eventId, resolvedAt: { not: null } }, select: { createdAt: true, resolvedAt: true } }),
     ])
 
+    type IncidentResolution = (typeof avgResolutionHours)[number]
+    type IncidentTypeRow = (typeof byType)[number]
+    type IncidentPriorityRow = (typeof byPriority)[number]
+    type IncidentStatusRow = (typeof byStatus)[number]
     const avgMs = avgResolutionHours.length
-      ? avgResolutionHours.reduce((acc, i) => acc + (i.resolvedAt!.getTime() - i.createdAt.getTime()), 0) / avgResolutionHours.length
+      ? avgResolutionHours.reduce((acc: number, i: IncidentResolution) => acc + ((i.resolvedAt?.getTime() ?? i.createdAt.getTime()) - i.createdAt.getTime()), 0) / avgResolutionHours.length
       : 0
 
     return {
       data: {
-        byType: byType.map((r) => ({ type: r.type, count: r._count })),
-        byPriority: byPriority.map((r) => ({ priority: r.priority, count: r._count })),
-        byStatus: byStatus.map((r) => ({ status: r.status, count: r._count })),
+        byType: byType.map((r: IncidentTypeRow) => ({ type: r.type, count: r._count })),
+        byPriority: byPriority.map((r: IncidentPriorityRow) => ({ priority: r.priority, count: r._count })),
+        byStatus: byStatus.map((r: IncidentStatusRow) => ({ status: r.status, count: r._count })),
         open,
         avgResolutionMinutes: Math.round(avgMs / 60000),
       },
@@ -113,8 +124,12 @@ export async function reportRoutes(app: FastifyInstance) {
       prisma.task.count({ where: { eventId, status: 'DONE' } }),
     ])
 
-    const teamIds = byTeam.map((r) => r.teamId).filter(Boolean) as string[]
-    const teams = teamIds.length
+    type StatusRow = (typeof byStatus)[number]
+    type PriorityRow = (typeof byPriority)[number]
+    type TeamRow = (typeof byTeam)[number]
+    type TeamName = { id: string; name: string }
+    const teamIds = byTeam.map((r: TeamRow) => r.teamId).filter((id: string | null): id is string => Boolean(id))
+    const teams: TeamName[] = teamIds.length
       ? await prisma.team.findMany({ where: { id: { in: teamIds } }, select: { id: true, name: true } })
       : []
 
@@ -123,9 +138,9 @@ export async function reportRoutes(app: FastifyInstance) {
         total,
         done,
         completionRate: total ? Math.round((done / total) * 100) : 0,
-        byStatus: byStatus.map((r) => ({ status: r.status, count: r._count })),
-        byPriority: byPriority.map((r) => ({ priority: r.priority, count: r._count })),
-        byTeam: byTeam.map((r) => ({ teamId: r.teamId, teamName: teams.find((t) => t.id === r.teamId)?.name ?? 'unassigned', count: r._count })),
+        byStatus: byStatus.map((r: StatusRow) => ({ status: r.status, count: r._count })),
+        byPriority: byPriority.map((r: PriorityRow) => ({ priority: r.priority, count: r._count })),
+        byTeam: byTeam.map((r: TeamRow) => ({ teamId: r.teamId, teamName: teams.find((t: TeamName) => t.id === r.teamId)?.name ?? 'unassigned', count: r._count })),
       },
     }
   })
@@ -143,9 +158,12 @@ export async function reportRoutes(app: FastifyInstance) {
       prisma.ticket.groupBy({ by: ['ticketTypeId'], where: { eventId, status: { in: ['ACTIVE', 'CONSUMED', 'ISSUED'] } }, _count: true }),
     ])
 
-    const revenue = tickets.reduce((acc, t) => acc + (Number(t.price) || 0), 0)
-    const typeIds = byType.map((r) => r.ticketTypeId)
-    const types = typeIds.length
+    type FinanceTicket = (typeof tickets)[number]
+    type FinanceByType = (typeof byType)[number]
+    type TicketTypeInfo = { id: string; name: string; price: unknown }
+    const revenue = tickets.reduce((acc: number, t: FinanceTicket) => acc + (Number(t.price) || 0), 0)
+    const typeIds = byType.map((r: FinanceByType) => r.ticketTypeId)
+    const types: TicketTypeInfo[] = typeIds.length
       ? await prisma.ticketType.findMany({ where: { id: { in: typeIds } }, select: { id: true, name: true, price: true } })
       : []
 
@@ -153,12 +171,12 @@ export async function reportRoutes(app: FastifyInstance) {
       data: {
         revenue,
         ticketsSold: tickets.length,
-        byType: byType.map((r) => ({
+        byType: byType.map((r: FinanceByType) => ({
           ticketTypeId: r.ticketTypeId,
-          name: types.find((t) => t.id === r.ticketTypeId)?.name ?? 'unknown',
-          price: Number(types.find((t) => t.id === r.ticketTypeId)?.price ?? 0),
+          name: types.find((t: TicketTypeInfo) => t.id === r.ticketTypeId)?.name ?? 'unknown',
+          price: Number(types.find((t: TicketTypeInfo) => t.id === r.ticketTypeId)?.price ?? 0),
           sold: r._count,
-          subtotal: r._count * Number(types.find((t) => t.id === r.ticketTypeId)?.price ?? 0),
+          subtotal: r._count * Number(types.find((t: TicketTypeInfo) => t.id === r.ticketTypeId)?.price ?? 0),
         })),
       },
     }
@@ -181,15 +199,19 @@ export async function reportRoutes(app: FastifyInstance) {
 
     const attendees = await prisma.attendee.count({ where: { eventId } })
     const checkedIn = await prisma.attendee.count({ where: { eventId, status: 'CHECKED_IN' } })
-    const granted = accessRows.filter((r) => r.result === 'GRANTED').reduce((a, r) => a + r._count, 0)
-    const denied = accessRows.filter((r) => r.result === 'DENIED').reduce((a, r) => a + r._count, 0)
+    type AccessRow = (typeof accessRows)[number]
+    type IncidentRow = (typeof incidentRows)[number]
+    type TaskRow = (typeof taskRows)[number]
+    type TicketRow = (typeof tickets)[number]
+    const granted = accessRows.filter((r: AccessRow) => r.result === 'GRANTED').reduce((a: number, r: AccessRow) => a + r._count, 0)
+    const denied = accessRows.filter((r: AccessRow) => r.result === 'DENIED').reduce((a: number, r: AccessRow) => a + r._count, 0)
     const totalAccess = granted + denied
-    const open = incidentRows.filter((r) => ['OPEN', 'ASSIGNED', 'IN_PROGRESS', 'ESCALATED'].includes(r.status)).reduce((a, r) => a + r._count, 0)
-    const resolved = incidentRows.filter((r) => r.status === 'RESOLVED').reduce((a, r) => a + r._count, 0)
-    const incidentTotal = incidentRows.reduce((a, r) => a + r._count, 0)
-    const done = taskRows.filter((r) => r.status === 'DONE').reduce((a, r) => a + r._count, 0)
-    const taskTotal = taskRows.reduce((a, r) => a + r._count, 0)
-    const revenue = tickets.reduce((acc, t) => acc + (Number(t.price) || 0), 0)
+    const open = incidentRows.filter((r: IncidentRow) => ['OPEN', 'ASSIGNED', 'IN_PROGRESS', 'ESCALATED'].includes(r.status)).reduce((a: number, r: IncidentRow) => a + r._count, 0)
+    const resolved = incidentRows.filter((r: IncidentRow) => r.status === 'RESOLVED').reduce((a: number, r: IncidentRow) => a + r._count, 0)
+    const incidentTotal = incidentRows.reduce((a: number, r: IncidentRow) => a + r._count, 0)
+    const done = taskRows.filter((r: TaskRow) => r.status === 'DONE').reduce((a: number, r: TaskRow) => a + r._count, 0)
+    const taskTotal = taskRows.reduce((a: number, r: TaskRow) => a + r._count, 0)
+    const revenue = tickets.reduce((acc: number, t: TicketRow) => acc + (Number(t.price) || 0), 0)
     const byReasonMap = new Map<string, number>()
     for (const r of accessRows) {
       if (r.result !== 'DENIED') continue
@@ -197,13 +219,16 @@ export async function reportRoutes(app: FastifyInstance) {
       byReasonMap.set(key, (byReasonMap.get(key) ?? 0) + r._count)
     }
 
+    type SeverityCount = { severity: string; _count: number }
+    type PriorityCount = { priority: string; _count: number }
+
     return {
       data: {
         attendance: {
           totalAttendees: attendees,
           checkedIn,
           rate: attendees ? Math.round((checkedIn / attendees) * 100) : 0,
-          byStatus: attendanceRows.map((r) => ({ status: r.status, _count: r._count })),
+          byStatus: attendanceRows.map((r: (typeof attendanceRows)[number]) => ({ status: r.status, _count: r._count })),
         },
         access: {
           total: totalAccess,
@@ -217,25 +242,25 @@ export async function reportRoutes(app: FastifyInstance) {
           open,
           resolved,
           bySeverity: incidentRows
-            .filter((r) => r.priority)
-            .reduce((acc, r) => {
+            .filter((r: IncidentRow): r is IncidentRow & { priority: string } => r.priority !== null)
+            .reduce((acc: SeverityCount[], r: IncidentRow & { priority: string }) => {
               const existing = acc.find((x) => x.severity === r.priority)
               if (existing) existing._count += r._count
               else acc.push({ severity: r.priority, _count: r._count })
               return acc
-            }, [] as { severity: string; _count: number }[]),
+            }, [] as SeverityCount[]),
         },
         tasks: {
           total: taskTotal,
           done,
           byPriority: taskRows
-            .filter((r) => r.priority)
-            .reduce((acc, r) => {
+            .filter((r: TaskRow): r is TaskRow & { priority: string } => r.priority !== null)
+            .reduce((acc: PriorityCount[], r: TaskRow & { priority: string }) => {
               const existing = acc.find((x) => x.priority === r.priority)
               if (existing) existing._count += r._count
               else acc.push({ priority: r.priority, _count: r._count })
               return acc
-            }, [] as { priority: string; _count: number }[]),
+            }, [] as PriorityCount[]),
         },
         finance: {
           totalRevenue: revenue,

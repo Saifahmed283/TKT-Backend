@@ -15,7 +15,7 @@ const createSchema = z.object({
   type: z.enum(AREA_TYPES).default('OTHER'),
   accessPolicy: z.enum(POLICIES).default('OPEN'),
   capacity: z.number().int().positive().optional(),
-  location: z.record(z.unknown()).optional(),
+  location: z.record(z.string(), z.unknown()).optional(),
 })
 
 const updateSchema = createSchema.partial().extend({ active: z.boolean().optional() })

@@ -115,8 +115,9 @@ export async function incidentRoutes(app: FastifyInstance) {
         where: { eventId, status: 'ACTIVE', role: { scope: { in: ['EVENT', 'TEAM'] } } },
         select: { userId: true },
       })
+      type LeaderRow = (typeof leaders)[number]
       await prisma.notification.createMany({
-        data: leaders.map((m) => ({
+        data: leaders.map((m: LeaderRow) => ({
           userId: m.userId, eventId, type: 'INCIDENT_CRITICAL',
           title: `${body.priority} incident created: ${body.title}`,
           body: `${code} Â· ${body.type} Â· ${event.name}`,

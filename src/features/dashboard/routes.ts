@@ -29,16 +29,16 @@ export async function dashboardRoutes(app: FastifyInstance) {
     if (!user) throw errors.unauthorized()
 
     const adminOrgIds = user.orgMemberships
-      .filter((m) => m.role === 'OWNER' || m.role === 'ADMIN')
-      .map((m) => m.orgId)
-    const memberEventIds = user.eventMemberships.map((m) => m.eventId)
+      .filter((m: (typeof user.orgMemberships)[number]) => m.role === 'OWNER' || m.role === 'ADMIN')
+      .map((m: (typeof user.orgMemberships)[number]) => m.orgId)
+    const memberEventIds = user.eventMemberships.map((m: (typeof user.eventMemberships)[number]) => m.eventId)
     const eventWhere =
       user.platformRole === 'super_admin'
         ? {}
         : { OR: [{ orgId: { in: adminOrgIds } }, { id: { in: memberEventIds } }] }
 
     const events = await prisma.event.findMany({ where: eventWhere, select: { id: true } })
-    const ids = events.map((e) => e.id)
+    const ids = events.map((e: (typeof events)[number]) => e.id)
 
     const empty = {
       kpis: {

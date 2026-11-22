@@ -70,8 +70,9 @@ export async function communicationRoutes(app: FastifyInstance) {
       where.roleId = { in: body.targetAudience.roleIds }
     }
     const members = await prisma.eventMember.findMany({ where, select: { userId: true } })
+    type CommMember = (typeof members)[number]
     await prisma.notification.createMany({
-      data: members.map((m) => ({
+      data: members.map((m: CommMember) => ({
         userId: m.userId, eventId, type: 'ANNOUNCEMENT',
         title: body.title,
         body: body.body.slice(0, 140),

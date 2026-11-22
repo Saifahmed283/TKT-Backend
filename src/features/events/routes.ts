@@ -43,8 +43,8 @@ const updateEventSchema = z.object({
   venueName: z.string().nullable().optional(),
   venueAddress: z.string().nullable().optional(),
   coverImageUrl: z.string().nullable().optional(),
-  branding: z.record(z.unknown()).optional(),
-  settings: z.record(z.unknown()).optional(),
+  branding: z.record(z.string(), z.unknown()).optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
 })
 
 const statusSchema = z.object({ status: z.enum(EVENT_STATUSES) })
@@ -86,9 +86,9 @@ export async function eventRoutes(app: FastifyInstance) {
     if (!user) throw errors.unauthorized()
 
     const adminOrgIds = user.orgMemberships
-      .filter((m) => m.role === 'OWNER' || m.role === 'ADMIN')
-      .map((m) => m.orgId)
-    const memberEventIds = user.eventMemberships.map((m) => m.eventId)
+      .filter((m: (typeof user.orgMemberships)[number]) => m.role === 'OWNER' || m.role === 'ADMIN')
+      .map((m: (typeof user.orgMemberships)[number]) => m.orgId)
+    const memberEventIds = user.eventMemberships.map((m: (typeof user.eventMemberships)[number]) => m.eventId)
 
     const events = await prisma.event.findMany({
       where:
@@ -217,8 +217,9 @@ export async function eventRoutes(app: FastifyInstance) {
         where: { eventId, status: 'ACTIVE' },
         select: { userId: true },
       })
+      type EventMemberRow = (typeof members)[number]
       await prisma.notification.createMany({
-        data: members.map((m) => ({
+        data: members.map((m: EventMemberRow) => ({
           userId: m.userId, eventId,
           type: 'EVENT_LIVE',
           title: `${updated.name} is now LIVE`,
@@ -432,10 +433,11 @@ export async function eventRoutes(app: FastifyInstance) {
       },
       orderBy: { createdAt: 'asc' },
     })
+    type AssignedMember = (typeof members)[number]
     const assigned = new Set(
-      (await prisma.eventMember.findMany({ where: { eventId }, select: { userId: true } })).map((m) => m.userId),
+      (await prisma.eventMember.findMany({ where: { eventId }, select: { userId: true } })).map((m: { userId: string }) => m.userId),
     )
-    return { data: members.map((m) => ({ ...m.user, assigned: assigned.has(m.userId) })) }
+    return { data: members.map((m: AssignedMember) => ({ ...m.user, assigned: assigned.has(m.userId) })) }
   })
 
   app.get('/:eventId/overview', async (req) => {
@@ -498,7 +500,7 @@ export async function eventRoutes(app: FastifyInstance) {
         },
         incidentsByPriority,
         tasksByStatus,
-        areaScans: areaScans.map((a) => ({ areaId: a.areaId, count: a._count })),
+        areaScans: areaScans.map((a: (typeof areaScans)[number]) => ({ areaId: a.areaId, count: a._count })),
         recentAccess,
         recentIncidents,
         recentTasks,

@@ -65,7 +65,8 @@ export async function presenceRoutes(app: FastifyInstance) {
     })
 
     const now = Date.now()
-    const rows = members.map((m) => {
+    type PresenceMember = (typeof members)[number]
+    const rows = members.map((m: PresenceMember) => {
       const p = presence.get(m.id)
       return {
         memberId: m.id,

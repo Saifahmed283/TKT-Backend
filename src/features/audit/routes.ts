@@ -69,6 +69,7 @@ export async function auditRoutes(app: FastifyInstance) {
       orderBy: { _count: { action: 'desc' } },
       take: 100,
     })
-    return { data: rows.map((r) => ({ action: r.action, count: r._count })) }
+    type AuditActionRow = (typeof rows)[number]
+    return { data: rows.map((r: AuditActionRow) => ({ action: r.action, count: r._count })) }
   })
 }

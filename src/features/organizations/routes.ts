@@ -20,7 +20,7 @@ const updateOrgSchema = z.object({
   name: z.string().min(2).optional(),
   description: z.string().nullable().optional(),
   logoUrl: z.string().nullable().optional(),
-  settings: z.record(z.unknown()).optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
 })
 
 const inviteSchema = z.object({
@@ -73,8 +73,9 @@ export async function organizationRoutes(app: FastifyInstance) {
       },
       orderBy: { createdAt: 'asc' },
     })
+    type OrgRow = (typeof rows)[number]
     return {
-      data: rows.map((r) => ({
+      data: rows.map((r: OrgRow) => ({
         ...r.org,
         _count: { events: r.org._count.events, members: r.org._count.members },
         myRole: r.role,

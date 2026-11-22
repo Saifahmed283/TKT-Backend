@@ -83,7 +83,7 @@ export async function publicRoutes(app: FastifyInstance) {
     const scope = query.scope === 'past' ? 'past' : 'upcoming'
     const now = new Date()
 
-    const where: Prisma.EventWhereInput =
+    const where =
       scope === 'past'
         ? { status: { in: ['COMPLETED', 'ARCHIVED'] } }
         : { status: 'PUBLISHED', startAt: { gte: now } }
@@ -114,15 +114,17 @@ export async function publicRoutes(app: FastifyInstance) {
     })
 
     return {
-      data: events.map((e) => {
+      data: events.map((e: (typeof events)[number]) => {
         const settings = (e.settings as Record<string, any>) ?? {}
         const reg = (settings.registration as RegSettings) ?? {}
-        const ticketTypes = e.ticketTypes.map((t) => {
+        type EventTicketType = (typeof e.ticketTypes)[number]
+        type PublicTicketType = { id: string; name: string; price: string; quota: number | null; sold: number; remaining: number | null; soldOut: boolean }
+        const ticketTypes: PublicTicketType[] = e.ticketTypes.map((t: EventTicketType) => {
           const sold = t._count.tickets
           const remaining = t.quota != null ? Math.max(0, t.quota - sold) : null
           return { id: t.id, name: t.name, price: t.price?.toString() ?? '0', quota: t.quota, sold, remaining, soldOut: t.quota != null && sold >= t.quota }
         })
-        const soldOut = ticketTypes.some((t) => t.quota != null) && ticketTypes.every((t) => t.soldOut)
+        const soldOut = ticketTypes.some((t: PublicTicketType) => t.quota != null) && ticketTypes.every((t: PublicTicketType) => t.soldOut)
         return {
           id: e.id,
           name: e.name,
@@ -179,7 +181,9 @@ export async function publicRoutes(app: FastifyInstance) {
     }
     const settings = (event.settings as Record<string, any>) ?? {}
     const reg = (settings.registration as RegSettings) ?? {}
-    const ticketTypes = event.ticketTypes.map((t) => {
+    type DetailTicketType = (typeof event.ticketTypes)[number]
+    type DetailPublicTicket = { id: string; name: string; description: string | null; price: string; quota: number | null; sold: number; remaining: number | null; soldOut: boolean }
+    const ticketTypes: DetailPublicTicket[] = event.ticketTypes.map((t: DetailTicketType) => {
       const sold = t._count.tickets
       return {
         id: t.id,
@@ -192,7 +196,7 @@ export async function publicRoutes(app: FastifyInstance) {
         soldOut: t.quota != null && sold >= t.quota,
       }
     })
-    const soldOut = ticketTypes.some((t) => t.quota != null) && ticketTypes.every((t) => t.soldOut)
+    const soldOut = ticketTypes.some((t: DetailPublicTicket) => t.quota != null) && ticketTypes.every((t: DetailPublicTicket) => t.soldOut)
     return {
       data: {
         id: event.id,
@@ -413,7 +417,7 @@ export async function publicRoutes(app: FastifyInstance) {
         scans,
         orgs,
         reviews: { count: reviews._count, average: reviews._avg.rating ?? 0 },
-        topEvents: topEvents.map((e) => ({
+        topEvents: topEvents.map((e: (typeof topEvents)[number]) => ({
           id: e.id,
           name: e.name,
           type: e.type,

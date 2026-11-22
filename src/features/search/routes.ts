@@ -29,9 +29,9 @@ export async function searchRoutes(app: FastifyInstance) {
     if (!user) return { data: {} }
 
     const adminOrgIds = user.orgMemberships
-      .filter((m) => m.role === 'OWNER' || m.role === 'ADMIN')
-      .map((m) => m.orgId)
-    const memberEventIds = user.eventMemberships.map((m) => m.eventId)
+      .filter((m: (typeof user.orgMemberships)[number]) => m.role === 'OWNER' || m.role === 'ADMIN')
+      .map((m: (typeof user.orgMemberships)[number]) => m.orgId)
+    const memberEventIds = user.eventMemberships.map((m: (typeof user.eventMemberships)[number]) => m.eventId)
     const eventAccess = user.platformRole === 'super_admin'
       ? {}
       : { OR: [{ orgId: { in: adminOrgIds } }, { id: { in: memberEventIds } }] }

@@ -52,7 +52,7 @@ export async function resolveEventContext(
       where: { member: { eventId, userId } },
       select: { areaId: true },
     })
-    areaIds = rows.map((r) => r.areaId)
+    areaIds = rows.map((r: (typeof rows)[number]) => r.areaId)
   }
 
   return {

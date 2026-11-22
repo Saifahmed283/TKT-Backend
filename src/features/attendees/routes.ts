@@ -14,7 +14,7 @@ const createSchema = z.object({
   phone: z.string().optional(),
   category: z.string().optional(),
   notes: z.string().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 })
 
 const updateSchema = createSchema.partial().extend({
