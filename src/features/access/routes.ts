@@ -5,9 +5,9 @@ import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
-import { verifyCredentialIntegrity, verifyPayload, publicKeyPem } from '../../lib/credentials.js'
+import { verifyCredentialIntegrity, verifyPayload, publicKeyPem, credentialCode, type CredentialPayload } from '../../lib/credentials.js'
 import { validateAccess, type AccessDecision } from '../../lib/access-engine.js'
-import { generateKeyPairSync, createPublicKey, createPrivateKey, sign, verify } from 'node:crypto'
+import { createPublicKey, verify } from 'node:crypto'
 import { publish, channelFor } from '../../lib/realtime.js'
 import { logActivity } from '../../lib/activity.js'
 
@@ -16,6 +16,144 @@ const scanSchema = z.object({
   areaId: z.string(),
   deviceId: z.string().optional(),
 })
+
+export type ResolvedScan = {
+  credential: any | null
+  decoded: boolean
+  verified: boolean
+  tampered: boolean
+  parseSource: 'tkt1' | 'raw_credential' | 'reservation_code' | 'unknown'
+  lookupMethod: 'credential_id' | 'credential_code' | 'reservation_code' | 'none'
+  payload: CredentialPayload | null
+}
+
+export function decodeScanCandidates(raw: string): Array<{ code: string; source: ResolvedScan['parseSource'] }> {
+  const candidates: Array<{ code: string; source: ResolvedScan['parseSource'] }> = []
+  const seen = new Set<string>()
+  const push = (value: string | null | undefined, source: ResolvedScan['parseSource']) => {
+    const code = String(value ?? '').trim()
+    if (!code || seen.has(code)) return
+    seen.add(code)
+    candidates.push({ code, source })
+  }
+
+  push(raw, 'unknown')
+
+  try {
+    const decoded = decodeURIComponent(raw)
+    if (decoded !== raw) push(decoded, 'unknown')
+  } catch {}
+
+  try {
+    const b64 = Buffer.from(raw, 'base64url').toString('utf8').trim()
+    if (b64 && b64 !== raw && (b64.startsWith('TKT1.') || b64.startsWith('{') || b64.startsWith('['))) {
+      push(b64, b64.startsWith('TKT1.') ? 'tkt1' : 'unknown')
+    }
+  } catch {}
+
+  for (const current of [...candidates]) {
+    if (!current.code.startsWith('{')) continue
+    try {
+      const parsed = JSON.parse(current.code) as any
+      push(parsed?.code, current.code.startsWith('TKT1.') ? 'tkt1' : 'raw_credential')
+      push(parsed?.credentialCode, 'raw_credential')
+      push(parsed?.reservationCode, 'reservation_code')
+      push(parsed?.ticketCode, 'reservation_code')
+      push(parsed?.payload?.code, 'raw_credential')
+    } catch {}
+  }
+
+  return candidates.map((c) => ({
+    ...c,
+    source: c.code.startsWith('TKT1.') ? 'tkt1' : c.source,
+  }))
+}
+
+async function resolveCredentialByCode(code: string, eventId: string) {
+  const resolved = await verifyCredentialIntegrity(code, eventId)
+  if (resolved?.credential) {
+    const credential = await prisma.credential.findUnique({
+      where: { id: resolved.credential.id },
+      include: { attendee: true, ticket: { include: { ticketType: true } } },
+    })
+    const tampered = resolved.decoded ? !resolved.verified : false
+    return {
+      credential,
+      decoded: resolved.decoded,
+      verified: resolved.verified,
+      tampered,
+      parseSource: resolved.decoded ? 'tkt1' : 'raw_credential',
+      lookupMethod: resolved.decoded ? 'credential_id' : 'credential_code',
+      payload: resolved.payload,
+    } satisfies ResolvedScan
+  }
+
+  const byReservationCode = await prisma.ticket.findFirst({
+    where: {
+      eventId,
+      OR: [{ reservationCode: code }, { metadata: { path: ['reservationCode'], equals: code } }],
+    },
+    select: {
+      credential: { include: { attendee: true, ticket: { include: { ticketType: true } } } },
+    },
+  })
+  if (byReservationCode?.credential) {
+    return {
+      credential: byReservationCode.credential,
+      decoded: false,
+      verified: false,
+      tampered: false,
+      parseSource: 'reservation_code',
+      lookupMethod: 'reservation_code',
+      payload: null,
+    } satisfies ResolvedScan
+  }
+
+  return null
+}
+
+async function resolveScanCredential(rawCode: string, eventId: string): Promise<ResolvedScan> {
+  const candidates = decodeScanCandidates(rawCode)
+  let tampered: ResolvedScan | null = null
+
+  for (const candidate of candidates) {
+    const resolved = await resolveCredentialByCode(candidate.code, eventId)
+    if (!resolved) continue
+    if (resolved.tampered) {
+      tampered = tampered ?? resolved
+      continue
+    }
+    return resolved
+  }
+
+  if (tampered) return tampered
+
+  // Keep a parse hint for valid-looking TKT1 payloads that don't resolve in DB
+  for (const candidate of candidates) {
+    const decoded = credentialCode.decode(candidate.code)
+    if (decoded) {
+      return {
+        credential: null,
+        decoded: true,
+        verified: verifyPayload(decoded.payload, decoded.signature),
+        tampered: false,
+        parseSource: 'tkt1',
+        lookupMethod: 'none',
+        payload: decoded.payload,
+      }
+    }
+  }
+
+  return {
+    credential: null,
+    decoded: false,
+    verified: false,
+    tampered: false,
+    parseSource: candidates.some((c) => c.source === 'reservation_code') ? 'reservation_code' : 'unknown',
+    lookupMethod: 'none',
+    payload: null,
+  }
+}
 
 const registerSchema = z.object({
   deviceName: z.string().min(2),
@@ -55,22 +193,27 @@ export async function accessRoutes(app: FastifyInstance) {
       throw errors.badRequest('Area not found in this event')
     }
 
-    const resolved = await verifyCredentialIntegrity(body.code, eventId)
-    let credential: any = resolved?.credential ?? null
-    if (credential && resolved?.decoded) {
-      const sigOk = verifyPayload(resolved.payload!, resolved.signature!)
-      if (!sigOk) {
-        // Tampered payload â€” reject without trusting DB fallback
-        const decision: AccessDecision = { result: 'DENIED', reason: 'INVALID_CREDENTIAL' }
-        await logAccess(eventId, body, credential, decision, ctx, req, null, { tampered: true })
-        return reply.send({ data: { ...decision, credentialId: credential.id, attendee: null } })
-      }
-    }
+    const resolvedScan = await resolveScanCredential(body.code, eventId)
+    let credential: any = resolvedScan.credential
 
-    if (credential) {
-      credential = await prisma.credential.findUnique({
-        where: { id: credential.id },
-        include: { attendee: true, ticket: { include: { ticketType: true } } },
+    if (resolvedScan.tampered) {
+      const decision: AccessDecision = { result: 'DENIED', reason: 'INVALID_CREDENTIAL' }
+      await logAccess(eventId, body, credential, decision, ctx, req, area, {
+        tampered: true,
+        parseSource: resolvedScan.parseSource,
+        lookupMethod: resolvedScan.lookupMethod,
+      })
+      return reply.send({
+        data: {
+          ...decision,
+          credentialId: credential?.id ?? null,
+          attendee: credential
+            ? { id: credential.attendee.id, name: credential.attendee.name, category: credential.attendee.category }
+            : null,
+          ticketType: credential?.ticket?.ticketType.name ?? null,
+          parseSource: resolvedScan.parseSource,
+          lookupMethod: resolvedScan.lookupMethod,
+        },
       })
     }
 
@@ -88,6 +231,8 @@ export async function accessRoutes(app: FastifyInstance) {
             attendeeStatus: credential.attendee?.status,
             ticketStatus: credential.ticket?.status ?? null,
             ticketTypeName: credential.ticket?.ticketType.name ?? null,
+            reservationApprovalStatus: credential.ticket?.approvalStatus ?? null,
+            reservationPaymentStatus: credential.ticket?.paymentStatus ?? null,
           }
         : null,
       event: { id: eventId, status: event.status },
@@ -127,7 +272,12 @@ export async function accessRoutes(app: FastifyInstance) {
       }).catch(() => {})
     }
 
-    const log = await logAccess(eventId, body, credential, decision, ctx, req, area, consumeNote ? { consumed: true } : undefined)
+    const log = await logAccess(eventId, body, credential, decision, ctx, req, area, {
+      ...(consumeNote ? { consumed: true } : {}),
+      parseSource: resolvedScan.parseSource,
+      lookupMethod: resolvedScan.lookupMethod,
+      verified: resolvedScan.verified,
+    })
 
     publish(channelFor.access(eventId), 'scan', {
       id: log.id,
@@ -160,6 +310,8 @@ export async function accessRoutes(app: FastifyInstance) {
             }
           : null,
         ticketType: credential?.ticket?.ticketType.name ?? null,
+        parseSource: resolvedScan.parseSource,
+        lookupMethod: resolvedScan.lookupMethod,
       },
     })
   })
@@ -227,10 +379,8 @@ export async function accessRoutes(app: FastifyInstance) {
       }
 
       // Authoritative re-validation
-      const resolved = await verifyCredentialIntegrity(item.code, eventId)
-      const credential = resolved?.credential
-        ? await prisma.credential.findUnique({ where: { id: resolved.credential.id }, include: { attendee: true, ticket: { include: { ticketType: true } } } })
-        : null
+      const resolvedScan = await resolveScanCredential(item.code, eventId)
+      const credential = resolvedScan.credential
       const area = await prisma.area.findUnique({ where: { id: item.areaId } })
 
       const decision = validateAccess({
@@ -246,6 +396,9 @@ export async function accessRoutes(app: FastifyInstance) {
               code: credential.code,
               attendeeStatus: credential.attendee?.status,
               ticketStatus: credential.ticket?.status ?? null,
+              ticketTypeName: credential.ticket?.ticketType.name ?? null,
+              reservationApprovalStatus: credential.ticket?.approvalStatus ?? null,
+              reservationPaymentStatus: credential.ticket?.paymentStatus ?? null,
             }
           : null,
         event: { id: eventId, status: event.status },
@@ -283,15 +436,29 @@ export async function accessRoutes(app: FastifyInstance) {
           operatorUserId: req.user.id,
           deviceId: device.id,
           areaId: area?.id ?? null,
-result: decision.result,
-        reason: decision.reason,
-        timestamp: item.timestamp,
-        offline: true,
-        localSignature: item.signature,
-        metadata: { localId: item.localId, accepted, signatureValid } as any,
+          result: decision.result,
+          reason: decision.reason,
+          timestamp: item.timestamp,
+          offline: true,
+          localSignature: item.signature,
+          metadata: {
+            localId: item.localId,
+            accepted,
+            signatureValid,
+            parseSource: resolvedScan.parseSource,
+            lookupMethod: resolvedScan.lookupMethod,
+            tampered: resolvedScan.tampered,
+          } as any,
         },
       })
-      results.push({ localId: item.localId, accepted, authoritative: decision, credentialId: credential?.id ?? null })
+      results.push({
+        localId: item.localId,
+        accepted,
+        authoritative: decision,
+        credentialId: credential?.id ?? null,
+        parseSource: resolvedScan.parseSource,
+        lookupMethod: resolvedScan.lookupMethod,
+      })
     }
 
     await prisma.device.update({ where: { id: device.id }, data: { lastSeenAt: new Date() } })
@@ -318,7 +485,7 @@ result: decision.result,
         skip: (pageNum - 1) * size,
         take: size,
         select: {
-          id: true, result: true, reason: true, timestamp: true, offline: true,
+          id: true, result: true, reason: true, timestamp: true, offline: true, metadata: true,
           area: { select: { id: true, name: true } },
           operator: { select: { id: true, name: true } },
           attendee: { select: { id: true, name: true } },
@@ -360,7 +527,13 @@ async function logAccess(
     action: decision.result === 'GRANTED' ? 'access.granted' : 'access.denied',
     resourceType: 'access_log',
     resourceId: log.id,
-    newValue: { areaId: body.areaId, credentialId: credential?.id ?? null, reason: decision.reason },
+    newValue: {
+      areaId: body.areaId,
+      credentialId: credential?.id ?? null,
+      reason: decision.reason,
+      parseSource: (metadata as any)?.parseSource ?? null,
+      lookupMethod: (metadata as any)?.lookupMethod ?? null,
+    },
     sourceIp: req.ip,
   })
   return log

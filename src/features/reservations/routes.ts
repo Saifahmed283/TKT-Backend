@@ -3,8 +3,8 @@ import { z } from 'zod'
 import { prisma } from '../../lib/db.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
-import { decideReservation, reservationApprovalOf, reservationCodeOf } from './service.js'
-import { logActivity } from '../../lib/activity.js'
+import { publish, channelFor } from '../../lib/realtime.js'
+import { decideReservation, resendReservationCredential, reservationApprovalOf, reservationCodeOf, reservationPaymentOf } from './service.js'
 
 const listQuerySchema = z.object({
   status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'ALL']).default('PENDING'),
@@ -13,7 +13,10 @@ const listQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
 })
 
-const decisionSchema = z.object({ approved: z.boolean() })
+const decisionSchema = z.object({
+  approved: z.boolean(),
+  reason: z.string().max(280).optional(),
+})
 
 export async function reservationRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate)
@@ -24,25 +27,17 @@ export async function reservationRoutes(app: FastifyInstance) {
     await requirePermission(req, 'event.view', { eventId })
     const { status, q, page, pageSize } = listQuerySchema.parse(req.query)
 
-    const where: any = { eventId, metadata: { path: ['channel'], equals: 'public' } }
+    const where: any = {
+      eventId,
+      OR: [
+        { metadata: { path: ['channel'], equals: 'public' } },
+        { reservationCode: { not: null } },
+        { approvalStatus: { in: ['PENDING', 'APPROVED', 'REJECTED'] } },
+      ],
+    }
+
     if (status !== 'ALL') {
-      if (status === 'PENDING') {
-        where.OR = [
-          { metadata: { path: ['approval'], equals: 'PENDING' } },
-          { metadata: { path: ['approval'], equals: null }, price: { gt: 0 }, status: { in: ['ISSUED', 'ACTIVE'] } },
-        ]
-      } else if (status === 'APPROVED') {
-        where.OR = [
-          { metadata: { path: ['approval'], equals: 'APPROVED' } },
-          { metadata: { path: ['approval'], equals: null }, OR: [{ price: { equals: 0 } }, { price: null }] },
-        ]
-      } else {
-        where.AND = [
-          ...(Array.isArray(where.AND) ? where.AND : []),
-          { metadata: { path: ['approval'], equals: 'REJECTED' } },
-        ]
-        where.OR = undefined
-      }
+      where.approvalStatus = status
     }
     if (q) {
       where.AND = [
@@ -72,8 +67,13 @@ export async function reservationRoutes(app: FastifyInstance) {
           status: t.status,
           reservationCode: reservationCodeOf(t),
           approval: reservationApprovalOf(t),
+          paymentStatus: reservationPaymentOf(t),
+          deliveryStatus: t.deliveryStatus ?? 'PENDING',
+          deliveryChannel: t.deliveryChannel ?? 'EMAIL',
           price: t.price?.toString() ?? '0',
           issuedAt: t.issuedAt,
+          approvedAt: t.approvedAt,
+          rejectedReason: t.rejectedReason,
           attendee: t.attendee,
           ticketType: t.ticketType,
           credential: t.credential,
@@ -89,20 +89,53 @@ export async function reservationRoutes(app: FastifyInstance) {
   app.post('/:ticketId/decision', async (req, reply) => {
     const { eventId, ticketId } = req.params as { eventId: string; ticketId: string }
     await requirePermission(req, 'ticket.issue', { eventId })
-    const { approved } = decisionSchema.parse(req.body)
+    const { approved, reason } = decisionSchema.parse(req.body)
     const result = await decideReservation({
       eventId,
       ticketId,
       approved,
       actorUserId: req.user.id,
       actorName: req.user.name,
+      reason,
     })
-    logActivity(
+    publish(channelFor.reservation(eventId), approved ? 'reservation.approved' : 'reservation.rejected', {
+      ticketId,
+      approval: approved ? 'APPROVED' : 'REJECTED',
+      alreadyDecided: result.alreadyDecided,
+    })
+    return reply.send({
+      data: {
+        ok: true,
+        approval: approved ? 'APPROVED' : 'REJECTED',
+        ticketId,
+        credential: result.credential,
+        alreadyDecided: result.alreadyDecided,
+      },
+    })
+  })
+
+  app.post('/:ticketId/resend', async (req, reply) => {
+    const { eventId, ticketId } = req.params as { eventId: string; ticketId: string }
+    await requirePermission(req, 'ticket.issue', { eventId })
+    const result = await resendReservationCredential({
       eventId,
-      'reservation',
-      `Reservation ${approved ? 'approved' : 'rejected'} · ${reservationCodeOf(result.ticket) ?? ticketId.slice(0, 8)}`,
-      req.user.name,
-    )
-    return reply.send({ data: { ok: true, approval: approved ? 'APPROVED' : 'REJECTED', ticketId, credential: result.credential } })
+      ticketId,
+      actorUserId: req.user.id,
+      actorName: req.user.name,
+    })
+    publish(channelFor.reservation(eventId), result.deliveryOk ? 'credential.delivery.sent' : 'credential.delivery.failed', {
+      ticketId,
+      deliveryOk: result.deliveryOk,
+      deliveryStatus: result.ticket.deliveryStatus,
+    })
+    return reply.send({
+      data: {
+        ok: true,
+        ticketId,
+        deliveryOk: result.deliveryOk,
+        credential: result.credential,
+        deliveryStatus: result.ticket.deliveryStatus,
+      },
+    })
   })
 }

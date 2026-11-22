@@ -1,10 +1,19 @@
 import type { FastifyInstance } from 'fastify'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
-import type { Prisma } from '@prisma/client'
-import { issueReservationCredential, reservationApprovalOf, reservationCodeOf, type ReservationTicket } from '../reservations/service.js'
+import {
+  issueReservationCredential,
+  reservationApprovalOf,
+  reservationCodeOf,
+  reservationPaymentOf,
+  normalizeReservationEmail,
+  normalizeReservationPhone,
+  reservationStatePatch,
+  type ReservationTicket,
+} from '../reservations/service.js'
 import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
 import { logActivity } from '../../lib/activity.js'
 
@@ -257,38 +266,96 @@ export async function publicRoutes(app: FastifyInstance) {
       throw errors.badRequest('This ticket type has sold out')
     }
 
-    const attendee = await prisma.attendee.create({
-      data: {
-        eventId,
-        name: body.name,
-        email: body.email,
-        phone: body.phone,
-        status: 'REGISTERED',
-        metadata: { source: 'public' },
-      },
-    })
     const code = reservationCode()
     const price = Number(ticketType.price ?? 0)
     const paid = Number.isFinite(price) && price > 0
-    const ticket = await prisma.ticket.create({
-      data: {
-        eventId,
-        attendeeId: attendee.id,
-        ticketTypeId: ticketType.id,
-        price: ticketType.price,
-        status: 'ISSUED',
-        metadata: {
-          reservationCode: code,
-          channel: 'public',
-          approval: paid ? 'PENDING' : 'APPROVED',
-        },
-      },
-    })
+    const state = reservationStatePatch({ paid, approved: !paid })
+    const emailNorm = normalizeReservationEmail(body.email)
+    const phoneNorm = normalizeReservationPhone(body.phone)
+
+    let attendee: any
+    let ticket: any
+    try {
+      const created = await prisma.$transaction(async (tx) => {
+        const existing = await tx.ticket.findFirst({
+          where: {
+            eventId,
+            reservationEmail: emailNorm,
+            status: { in: ['ISSUED', 'ACTIVE', 'CONSUMED'] },
+            approvalStatus: { in: ['PENDING', 'APPROVED'] },
+          },
+          include: { credential: { select: { code: true } } },
+        })
+        if (existing) {
+          throw Object.assign(new Error('DUPLICATE_RESERVATION'), { existing })
+        }
+
+        const attendee = await tx.attendee.create({
+          data: {
+            eventId,
+            name: body.name,
+            email: body.email,
+            phone: body.phone,
+            status: paid ? 'REGISTERED' : 'CONFIRMED',
+            metadata: { source: 'public' },
+          },
+        })
+
+        const ticket = await tx.ticket.create({
+          data: {
+            eventId,
+            attendeeId: attendee.id,
+            ticketTypeId: ticketType.id,
+            price: ticketType.price,
+            status: paid ? 'ISSUED' : 'ACTIVE',
+            reservationCode: code,
+            reservationEmail: emailNorm,
+            reservationPhone: phoneNorm,
+            reservationName: body.name.trim(),
+            deliveryChannel: 'EMAIL',
+            deliveryStatus: 'PENDING',
+            ...state,
+            metadata: {
+              reservationCode: code,
+              channel: 'public',
+              approval: paid ? 'PENDING' : 'APPROVED',
+              email: body.email,
+              phone: body.phone ?? null,
+              name: body.name,
+            },
+          },
+        })
+
+        return { attendee, ticket }
+      })
+      attendee = created.attendee
+      ticket = created.ticket
+    } catch (err: any) {
+      if (err?.message === 'DUPLICATE_RESERVATION' && err.existing) {
+        const existing = err.existing
+        return reply.code(409).send({
+          error: {
+            code: 'RESERVATION_EXISTS',
+            message: 'A reservation for this email already exists for this event.',
+          },
+          data: {
+            reservationCode: reservationCodeOf(existing),
+            approval: reservationApprovalOf(existing),
+            paymentStatus: reservationPaymentOf(existing),
+            qr: existing.credential?.code ?? null,
+          },
+        })
+      }
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw errors.conflict('A reservation for this email already exists for this event.')
+      }
+      throw err
+    }
 
     // Free tickets → instant QR credential + email. Paid → pending approval.
     let qr: string | null = null
     if (paid) {
-      await sendMail({
+      const sent = await sendMail({
         to: body.email,
         subject: `Reservation received — ${event.name}`,
         html: ticketEmailShell({
@@ -304,11 +371,20 @@ export async function publicRoutes(app: FastifyInstance) {
           footer: 'TKT · Control center for live events',
         }),
       })
+      await prisma.ticket.update({
+        where: { id: ticket.id },
+        data: { deliveryStatus: sent ? 'SENT' : 'FAILED', lastDeliveryAt: sent ? new Date() : undefined, deliveryAttempts: { increment: 1 } },
+      }).catch(() => {})
     } else {
       const reservationTicket: ReservationTicket = {
         id: ticket.id,
+        eventId,
         metadata: ticket.metadata,
         price: ticket.price,
+        status: ticket.status,
+        reservationCode: ticket.reservationCode,
+        approvalStatus: ticket.approvalStatus,
+        paymentStatus: ticket.paymentStatus,
         attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
         ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
       }
@@ -317,7 +393,6 @@ export async function publicRoutes(app: FastifyInstance) {
         ticket: reservationTicket,
       })
       qr = issued.qrCode
-      await prisma.attendee.update({ where: { id: attendee.id }, data: { status: 'CONFIRMED' } })
     }
 
     logActivity(eventId, 'reservation', `${body.name} reserved ${ticketType.name} · ${code}`, body.name)
@@ -337,6 +412,7 @@ export async function publicRoutes(app: FastifyInstance) {
         reservationCode: code,
         price: ticketType.price?.toString() ?? '0',
         approval: paid ? 'PENDING' : 'APPROVED',
+        paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
         qr,
       },
     })
@@ -349,7 +425,13 @@ export async function publicRoutes(app: FastifyInstance) {
     if (!code) throw errors.badRequest('Missing reservation code')
 
     const ticket = await prisma.ticket.findFirst({
-      where: { eventId, metadata: { path: ['reservationCode'], equals: code } },
+      where: {
+        eventId,
+        OR: [
+          { reservationCode: code },
+          { metadata: { path: ['reservationCode'], equals: code } },
+        ],
+      },
       include: {
         attendee: { select: { name: true, email: true } },
         ticketType: { select: { name: true, price: true } },
@@ -360,8 +442,9 @@ export async function publicRoutes(app: FastifyInstance) {
 
     return {
       data: {
-        reservationCode: code,
+        reservationCode: reservationCodeOf(ticket) ?? code,
         approval: reservationApprovalOf(ticket),
+        paymentStatus: reservationPaymentOf(ticket),
         ticketStatus: ticket.status,
         price: ticket.price?.toString() ?? '0',
         ticketName: ticket.ticketType.name,

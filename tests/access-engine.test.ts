@@ -73,6 +73,16 @@ describe('Access validation engine — spec §41 authorization matrix', () => {
     expect(d.reason).toBe('WRONG_TICKET_ENTITLEMENT')
   })
 
+  it('pending reservation approval → DENIED (WRONG_TICKET_ENTITLEMENT)', () => {
+    const d = scan(makeCredential({ reservationApprovalStatus: 'PENDING', reservationPaymentStatus: 'PENDING' }))
+    expect(d.reason).toBe('WRONG_TICKET_ENTITLEMENT')
+  })
+
+  it('failed reservation payment → DENIED (WRONG_TICKET_ENTITLEMENT)', () => {
+    const d = scan(makeCredential({ reservationApprovalStatus: 'APPROVED', reservationPaymentStatus: 'FAILED' }))
+    expect(d.reason).toBe('WRONG_TICKET_ENTITLEMENT')
+  })
+
   it('blocked attendee → DENIED (ATTENDEE_BLOCKED)', () => {
     const d = scan(makeCredential({ attendeeStatus: 'BLOCKED' }))
     expect(d.reason).toBe('ATTENDEE_BLOCKED')

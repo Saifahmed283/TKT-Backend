@@ -71,4 +71,5 @@ export const channelFor = {
   task: (eventId: string) => `event:${eventId}:task`,
   announcement: (eventId: string) => `event:${eventId}:announcement`,
   activity: (eventId: string) => `event:${eventId}:activity`,
+  reservation: (eventId: string) => `event:${eventId}:reservation`,
 }

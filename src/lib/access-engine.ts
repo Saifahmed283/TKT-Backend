@@ -23,6 +23,8 @@ export type AccessEngineCredential = {
   attendeeStatus?: string
   ticketStatus?: string | null
   ticketTypeName?: string | null
+  reservationApprovalStatus?: string | null
+  reservationPaymentStatus?: string | null
 }
 
 export type AccessEngineEvent = {
@@ -88,6 +90,12 @@ export function validateAccess(input: {
   // 4–5. Ticket & entitlement
   if (c.attendeeStatus === 'BLOCKED') return deny('ATTENDEE_BLOCKED')
   if (c.ticketStatus && c.ticketStatus !== 'ACTIVE') return deny('WRONG_TICKET_ENTITLEMENT')
+  if (c.reservationApprovalStatus === 'PENDING' || c.reservationApprovalStatus === 'REJECTED') {
+    return deny('WRONG_TICKET_ENTITLEMENT')
+  }
+  if (c.reservationPaymentStatus === 'PENDING' || c.reservationPaymentStatus === 'FAILED' || c.reservationPaymentStatus === 'REFUNDED') {
+    return deny('WRONG_TICKET_ENTITLEMENT')
+  }
 
   // 6. Validate time window
   const t = now.getTime()

@@ -17,50 +17,51 @@ enum UserStatus {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id           String     @id @default(cuid())
+  email        String     @unique
   passwordHash String
   name         String
   phone        String?
   platformRole String? // 'super_admin' | null — platform-level role
   status       UserStatus @default(ACTIVE)
   lastLoginAt  DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
-  orgMemberships    OrganizationMember[]
-  eventMemberships  EventMember[]
-  notifications     Notification[]
-  auditLogs         AuditLog[]
-  accessLogs        AccessLog[] @relation("AccessOperator")
-  tasksAssigned     Task[]     @relation("TaskAssignee")
-  tasksCreated      Task[]     @relation("TaskCreator")
-  tasksCompleted    Task[]     @relation("TaskCompleter")
-  taskActivities    TaskActivity[]
-  incidentsCreated  Incident[] @relation("IncidentCreator")
-  incidentsAssigned Incident[] @relation("IncidentAssignee")
-  incidentComments  IncidentComment[]
-  announcements     Announcement[]
-  messagesSent      Message[]
-  devices           Device[]
+  orgMemberships      OrganizationMember[]
+  eventMemberships    EventMember[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+  accessLogs          AccessLog[]          @relation("AccessOperator")
+  tasksAssigned       Task[]               @relation("TaskAssignee")
+  tasksCreated        Task[]               @relation("TaskCreator")
+  tasksCompleted      Task[]               @relation("TaskCompleter")
+  taskActivities      TaskActivity[]
+  incidentsCreated    Incident[]           @relation("IncidentCreator")
+  incidentsAssigned   Incident[]           @relation("IncidentAssignee")
+  incidentComments    IncidentComment[]
+  announcements       Announcement[]
+  messagesSent        Message[]
+  devices             Device[]
   registeredAttendees Attendee[]
+  approvedTickets     Ticket[]             @relation("TicketApprovedBy")
 }
 
 model Organization {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   name        String
-  slug        String   @unique
+  slug        String    @unique
   description String?
   logoUrl     String?
   settings    Json?
   status      OrgStatus @default(ACTIVE)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  members     OrganizationMember[]
-  events      Event[]
-  roles       Role[]
-  auditLogs   AuditLog[]
+  members   OrganizationMember[]
+  events    Event[]
+  roles     Role[]
+  auditLogs AuditLog[]
 }
 
 enum OrgStatus {
@@ -82,15 +83,15 @@ enum OrgMemberStatus {
 }
 
 model OrganizationMember {
-  id        String   @id @default(cuid())
+  id        String          @id @default(cuid())
   orgId     String
   userId    String
-  role      OrgMemberRole @default(VIEWER)
+  role      OrgMemberRole   @default(VIEWER)
   status    OrgMemberStatus @default(ACTIVE)
-  createdAt DateTime @default(now())
+  createdAt DateTime        @default(now())
 
-  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, userId])
   @@index([userId])
@@ -115,18 +116,18 @@ enum RoleScope {
 }
 
 model Role {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   orgId       String? // null → system role (platform-wide catalog)
   name        String
-  code        String   @unique
+  code        String    @unique
   description String?
-  kind        RoleKind @default(SYSTEM)
+  kind        RoleKind  @default(SYSTEM)
   scope       RoleScope
   permissions Json // string[] of atomic permission codes
-  system      Boolean  @default(false)
-  createdAt   DateTime @default(now())
+  system      Boolean   @default(false)
+  createdAt   DateTime  @default(now())
 
-  org       Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org         Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
   memberships EventMember[]
 
   @@index([orgId])
@@ -159,25 +160,25 @@ enum EventStatus {
 }
 
 model Event {
-  id          String   @id @default(cuid())
-  orgId       String
-  name        String
-  slug        String?
-  description String?
-  type        EventType @default(OTHER)
-  status      EventStatus @default(DRAFT)
-  startAt     DateTime
-  endAt       DateTime?
-  timezone    String   @default("UTC")
-  venueName   String?
-  venueAddress String?
+  id            String      @id @default(cuid())
+  orgId         String
+  name          String
+  slug          String?
+  description   String?
+  type          EventType   @default(OTHER)
+  status        EventStatus @default(DRAFT)
+  startAt       DateTime
+  endAt         DateTime?
+  timezone      String      @default("UTC")
+  venueName     String?
+  venueAddress  String?
   coverImageUrl String?
-  branding    Json?
-  settings    Json? // event configuration blob
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  branding      Json?
+  settings      Json? // event configuration blob
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
-  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org           Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
   members       EventMember[]
   teams         Team[]
   areas         Area[]
@@ -205,19 +206,19 @@ enum EventMemberStatus {
 }
 
 model EventMember {
-  id         String   @id @default(cuid())
-  eventId    String
-  userId     String
-  roleId     String
-  teamId     String?
-  status     EventMemberStatus @default(ACTIVE)
-  invitedBy  String?
-  createdAt  DateTime @default(now())
+  id        String            @id @default(cuid())
+  eventId   String
+  userId    String
+  roleId    String
+  teamId    String?
+  status    EventMemberStatus @default(ACTIVE)
+  invitedBy String?
+  createdAt DateTime          @default(now())
 
-  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role  Role  @relation(fields: [roleId], references: [id])
-  team  Team? @relation(fields: [teamId], references: [id])
+  event Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role  Role         @relation(fields: [roleId], references: [id])
+  team  Team?        @relation(fields: [teamId], references: [id])
   areas MemberArea[]
 
   @@unique([eventId, userId])
@@ -231,17 +232,17 @@ model EventMember {
 // ─────────────────────────────────────────────────────────────
 
 model Team {
-  id        String   @id @default(cuid())
-  eventId   String
-  name      String
+  id          String   @id @default(cuid())
+  eventId     String
+  name        String
   description String?
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
 
-  event   Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  members EventMember[]
-  areas   TeamArea[]
-  tasks   Task[]
+  event     Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  members   EventMember[]
+  areas     TeamArea[]
+  tasks     Task[]
   incidents Incident[]
 
   @@unique([eventId, name])
@@ -271,30 +272,30 @@ enum AreaAccessPolicy {
 }
 
 model Area {
-  id          String   @id @default(cuid())
-  eventId     String
-  name        String
-  description String?
-  type        AreaType @default(OTHER)
+  id           String           @id @default(cuid())
+  eventId      String
+  name         String
+  description  String?
+  type         AreaType         @default(OTHER)
   accessPolicy AreaAccessPolicy @default(OPEN)
-  capacity    Int?
-  location    Json? // {"lat":..,"lng":..,"label":"Floor 1"}
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
+  capacity     Int?
+  location     Json? // {"lat":..,"lng":..,"label":"Floor 1"}
+  active       Boolean          @default(true)
+  createdAt    DateTime         @default(now())
 
-  event        Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  assignments  MemberArea[]
+  event           Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  assignments     MemberArea[]
   teamAssignments TeamArea[]
-  tasks        Task[]
-  incidents    Incident[]
-  accessLogs   AccessLog[]
+  tasks           Task[]
+  incidents       Incident[]
+  accessLogs      AccessLog[]
 
   @@unique([eventId, name])
   @@index([eventId])
 }
 
 model MemberArea {
-  id            String   @id @default(cuid())
+  id            String @id @default(cuid())
   eventMemberId String
   areaId        String
 
@@ -333,7 +334,7 @@ enum AttendeeStatus {
 }
 
 model Attendee {
-  id             String   @id @default(cuid())
+  id             String         @id @default(cuid())
   eventId        String
   name           String
   email          String?
@@ -342,16 +343,16 @@ model Attendee {
   status         AttendeeStatus @default(REGISTERED)
   notes          String?
   registeredById String?
-  registeredAt   DateTime @default(now())
+  registeredAt   DateTime       @default(now())
   metadata       Json?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
-  event       Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  registeredBy User? @relation(fields: [registeredById], references: [id])
-  tickets     Ticket[]
-  credentials Credential[]
-  accessLogs  AccessLog[]
+  event        Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  registeredBy User?        @relation(fields: [registeredById], references: [id])
+  tickets      Ticket[]
+  credentials  Credential[]
+  accessLogs   AccessLog[]
 
   @@index([eventId])
   @@index([eventId, email])
@@ -367,7 +368,7 @@ model TicketType {
   active      Boolean  @default(true)
   createdAt   DateTime @default(now())
 
-  event   Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  event   Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
   tickets Ticket[]
 
   @@index([eventId])
@@ -381,24 +382,63 @@ enum TicketStatus {
   CONSUMED
 }
 
-model Ticket {
-  id           String   @id @default(cuid())
-  eventId      String
-  attendeeId   String
-  ticketTypeId String
-  status       TicketStatus @default(ISSUED)
-  price        Decimal? @db.Decimal(10, 2)
-  issuedById   String?
-  issuedAt     DateTime @default(now())
-  metadata     Json?
+enum ReservationApprovalStatus {
+  NONE
+  PENDING
+  APPROVED
+  REJECTED
+}
 
-  attendee   Attendee   @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
-  ticketType TicketType @relation(fields: [ticketTypeId], references: [id])
-  event      Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+enum ReservationPaymentStatus {
+  NOT_REQUIRED
+  PENDING
+  CONFIRMED
+  FAILED
+  REFUNDED
+}
+
+enum DeliveryChannel {
+  EMAIL
+  WHATSAPP
+  BOTH
+}
+
+model Ticket {
+  id                 String                    @id @default(cuid())
+  eventId            String
+  attendeeId         String
+  ticketTypeId       String
+  status             TicketStatus              @default(ISSUED)
+  price              Decimal?                  @db.Decimal(10, 2)
+  issuedById         String?
+  issuedAt           DateTime                  @default(now())
+  metadata           Json?
+  reservationCode    String?                   @unique
+  reservationEmail   String?
+  reservationPhone   String?
+  reservationName    String?
+  approvalStatus     ReservationApprovalStatus @default(NONE)
+  paymentStatus      ReservationPaymentStatus  @default(NOT_REQUIRED)
+  deliveryChannel    DeliveryChannel           @default(EMAIL)
+  approvedAt         DateTime?
+  approvedById       String?
+  rejectedReason     String?
+  paymentReference   String?
+  paymentConfirmedAt DateTime?
+  deliveryStatus     String?                   @default("PENDING")
+  lastDeliveryAt     DateTime?
+  deliveryAttempts   Int                       @default(0)
+
+  attendee   Attendee    @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
+  ticketType TicketType  @relation(fields: [ticketTypeId], references: [id])
+  event      Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
   credential Credential?
+  approvedBy User?       @relation("TicketApprovedBy", fields: [approvedById], references: [id])
 
   @@index([eventId])
   @@index([attendeeId])
+  @@index([eventId, approvalStatus])
+  @@index([eventId, paymentStatus])
 }
 
 enum CredentialType {
@@ -418,26 +458,26 @@ enum CredentialStatus {
 }
 
 model Credential {
-  id          String   @id @default(cuid())
-  eventId     String
-  attendeeId  String
-  ticketId    String?
-  type        CredentialType @default(QR)
-  code        String   @unique // QR payload — a signed token
-  status      CredentialStatus @default(ISSUED)
-  validFrom   DateTime
-  validUntil  DateTime?
-  singleUse   Boolean  @default(true)
-  allowReentry Boolean @default(false)
-  areaIds     Json? // area policy — credentials allowed here
-  deviceSync  Json? // last device sync info
-  issuedById  String?
-  issuedAt    DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id           String           @id @default(cuid())
+  eventId      String
+  attendeeId   String
+  ticketId     String?
+  type         CredentialType   @default(QR)
+  code         String           @unique // QR payload — a signed token
+  status       CredentialStatus @default(ISSUED)
+  validFrom    DateTime
+  validUntil   DateTime?
+  singleUse    Boolean          @default(true)
+  allowReentry Boolean          @default(false)
+  areaIds      Json? // area policy — credentials allowed here
+  deviceSync   Json? // last device sync info
+  issuedById   String?
+  issuedAt     DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 
-  event     Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  attendee  Attendee   @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
-  ticket    Ticket?    @relation(fields: [ticketId], references: [id])
+  event      Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  attendee   Attendee    @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
+  ticket     Ticket?     @relation(fields: [ticketId], references: [id])
   accessLogs AccessLog[]
 
   @@unique([ticketId])
@@ -474,7 +514,7 @@ enum AccessReason {
 }
 
 model AccessLog {
-  id             String   @id @default(cuid())
+  id             String       @id @default(cuid())
   eventId        String
   credentialId   String?
   attendeeId     String?
@@ -483,16 +523,16 @@ model AccessLog {
   areaId         String?
   result         AccessResult
   reason         AccessReason @default(NONE)
-  timestamp      DateTime   @default(now())
-  offline        Boolean    @default(false)
+  timestamp      DateTime     @default(now())
+  offline        Boolean      @default(false)
   localSignature String? // device-signed proof of a local decision
   metadata       Json?
 
-  event      Event?     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  event      Event?      @relation(fields: [eventId], references: [id], onDelete: Cascade)
   credential Credential? @relation(fields: [credentialId], references: [id])
-  attendee   Attendee?  @relation(fields: [attendeeId], references: [id])
-  operator   User?      @relation("AccessOperator", fields: [operatorUserId], references: [id])
-  area       Area?      @relation(fields: [areaId], references: [id])
+  attendee   Attendee?   @relation(fields: [attendeeId], references: [id])
+  operator   User?       @relation("AccessOperator", fields: [operatorUserId], references: [id])
+  area       Area?       @relation(fields: [areaId], references: [id])
 
   @@index([eventId, timestamp])
   @@index([credentialId])
@@ -501,13 +541,13 @@ model AccessLog {
 }
 
 model Device {
-  id          String   @id @default(cuid())
-  eventId     String?
-  name        String
-  publicKey   String // ed25519 public key — verifies signed offline logs
-  ownerId     String?
-  lastSeenAt  DateTime?
-  createdAt   DateTime @default(now())
+  id         String    @id @default(cuid())
+  eventId    String?
+  name       String
+  publicKey  String // ed25519 public key — verifies signed offline logs
+  ownerId    String?
+  lastSeenAt DateTime?
+  createdAt  DateTime  @default(now())
 
   owner User? @relation(fields: [ownerId], references: [id])
 
@@ -533,30 +573,30 @@ enum TaskStatus {
 }
 
 model Task {
-  id           String   @id @default(cuid())
-  eventId      String
-  teamId       String?
-  assigneeId   String?
-  areaId       String?
-  title        String
-  description  String?
-  priority     TaskPriority @default(MEDIUM)
-  status       TaskStatus @default(TODO)
-  dueAt        DateTime?
-  checklist    Json? // [{done, text}]
-  evidence     Json? // [{url, label}]
+  id            String       @id @default(cuid())
+  eventId       String
+  teamId        String?
+  assigneeId    String?
+  areaId        String?
+  title         String
+  description   String?
+  priority      TaskPriority @default(MEDIUM)
+  status        TaskStatus   @default(TODO)
+  dueAt         DateTime?
+  checklist     Json? // [{done, text}]
+  evidence      Json? // [{url, label}]
   completedById String?
-  completedAt  DateTime?
-  createdById  String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  completedAt   DateTime?
+  createdById   String
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
-  event     Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  team      Team?      @relation(fields: [teamId], references: [id])
-  assignee  User?      @relation("TaskAssignee", fields: [assigneeId], references: [id])
-  area      Area?      @relation(fields: [areaId], references: [id])
-  creator   User       @relation("TaskCreator", fields: [createdById], references: [id])
-  completer User?      @relation("TaskCompleter", fields: [completedById], references: [id])
+  event     Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  team      Team?          @relation(fields: [teamId], references: [id])
+  assignee  User?          @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  area      Area?          @relation(fields: [areaId], references: [id])
+  creator   User           @relation("TaskCreator", fields: [createdById], references: [id])
+  completer User?          @relation("TaskCompleter", fields: [completedById], references: [id])
   activity  TaskActivity[]
 
   @@index([eventId, status])
@@ -607,12 +647,12 @@ enum IncidentStatus {
 }
 
 model Incident {
-  id             String   @id @default(cuid())
+  id             String           @id @default(cuid())
   eventId        String
   code           String // INC-0001 (per event)
-  type           IncidentType @default(OTHER)
+  type           IncidentType     @default(OTHER)
   priority       IncidentPriority @default(MEDIUM)
-  status         IncidentStatus @default(OPEN)
+  status         IncidentStatus   @default(OPEN)
   createdById    String
   assignedTeamId String?
   assignedUserId String?
@@ -621,15 +661,15 @@ model Incident {
   description    String?
   resolution     String?
   evidence       Json?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
   resolvedAt     DateTime?
 
-  event    Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  creator  User     @relation("IncidentCreator", fields: [createdById], references: [id])
-  assignee User?    @relation("IncidentAssignee", fields: [assignedUserId], references: [id])
-  team     Team?    @relation(fields: [assignedTeamId], references: [id])
-  area     Area?    @relation(fields: [areaId], references: [id])
+  event    Event             @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  creator  User              @relation("IncidentCreator", fields: [createdById], references: [id])
+  assignee User?             @relation("IncidentAssignee", fields: [assignedUserId], references: [id])
+  team     Team?             @relation(fields: [assignedTeamId], references: [id])
+  area     Area?             @relation(fields: [areaId], references: [id])
   comments IncidentComment[]
 
   @@unique([eventId, code])
@@ -662,14 +702,14 @@ enum AnnouncementPriority {
 }
 
 model Announcement {
-  id             String   @id @default(cuid())
+  id             String               @id @default(cuid())
   eventId        String
   authorId       String
   title          String
   body           String
   priority       AnnouncementPriority @default(MEDIUM)
   targetAudience Json? // {"scope":"ALL_STAFF"} | {"scope":"TEAMS","teamIds":[]} | {"scope":"ROLES","roleIds":[]}
-  createdAt      DateTime @default(now())
+  createdAt      DateTime             @default(now())
 
   event  Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
   author User  @relation(fields: [authorId], references: [id])
@@ -684,31 +724,31 @@ enum MessageTarget {
 }
 
 model Message {
-  id            String   @id @default(cuid())
-  eventId       String
-  senderId      String
-  target        MessageTarget @default(ALL_STAFF)
-  teamId        String?
+  id              String        @id @default(cuid())
+  eventId         String
+  senderId        String
+  target          MessageTarget @default(ALL_STAFF)
+  teamId          String?
   recipientUserId String?
-  body          String
-  createdAt     DateTime @default(now())
+  body            String
+  createdAt       DateTime      @default(now())
 
-  event   Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  sender  User  @relation(fields: [senderId], references: [id])
+  event  Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  sender User  @relation(fields: [senderId], references: [id])
 
   @@index([eventId, createdAt])
 }
 
 model Notification {
-  id      String   @id @default(cuid())
-  userId  String
-  eventId String?
-  type    String // TASK_ASSIGNED, INCIDENT_CRITICAL, ANNOUNCEMENT, CREDENTIAL_REVOKED, EVENT_LIVE, MEMBER_ASSIGNED
-  title   String
-  body    String?
-  data    Json?
-  readAt  DateTime?
-  createdAt DateTime @default(now())
+  id        String    @id @default(cuid())
+  userId    String
+  eventId   String?
+  type      String // TASK_ASSIGNED, INCIDENT_CRITICAL, ANNOUNCEMENT, CREDENTIAL_REVOKED, EVENT_LIVE, MEMBER_ASSIGNED
+  title     String
+  body      String?
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
 
   user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   event Event? @relation(fields: [eventId], references: [id], onDelete: Cascade)
@@ -776,7 +816,7 @@ model AuditLog {
   timestamp      DateTime @default(now())
   sourceDevice   String?
   sourceIp       String?
-  result         String @default("SUCCESS")
+  result         String   @default("SUCCESS")
   metadata       Json?
 
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)

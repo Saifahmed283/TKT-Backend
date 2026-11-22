@@ -50,7 +50,15 @@ export async function credentialRoutes(app: FastifyInstance) {
           id: true, code: true, type: true, status: true, validFrom: true, validUntil: true,
           singleUse: true, allowReentry: true, areaIds: true, issuedAt: true,
           attendee: { select: { id: true, name: true, email: true } },
-          ticket: { select: { id: true, ticketType: { select: { name: true } } } },
+          ticket: {
+            select: {
+              id: true,
+              deliveryStatus: true,
+              deliveryChannel: true,
+              lastDeliveryAt: true,
+              ticketType: { select: { name: true } },
+            },
+          },
           _count: { select: { accessLogs: true } },
         },
       }),
