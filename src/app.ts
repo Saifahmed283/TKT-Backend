@@ -94,6 +94,34 @@ export async function buildApp(): Promise<FastifyInstance> {
     })
   })
 
+  app.get('/', async (_req, reply) => {
+    const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TKT API</title>
+  <style>
+    body{font-family:system-ui,-apple-system,sans-serif;background:#0b0b0c;color:#faf8f4;display:grid;place-items:center;min-height:100vh;margin:0}
+    main{padding:2rem;text-align:center;border:1px solid #2a2620;border-radius:16px;background:#141311}
+    .dot{width:10px;height:10px;border-radius:50%;background:#22c55e;display:inline-block;margin-right:.5rem;box-shadow:0 0 0 4px rgba(34,197,94,.15);vertical-align:middle}
+    h1{font-size:1.25rem;margin:0 0 .5rem}
+    p{margin:.35rem 0;color:#cfc7b8}
+    a{color:#e8d08b}
+    code{color:#faf8f4}
+  </style>
+</head>
+<body>
+  <main>
+    <h1><span class="dot" aria-hidden="true"></span>TKT API is running</h1>
+    <p>Status: <strong>OK</strong></p>
+    <p>Health: <a href="/health"><code>/health</code></a></p>
+  </main>
+</body>
+</html>`
+    return reply.type('text/html; charset=utf-8').send(html)
+  })
+
   app.get('/health', async () => ({ status: 'ok', service: 'tkt-api', time: new Date().toISOString() }))
 
   await app.register(

@@ -83,10 +83,10 @@ export async function publicRoutes(app: FastifyInstance) {
     const scope = query.scope === 'past' ? 'past' : 'upcoming'
     const now = new Date()
 
-    const where =
+    const where: Prisma.EventWhereInput =
       scope === 'past'
-        ? { status: { in: ['COMPLETED', 'ARCHIVED'] } }
-        : { status: 'PUBLISHED', startAt: { gte: now } }
+        ? { status: { in: ['COMPLETED', 'ARCHIVED'] as any } }
+        : { status: 'PUBLISHED' as any, startAt: { gte: now } }
 
     const events = await prisma.event.findMany({
       where,
