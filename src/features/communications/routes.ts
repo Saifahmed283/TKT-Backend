@@ -159,4 +159,35 @@ export async function communicationRoutes(app: FastifyInstance) {
     })
     return { data: notifications }
   })
+
+  const alertSchema = z.object({ type: z.string().default('help'), message: z.string().min(1), teamId: z.string().optional() })
+  app.get('/alerts', async (req) => {
+    const { eventId } = req.params as { eventId: string }
+    await requirePermission(req, 'notification.read', { eventId })
+    return { data: await (prisma as any).opsAlert.findMany({ where: { eventId }, orderBy: { createdAt: 'desc' }, take: 100 }) }
+  })
+  app.post('/alerts', async (req, reply) => {
+    const { eventId } = req.params as { eventId: string }
+    await requirePermission(req, 'notification.read', { eventId })
+    const body = alertSchema.parse(req.body)
+    const row = await (prisma as any).opsAlert.create({ data: { eventId, type: body.type, message: body.message, teamId: body.teamId || null, createdById: req.user.id, resolved: false } })
+    publish(channelFor.activity(eventId), 'alert.created', { id: row.id, type: row.type })
+    return reply.status(201).send({ data: row })
+  })
+
+  const chatSchema = z.object({ text: z.string().min(1), teamId: z.string().optional() })
+  app.get('/chat', async (req) => {
+    const { eventId } = req.params as { eventId: string }
+    await requirePermission(req, 'notification.read', { eventId })
+    const { teamId } = req.query as { teamId?: string }
+    return { data: await (prisma as any).teamChatMessage.findMany({ where: { eventId, ...(teamId ? { teamId } : {}) }, orderBy: { createdAt: 'desc' }, take: 100 }) }
+  })
+  app.post('/chat', async (req, reply) => {
+    const { eventId } = req.params as { eventId: string }
+    await requirePermission(req, 'message.send', { eventId })
+    const body = chatSchema.parse(req.body)
+    const row = await (prisma as any).teamChatMessage.create({ data: { eventId, teamId: body.teamId || null, userId: req.user.id, text: body.text } })
+    publish(channelFor.activity(eventId), 'chat.message', { id: row.id })
+    return reply.status(201).send({ data: row })
+  })
 }

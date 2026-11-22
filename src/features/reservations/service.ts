@@ -7,6 +7,7 @@ import { getDeliveryAdapter, ticketEmailShell } from '../../lib/delivery.js'
 import { qrDataUrl } from '../../lib/qr.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
+import { dispatchEventWebhooks } from '../integrations/dispatch.js'
 import { logActivity } from '../../lib/activity.js'
 
 export type ReservationApproval = 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED'
@@ -330,6 +331,7 @@ export async function issueReservationCredential(params: {
     resourceId: credential.id,
     newValue: { attendeeId: ticket.attendee.id, ticketId: ticket.id, channel: 'public', deliveryOk },
   })
+  void dispatchEventWebhooks(event.id, 'credential.issued', { ticketId: ticket.id, credentialId: credential.id, attendeeId: ticket.attendee.id, deliveryOk })
   if (sendEmail) {
     await writeAudit({
       organizationId: event.orgId,

@@ -20,6 +20,7 @@ import { publish, channelFor } from '../../lib/realtime.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { canRedeemAccessCode, normalizeAccessCode, redeemAccessCode } from '../access-codes/service.js'
+import { dispatchEventWebhooks } from '../integrations/dispatch.js'
 
 // ─────────────────────────────────────────────────────────────
 // Prize wheel — segment order must match the frontend wheel
@@ -457,6 +458,14 @@ export async function publicRoutes(app: FastifyInstance) {
       reservationCode: code,
       approval: paid ? 'PENDING' : 'APPROVED',
       paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
+    })
+    void dispatchEventWebhooks(eventId, 'reservation.created', {
+      ticketId: ticket.id,
+      reservationCode: code,
+      approval: paid ? 'PENDING' : 'APPROVED',
+      paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
+      attendee: { name: body.name, email: body.email },
+      ticketType: { id: ticketType.id, name: ticketType.name },
     })
 
     // Capacity reached → lock the reservation pipeline.

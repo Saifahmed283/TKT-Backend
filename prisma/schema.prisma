@@ -208,6 +208,8 @@ model Event {
   webhookSubscriptions  WebhookSubscription[]
   eventInsurancePolicies EventInsurancePolicy[]
   eventMapAssets        EventMapAsset?
+  opsAlerts             OpsAlert[]
+  teamChatMessages      TeamChatMessage[]
 
   @@index([orgId])
   @@index([status])
@@ -1108,6 +1110,38 @@ model EventMapAsset {
   updatedAt   DateTime @updatedAt
 
   event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+}
+
+model OpsAlert {
+  id          String   @id @default(cuid())
+  eventId     String
+  type        String   @default("help")
+  message     String
+  teamId      String?
+  createdById String?
+  resolved    Boolean  @default(false)
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, createdAt])
+  @@index([teamId])
+}
+
+model TeamChatMessage {
+  id        String   @id @default(cuid())
+  eventId   String
+  teamId    String?
+  userId    String?
+  text      String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, createdAt])
+  @@index([teamId, createdAt])
 }
 
 // ─────────────────────────────────────────────────────────────

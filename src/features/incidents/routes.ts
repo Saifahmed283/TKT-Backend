@@ -7,6 +7,7 @@ import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
 import { publish, channelFor } from '../../lib/realtime.js'
 import { logActivity } from '../../lib/activity.js'
+import { dispatchEventWebhooks } from '../integrations/dispatch.js'
 
 const TYPES = ['SECURITY', 'MEDICAL', 'TECHNICAL', 'REGISTRATION', 'ATTENDEE', 'CROWD', 'EQUIPMENT', 'OPERATIONAL', 'OTHER'] as const
 const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const
@@ -128,6 +129,7 @@ export async function incidentRoutes(app: FastifyInstance) {
     publish(channelFor.incident(eventId), 'incident-created', {
       id: incident.id, code, title: body.title, priority: body.priority, type: body.type, status: 'OPEN',
     })
+    void dispatchEventWebhooks(eventId, 'incident.created', { id: incident.id, code, title: body.title, priority: body.priority, type: body.type, status: 'OPEN' })
     logActivity(eventId, 'incident', `${code} opened · ${body.title}`, req.user.name)
     return reply.status(201).send({ data: incident })
   })

@@ -1,6 +1,5 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import crypto from 'node:crypto'
 import { prisma as prismaClient } from '../../lib/db.js'
 
 const prisma = prismaClient as any
@@ -9,6 +8,7 @@ import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
+import { deliverWebhook } from './dispatch.js'
 
 const webhookSchema = z.object({
   name: z.string().min(2),
@@ -33,24 +33,6 @@ const mapSchema = z.object({
   mapPdfUrl: z.string().url().optional().or(z.literal('').transform(() => undefined)),
   routeNotes: z.string().optional(),
 })
-
-async function deliverWebhook(sub: any, eventType: string, payload: unknown) {
-  const body = JSON.stringify({ event: eventType, timestamp: new Date().toISOString(), payload })
-  const signature = sub.secret ? crypto.createHmac('sha256', sub.secret).update(body).digest('hex') : undefined
-  const headers: Record<string, string> = { 'content-type': 'application/json', ...(sub.headers ?? {}) }
-  if (signature) headers['x-tkt-signature'] = `sha256=${signature}`
-  try {
-    const res = await fetch(sub.url, { method: 'POST', headers, body, signal: AbortSignal.timeout(8000) })
-    const text = await res.text().catch(() => '')
-    await prisma.webhookDelivery.create({
-      data: { subscriptionId: sub.id, eventType, payload: payload as any, status: res.ok ? 'SUCCESS' : 'FAILED', responseCode: res.status, responseBody: text.slice(0, 2000), attempt: 1 },
-    })
-  } catch (e: any) {
-    await prisma.webhookDelivery.create({
-      data: { subscriptionId: sub.id, eventType, payload: payload as any, status: 'FAILED', error: e?.message ?? String(e), attempt: 1 },
-    })
-  }
-}
 
 export async function integrationRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate)
