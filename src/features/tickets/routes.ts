@@ -141,6 +141,7 @@ export async function ticketRoutes(app: FastifyInstance) {
     if (!ticket) throw errors.notFound('Ticket not found')
     const updated = await prisma.ticket.update({ where: { id: ticketId }, data: { status: 'CANCELLED' } })
     await prisma.credential.updateMany({ where: { ticketId }, data: { status: 'REVOKED' } })
+    await prisma.busSeat.updateMany({ where: { ticketId }, data: { state: 'AVAILABLE', ticketId: null, holderName: null, groupId: null, reservedAt: null } }).catch(() => {})
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.cancelled', resourceType: 'ticket', resourceId: ticketId, previousValue: { status: ticket.status }, newValue: { status: 'CANCELLED' }, sourceIp: req.ip })
     return { data: updated }
   })
@@ -152,6 +153,7 @@ export async function ticketRoutes(app: FastifyInstance) {
     if (!ticket) throw errors.notFound('Ticket not found')
     const updated = await prisma.ticket.update({ where: { id: ticketId }, data: { status: 'REFUNDED' } })
     await prisma.credential.updateMany({ where: { ticketId }, data: { status: 'REVOKED' } })
+    await prisma.busSeat.updateMany({ where: { ticketId }, data: { state: 'AVAILABLE', ticketId: null, holderName: null, groupId: null, reservedAt: null } }).catch(() => {})
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.refunded', resourceType: 'ticket', resourceId: ticketId, previousValue: { status: ticket.status }, newValue: { status: 'REFUNDED' }, sourceIp: req.ip })
     return { data: updated }
   })

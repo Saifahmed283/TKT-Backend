@@ -129,6 +129,11 @@ export async function publicRoutes(app: FastifyInstance) {
           select: { id: true, name: true, description: true, category: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, _count: { select: { tickets: true } } },
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         },
+        buses: {
+          where: { isActive: true },
+          select: { id: true, name: true, layout: true, seats: { select: { id: true, label: true, row: true, col: true, state: true, holderName: true } }, _count: { select: { seats: true } } },
+          orderBy: { createdAt: 'asc' },
+        },
         _count: { select: { attendees: true, tickets: true, accessLogs: true } },
       },
       orderBy: scope === 'past' ? { startAt: 'desc' } : { startAt: 'asc' },
@@ -168,6 +173,11 @@ export async function publicRoutes(app: FastifyInstance) {
           attendeeCount: e._count.attendees,
           ticketCount: e._count.tickets,
           scanCount: e._count.accessLogs,
+          buses: ((e as any).buses ?? []).map((b: any) => ({
+            id: b.id, name: b.name, layout: b.layout, totalSeats: b._count?.seats ?? b.seats?.length ?? 0,
+            availableSeats: (b.seats ?? []).filter((s: any) => s.state === 'AVAILABLE').length,
+            seats: (b.seats ?? []).map((s: any) => ({ id: s.id, label: s.label, row: s.row, col: s.col, state: s.state, holderName: s.state === 'RESERVED' ? (s.holderName ?? 'Reserved') : null })),
+          })),
         }
       }),
     }
@@ -640,6 +650,7 @@ export async function publicRoutes(app: FastifyInstance) {
         ticketName: ticket.ticketType.name,
         attendeeName: ticket.attendee.name,
         qr: ticket.credential?.code ?? null,
+        seats: await prisma.busSeat.findMany({ where: { ticketId: ticket.id }, select: { id: true, label: true, busId: true } }).catch(() => []),
       },
     }
   })

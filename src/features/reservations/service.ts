@@ -450,6 +450,10 @@ export async function decideReservation(params: {
     })
     logActivity(eventId, 'reservation', `Reservation approved · ${reservationCodeOf(decided.ticket) ?? decided.ticket.id.slice(0, 8)}`, params.actorName)
   } else {
+    await prisma.busSeat.updateMany({
+      where: { ticketId: decided.ticket.id, state: 'RESERVED' },
+      data: { state: 'AVAILABLE', ticketId: null, holderName: null, groupId: null, reservedAt: null },
+    }).catch(() => {})
     const codeOf = reservationCodeOf(decided.ticket)
     const rejectionDelivery = await getDeliveryAdapter('EMAIL').send({
       to: decided.ticket.attendee.email ?? '',
