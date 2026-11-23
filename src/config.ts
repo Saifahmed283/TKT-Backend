@@ -27,7 +27,10 @@ export const config = {
     publicKeyB64: optional('CREDENTIAL_PUBLIC_KEY_B64', ''),
   },
   mailer: {
-    enabled: optional('SMTP_ENABLED', 'false') === 'true',
+    // Explicit SMTP_ENABLED wins; otherwise auto-enable when host/user/pass are all set.
+    enabled: process.env.SMTP_ENABLED
+      ? process.env.SMTP_ENABLED === 'true'
+      : Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS),
     host: optional('SMTP_HOST', ''),
     port: Number(optional('SMTP_PORT', '587')),
     secure: optional('SMTP_SECURE', 'false') === 'true',

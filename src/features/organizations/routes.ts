@@ -7,6 +7,7 @@ import { resolveOrgContext } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
 import { BASE_ROLES, roleHasPermission, type BaseRoleDefinition } from '../../lib/rbac.js'
 import { ALL_PERMISSIONS, PERMISSIONS } from '../../lib/rbac.js'
+import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
 
 const slugify = (s: string) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
@@ -360,6 +361,26 @@ export async function organizationRoutes(app: FastifyInstance) {
         scopes: ['PLATFORM', 'ORGANIZATION', 'EVENT', 'TEAM', 'AREA'],
       },
     }
+  })
+
+  app.post('/:orgId/test-email', async (req) => {
+    const { orgId } = req.params as { orgId: string }
+    const ctx = await resolveOrgContext(req, orgId)
+    if (!ctx.isAdmin) throw errors.forbidden()
+    const body = z.object({ to: z.string().email() }).parse(req.body)
+    const sent = await sendMail({
+      to: body.to,
+      subject: 'TKT SMTP test',
+      html: ticketEmailShell({
+        preheader: 'SMTP configuration test',
+        title: 'SMTP is working',
+        body: 'This is a test message from TKT. If you received it, outbound email delivery is configured correctly.',
+        rows: [{ label: 'Sent at', value: new Date().toISOString() }],
+        footer: 'TKT · Control center for live events',
+      }),
+    })
+    await writeAudit({ organizationId: orgId, actorUserId: req.user.id, action: 'organization.smtp_test', resourceType: 'organization', resourceId: orgId, newValue: { to: body.to, ok: sent.ok, error: sent.error ?? null }, sourceIp: req.ip })
+    return { data: sent }
   })
 
   app.delete('/:orgId', async (req, reply) => {

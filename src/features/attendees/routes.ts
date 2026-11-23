@@ -1,5 +1,6 @@
 ﻿import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import ExcelJS from 'exceljs'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
@@ -134,6 +135,41 @@ export async function attendeeRoutes(app: FastifyInstance) {
       sourceIp: req.ip,
     })
     return { data: updated }
+  })
+
+  app.get('/export.xlsx', async (req, reply) => {
+    const { eventId } = req.params as { eventId: string }
+    await requirePermission(req, 'attendee.export', { eventId })
+    const { q, status, category } = querySchema.partial().parse(req.query)
+    const where: Record<string, unknown> = { eventId }
+    if (status) where.status = status
+    if (category) where.category = category
+    if (q) {
+      where.OR = [
+        { name: { contains: q, mode: 'insensitive' } },
+        { email: { contains: q, mode: 'insensitive' } },
+        { phone: { contains: q, mode: 'insensitive' } },
+      ]
+    }
+    const rows = await prisma.attendee.findMany({ where: where as any, orderBy: { createdAt: 'desc' }, take: 5000, include: { _count: { select: { tickets: true, credentials: true } } } })
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('Attendees')
+    ws.columns = [
+      { header: 'Name', key: 'name', width: 28 },
+      { header: 'Email', key: 'email', width: 30 },
+      { header: 'Phone', key: 'phone', width: 18 },
+      { header: 'Category', key: 'category', width: 16 },
+      { header: 'Status', key: 'status', width: 16 },
+      { header: 'Tickets', key: 'tickets', width: 10 },
+      { header: 'Credentials', key: 'credentials', width: 12 },
+      { header: 'Notes', key: 'notes', width: 40 },
+      { header: 'Created At', key: 'createdAt', width: 22 },
+    ]
+    for (const a of rows) ws.addRow({ name: a.name, email: a.email ?? '', phone: a.phone ?? '', category: a.category ?? '', status: a.status, tickets: a._count.tickets, credentials: a._count.credentials, notes: a.notes ?? '', createdAt: a.createdAt.toISOString() })
+    const buf = await wb.xlsx.writeBuffer()
+    reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    reply.header('Content-Disposition', `attachment; filename="attendees-${eventId}.xlsx"`)
+    return reply.send(Buffer.from(buf))
   })
 
   app.get('/:attendeeId/access-history', async (req) => {

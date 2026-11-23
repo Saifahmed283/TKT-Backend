@@ -36,6 +36,7 @@ import { deviceRoutes } from './features/devices/routes.js'
 import { workforceRoutes } from './features/workforce/routes.js'
 import { integrationRoutes } from './features/integrations/routes.js'
 import { dashboardRoutes } from './features/dashboard/routes.js'
+import { busRoutes } from './features/buses/routes.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -179,6 +180,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(deviceRoutes, { prefix: '/events/:eventId/devices' })
   await app.register(workforceRoutes, { prefix: '/events/:eventId/workforce' })
   await app.register(integrationRoutes, { prefix: '/events/:eventId/integrations' })
+  await app.register(busRoutes, { prefix: '/events/:eventId/buses' })
   await app.register(presenceRoutes, { prefix: '/events/:eventId' })
   await app.register(uploadRoutes, { prefix: '/uploads' })
   await app.register(searchRoutes, { prefix: '/search' })

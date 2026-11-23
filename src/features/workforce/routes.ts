@@ -7,6 +7,8 @@ import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
+import { hashPassword } from '../../lib/auth.js'
+import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
 
 const applicationSchema = z.object({
   fullName: z.string().min(2),
@@ -132,6 +134,8 @@ export async function workforceRoutes(app: FastifyInstance) {
     if (!event) throw errors.notFound('Event not found')
 
     let userId = body.userId
+    let tempPassword: string | null = null
+    let createdUserEmail: string | null = null
     if (!userId) {
       if (!appRow.email) throw errors.badRequest('Application email or userId required for conversion')
       const email = appRow.email.toLowerCase()
@@ -139,8 +143,14 @@ export async function workforceRoutes(app: FastifyInstance) {
       if (existingUser) {
         userId = existingUser.id
       } else if (body.createUserIfMissing) {
-        // Create a disabled-password placeholder? safer to require existing account; but create minimal ACTIVE user with random hash impossible here without auth lib.
-        throw errors.badRequest('User account not found. Provide userId of an existing user.')
+        tempPassword = crypto.randomBytes(9).toString('base64url').slice(0, 12) + 'A1!'
+        const passwordHash = await hashPassword(tempPassword)
+        const user = await prisma.user.create({
+          data: { email, name: appRow.fullName, phone: appRow.phone ?? null, passwordHash, status: 'ACTIVE' },
+          select: { id: true, email: true, name: true },
+        })
+        userId = user.id
+        createdUserEmail = user.email
       } else {
         throw errors.badRequest('User account not found')
       }
@@ -194,7 +204,37 @@ export async function workforceRoutes(app: FastifyInstance) {
       newValue: { userId, roleId: role.id, teamId, areaIds }, sourceIp: req.ip,
     })
 
-    return { data: result }
+    let onboardingEmailOk = false
+    let onboardingEmailError: string | null = null
+    if (tempPassword && createdUserEmail) {
+      const loginUrl = `${process.env.PUBLIC_URL ?? 'http://localhost:5173'}/login`
+      const sent = await sendMail({
+        to: createdUserEmail,
+        subject: `Your TKT staff account — ${event.name}`,
+        html: ticketEmailShell({
+          preheader: `Staff account created for ${event.name}`,
+          title: 'Welcome to the team',
+          body: `Your staff account for <strong>${event.name}</strong> is ready. Sign in with the temporary password below and change it after first login.`,
+          rows: [
+            { label: 'Email', value: createdUserEmail },
+            { label: 'Temporary password', value: tempPassword },
+            { label: 'Login', value: loginUrl },
+            { label: 'Role', value: role.name },
+          ],
+          footer: 'TKT · Do not share this password. Change it after signing in.',
+        }),
+      })
+      onboardingEmailOk = sent.ok
+      onboardingEmailError = sent.error ?? null
+      await writeAudit({
+        organizationId: event.orgId, eventId, actorUserId: req.user.id,
+        action: sent.ok ? 'workforce.onboarding_email.sent' : 'workforce.onboarding_email.failed',
+        resourceType: 'user', resourceId: userId,
+        newValue: { email: createdUserEmail, error: onboardingEmailError }, sourceIp: req.ip,
+      })
+    }
+
+    return { data: { ...result, onboardingEmailOk, onboardingEmailError, accountCreated: Boolean(tempPassword) } }
   })
 
   app.get('/profiles', async (req) => {

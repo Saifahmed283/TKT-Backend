@@ -137,6 +137,7 @@ export async function resendReservationCredential(params: {
   ticketId: string
   actorUserId: string
   actorName: string
+  toEmail?: string
 }): Promise<{ ticket: any; credential: any; deliveryOk: boolean }> {
   const ticket = await prisma.ticket.findFirst({
     where: { id: params.ticketId, eventId: params.eventId },
@@ -144,7 +145,7 @@ export async function resendReservationCredential(params: {
       attendee: { select: { id: true, name: true, email: true, phone: true } },
       ticketType: { select: { id: true, name: true, price: true } },
       credential: true,
-      event: { select: { id: true, orgId: true, name: true, startAt: true, endAt: true, venueName: true } },
+      event: { select: { id: true, orgId: true, name: true, startAt: true, endAt: true, venueName: true, settings: true } },
     },
   })
   if (!ticket) throw errors.notFound('Reservation not found')
@@ -154,27 +155,32 @@ export async function resendReservationCredential(params: {
   if (!ticket.credential) {
     throw errors.conflict('Credential has not been issued for this reservation')
   }
-  if (!ticket.attendee.email) throw errors.badRequest('Attendee email is missing')
+  const to = (params.toEmail ?? ticket.attendee.email ?? '').trim()
+  if (!to) throw errors.badRequest('Recipient email is missing')
 
+  const settings = ((ticket.event as any).settings ?? {}) as Record<string, any>
+  const tpl = (settings.ticketEmail ?? {}) as Record<string, any>
   const qr = await qrDataUrl(ticket.credential.code).catch(() => null)
   const codeOf = reservationCodeOf(ticket as any)
+  const shortCode = (ticket.credential as any).shortCode ?? null
   const attempt = (ticket.deliveryAttempts ?? 0) + 1
   const delivery = await getDeliveryAdapter('EMAIL').send({
-    to: ticket.attendee.email,
-    subject: `Your ticket — ${ticket.event.name}`,
+    to,
+    subject: typeof tpl.subject === 'string' && tpl.subject ? tpl.subject.replace('{event}', ticket.event.name) : `Your ticket — ${ticket.event.name}`,
     html: ticketEmailShell({
-      preheader: `Ticket for ${ticket.event.name} — present your QR at check-in`,
-      title: `Your ticket for ${ticket.event.name}`,
-      body: `Here is your signed QR ticket for <strong>${ticket.event.name}</strong>. Present it at check-in.`,
+      preheader: typeof tpl.preheader === 'string' && tpl.preheader ? tpl.preheader : `Ticket for ${ticket.event.name} — present your QR at check-in`,
+      title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replace('{event}', ticket.event.name) : `Your ticket for ${ticket.event.name}`,
+      body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replace('{event}', `<strong>${ticket.event.name}</strong>`) : `Here is your signed QR ticket for <strong>${ticket.event.name}</strong>. Present it at check-in.`,
       rows: [
         { label: 'Event', value: ticket.event.name },
         { label: 'Ticket', value: ticket.ticketType.name },
         { label: 'Date', value: ticket.event.startAt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) },
         { label: 'Venue', value: ticket.event.venueName ?? 'TBA' },
         ...(codeOf ? [{ label: 'Reservation', value: codeOf }] : []),
+        ...(shortCode ? [{ label: 'Ticket code', value: shortCode }] : []),
       ],
       qrDataUrl: qr,
-      footer: 'TKT · Control center for live events',
+      footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · Control center for live events',
     }),
   })
   const deliveryOk = delivery.ok
@@ -196,12 +202,12 @@ export async function resendReservationCredential(params: {
     credentialId: ticket.credential.id,
     channel: 'EMAIL',
     status: deliveryOk ? 'SENT' : 'FAILED',
-    recipient: ticket.attendee.email,
+    recipient: to,
     provider: delivery.provider,
     providerMessageId: delivery.providerMessageId ?? null,
     error: delivery.error ?? null,
     attempt,
-    metadata: { resend: true },
+    metadata: { resend: true, toOverride: Boolean(params.toEmail) },
     createdById: params.actorUserId,
   })
 

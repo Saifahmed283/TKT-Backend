@@ -123,6 +123,8 @@ export const PERMISSIONS = {
 
   // Finance
   'payment.view': 'View payments',
+  'payment.manage': 'Manage payment providers and payment settings',
+  'payment.review': 'Review and confirm/reject submitted payments',
   'expense.create': 'Create expenses',
   'refund.process': 'Process refunds',
 
@@ -135,6 +137,11 @@ export const PERMISSIONS = {
   // Integrations / extras
   'integration.view': 'View integrations and event extras',
   'integration.manage': 'Manage integrations and event extras',
+
+  // Transport / bus seats
+  'bus.view': 'View bus seat maps',
+  'bus.manage': 'Manage buses and seat maps',
+  'bus.reserve': 'Reserve bus seats',
 } as const
 
 export type Permission = keyof typeof PERMISSIONS
@@ -417,6 +424,8 @@ export const BASE_ROLES: BaseRoleDefinition[] = [
     permissions: [
       ...eventReadBase,
       'payment.view',
+      'payment.manage',
+      'payment.review',
       'expense.create',
       'refund.process',
       'ticket.view',

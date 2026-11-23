@@ -44,6 +44,8 @@ const reservationSchema = z.object({
   paymentReference: z.string().max(200).optional().nullable(),
   paymentProofUrl: z.string().max(2_000_000).optional().nullable(),
   paymentAmount: z.coerce.number().nonnegative().optional().nullable(),
+  busId: z.string().optional().nullable(),
+  seatIds: z.array(z.string()).max(20).optional(),
 })
 
 const contactSchema = z.object({
@@ -199,6 +201,11 @@ export async function publicRoutes(app: FastifyInstance) {
           select: { id: true, name: true, accountName: true, accountNumber: true, paymentPhone: true, paymentLink: true, instructions: true, imageUrl: true },
           orderBy: { createdAt: 'asc' },
         },
+        buses: {
+          where: { isActive: true },
+          select: { id: true, name: true, layout: true, seats: { select: { id: true, label: true, row: true, col: true, state: true, holderName: true } }, _count: { select: { seats: true } } },
+          orderBy: { createdAt: 'asc' },
+        },
       },
     })
     if (!event || !['PUBLISHED', 'COMPLETED', 'ARCHIVED'].includes(event.status)) {
@@ -246,6 +253,11 @@ export async function publicRoutes(app: FastifyInstance) {
         },
         ticketTypes,
         paymentProviders: (event as any).paymentProviders ?? [],
+        buses: ((event as any).buses ?? []).map((b: any) => ({
+          id: b.id, name: b.name, layout: b.layout, totalSeats: b._count?.seats ?? b.seats?.length ?? 0,
+          availableSeats: (b.seats ?? []).filter((s: any) => s.state === 'AVAILABLE').length,
+          seats: (b.seats ?? []).map((s: any) => ({ id: s.id, label: s.label, row: s.row, col: s.col, state: s.state, holderName: s.state === 'RESERVED' ? (s.holderName ?? 'Reserved') : null })),
+        })),
       },
     }
   })
@@ -309,6 +321,7 @@ export async function publicRoutes(app: FastifyInstance) {
 
     let attendee: any
     let ticket: any
+    let reservedSeats: { id: string; label: string; busId: string }[] = []
     try {
       const created = await prisma.$transaction(async (tx) => {
         const existing = await tx.ticket.findFirst({
@@ -322,6 +335,16 @@ export async function publicRoutes(app: FastifyInstance) {
         })
         if (existing) {
           throw Object.assign(new Error('DUPLICATE_RESERVATION'), { existing })
+        }
+
+        const seatIds = Array.isArray(body.seatIds) ? [...new Set(body.seatIds)] : []
+        let seatRows: any[] = []
+        if (seatIds.length > 0) {
+          if (!body.busId) throw errors.badRequest('busId is required when reserving seats')
+          seatRows = await tx.busSeat.findMany({ where: { id: { in: seatIds }, busId: body.busId, bus: { eventId, isActive: true } } })
+          if (seatRows.length !== seatIds.length) throw errors.badRequest('One or more seats are invalid')
+          const blocked = seatRows.filter((s: any) => s.state !== 'AVAILABLE')
+          if (blocked.length) throw errors.conflict(`Seats no longer available: ${blocked.map((s: any) => s.label).join(', ')}`)
         }
 
         const attendee = await tx.attendee.create({
@@ -363,14 +386,27 @@ export async function publicRoutes(app: FastifyInstance) {
               name: body.name,
               paymentProviderId: paid ? (paymentProvider?.id ?? null) : null,
               paymentReference: paid ? (body.paymentReference?.trim() || null) : null,
+              busId: body.busId ?? null,
+              seatIds,
             },
           },
         })
 
-        return { attendee, ticket }
+        if (seatIds.length > 0) {
+          const groupId = randomUUID()
+          const updated = await tx.busSeat.updateMany({
+            where: { id: { in: seatIds }, busId: body.busId!, state: 'AVAILABLE' },
+            data: { state: 'RESERVED', holderName: body.name.trim(), groupId, ticketId: ticket.id, reservedAt: new Date() },
+          })
+          if (updated.count !== seatIds.length) throw errors.conflict('Seat reservation conflict — please reselect seats')
+          seatRows = seatRows.map((s: any) => ({ ...s, groupId, ticketId: ticket.id }))
+        }
+
+        return { attendee, ticket, seatRows }
       })
       attendee = created.attendee
       ticket = created.ticket
+      reservedSeats = (created.seatRows ?? []).map((s: any) => ({ id: s.id, label: s.label, busId: s.busId }))
     } catch (err: any) {
       if (err?.message === 'DUPLICATE_RESERVATION' && err.existing) {
         const existing = err.existing
@@ -461,7 +497,8 @@ export async function publicRoutes(app: FastifyInstance) {
       qr = issued.qrCode
     }
 
-    logActivity(eventId, 'reservation', `${body.name} reserved ${ticketType.name} · ${code}`, body.name)
+    const seatSuffix = reservedSeats.length ? ` · seats ${reservedSeats.map((s) => s.label).join(', ')}` : ''
+    logActivity(eventId, 'reservation', `${body.name} reserved ${ticketType.name} · ${code}${seatSuffix}`, body.name)
     publish(channelFor.reservation(eventId), 'reservation.created', {
       ticketId: ticket.id,
       reservationCode: code,
@@ -495,6 +532,7 @@ export async function publicRoutes(app: FastifyInstance) {
         approval: paid ? 'PENDING' : 'APPROVED',
         paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
         qr,
+        seats: reservedSeats,
       },
     })
   })

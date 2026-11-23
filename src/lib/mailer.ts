@@ -39,7 +39,7 @@ export async function sendMail(payload: MailPayload): Promise<MailSendResult> {
   const t = getTransporter()
   if (!t) {
     console.log(`[mailer:noop] → ${payload.to} :: ${payload.subject}`)
-    return { ok: false, error: 'SMTP not configured' }
+    return { ok: false, error: 'SMTP not configured. Set SMTP_HOST/SMTP_USER/SMTP_PASS/MAIL_FROM in backend .env.' }
   }
   try {
     const info = await t.sendMail({
@@ -51,8 +51,9 @@ export async function sendMail(payload: MailPayload): Promise<MailSendResult> {
     })
     return { ok: true, messageId: typeof info?.messageId === 'string' ? info.messageId : null }
   } catch (err) {
-    console.error('[mailer:error]', err)
-    return { ok: false, error: err instanceof Error ? err.message : 'Failed to send email' }
+    const msg = err instanceof Error ? err.message : 'Failed to send email'
+    console.error('[mailer:error]', msg)
+    return { ok: false, error: msg }
   }
 }
 

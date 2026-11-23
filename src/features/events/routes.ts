@@ -466,11 +466,11 @@ export async function eventRoutes(app: FastifyInstance) {
     const { eventId } = req.params as { eventId: string }
     const ctx = await requirePermission(req, 'event.view', { eventId })
 
-    const event = await prisma.event.findUnique({ where: { id: eventId } })
-    if (!event) throw errors.notFound('Event not found')
-
-    const [attendees, checkedIn, granted, denied, activeIncidents, openTasks, activeStaff, todayScans, areaScans] =
+    // All overview reads are independent — run them in a single parallel batch so
+    // they share one network round-trip wave instead of several sequential ones.
+    const [event, attendees, checkedIn, granted, denied, activeIncidents, openTasks, activeStaff, todayScans, areaScans, incidentsByPriority, tasksByStatus, recentAccess, recentIncidents, recentTasks] =
       await Promise.all([
+        prisma.event.findUnique({ where: { id: eventId } }),
         prisma.attendee.count({ where: { eventId } }),
         prisma.attendee.count({ where: { eventId, status: 'CHECKED_IN' } }),
         prisma.accessLog.count({ where: { eventId, result: 'GRANTED' } }),
@@ -480,30 +480,28 @@ export async function eventRoutes(app: FastifyInstance) {
         prisma.eventMember.count({ where: { eventId, status: 'ACTIVE' } }),
         prisma.accessLog.count({ where: { eventId, timestamp: { gte: new Date(Date.now() - 24 * 3600 * 1000) } } }),
         prisma.accessLog.groupBy({ by: ['areaId'], where: { eventId }, _count: true, orderBy: { _count: { areaId: 'desc' } }, take: 6 }),
+        prisma.incident.groupBy({ by: ['priority'], where: { eventId }, _count: true }),
+        prisma.task.groupBy({ by: ['status'], where: { eventId }, _count: true }),
+        prisma.accessLog.findMany({
+          where: { eventId },
+          orderBy: { timestamp: 'desc' },
+          take: 12,
+          include: { area: { select: { name: true } }, credential: { select: { code: true } } },
+        }),
+        prisma.incident.findMany({
+          where: { eventId },
+          orderBy: { createdAt: 'desc' },
+          take: 6,
+          include: { area: { select: { name: true } }, assignee: { select: { name: true } }, team: { select: { name: true } } },
+        }),
+        prisma.task.findMany({
+          where: { eventId },
+          orderBy: { updatedAt: 'desc' },
+          take: 6,
+          include: { assignee: { select: { name: true } }, area: { select: { name: true } }, team: { select: { name: true } } },
+        }),
       ])
-
-    const [incidentsByPriority, tasksByStatus, recentAccess, recentIncidents, recentTasks] = await Promise.all([
-      prisma.incident.groupBy({ by: ['priority'], where: { eventId }, _count: true }),
-      prisma.task.groupBy({ by: ['status'], where: { eventId }, _count: true }),
-      prisma.accessLog.findMany({
-        where: { eventId },
-        orderBy: { timestamp: 'desc' },
-        take: 12,
-        include: { area: { select: { name: true } }, credential: { select: { code: true } } },
-      }),
-      prisma.incident.findMany({
-        where: { eventId },
-        orderBy: { createdAt: 'desc' },
-        take: 6,
-        include: { area: { select: { name: true } }, assignee: { select: { name: true } }, team: { select: { name: true } } },
-      }),
-      prisma.task.findMany({
-        where: { eventId },
-        orderBy: { updatedAt: 'desc' },
-        take: 6,
-        include: { assignee: { select: { name: true } }, area: { select: { name: true } }, team: { select: { name: true } } },
-      }),
-    ])
+    if (!event) throw errors.notFound('Event not found')
 
     return {
       data: {

@@ -1,14 +1,13 @@
-﻿import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import ExcelJS from 'exceljs'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
-import { logActivity } from '../../lib/activity.js'
 import { issueReservationCredential, reservationCodeOf } from '../reservations/service.js'
-import { publish, channelFor } from '../../lib/realtime.js'
 
 const providerSchema = z.object({
   name: z.string().min(2),
@@ -26,190 +25,196 @@ const reviewSchema = z.object({
   note: z.string().max(500).optional(),
 })
 
+function toNumber(v: unknown) {
+  if (v === null || v === undefined) return 0
+  const n = typeof v === 'number' ? v : Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+function getEstimatedCost(event: { settings: unknown }) {
+  const s = (event.settings ?? {}) as Record<string, unknown>
+  const finance = (s.finance ?? {}) as Record<string, unknown>
+  return {
+    estimatedCost: toNumber(finance.estimatedCost ?? s.estimatedCost),
+    currency: typeof finance.currency === 'string' ? finance.currency : typeof s.currency === 'string' ? s.currency : 'EGP',
+    notes: typeof finance.notes === 'string' ? finance.notes : '',
+  }
+}
+
 export async function paymentRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate)
 
   app.get('/providers', async (req) => {
     const { eventId } = req.params as { eventId: string }
-    await requirePermission(req, 'payment.view', { eventId })
-    const providers = await prisma.paymentProvider.findMany({
-      where: { eventId },
-      orderBy: [{ isActive: 'desc' }, { createdAt: 'desc' }],
-    })
+    await requirePermission(req, 'event.view', { eventId })
+    const providers = await prisma.paymentProvider.findMany({ where: { eventId }, orderBy: { createdAt: 'asc' } })
     return { data: providers }
   })
 
   app.post('/providers', async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
-    await requirePermission(req, 'payment.view', { eventId })
+    await requirePermission(req, 'payment.manage', { eventId })
     const body = providerSchema.parse(req.body)
-    const event = await prisma.event.findUnique({ where: { id: eventId }, select: { id: true, orgId: true } })
-    if (!event) throw errors.notFound('Event not found')
     const provider = await prisma.paymentProvider.create({
       data: {
-        eventId,
-        name: body.name.trim(),
-        accountName: body.accountName?.trim() || null,
-        accountNumber: body.accountNumber?.trim() || null,
-        paymentPhone: body.paymentPhone?.trim() || null,
-        paymentLink: body.paymentLink?.trim() || null,
-        instructions: body.instructions?.trim() || null,
-        imageUrl: body.imageUrl?.trim() || null,
-        isActive: body.isActive ?? true,
+        eventId, name: body.name, accountName: body.accountName || null, accountNumber: body.accountNumber || null,
+        paymentPhone: body.paymentPhone || null, paymentLink: body.paymentLink || null, instructions: body.instructions || null,
+        imageUrl: body.imageUrl || null, isActive: body.isActive ?? true,
       },
     })
-    await writeAudit({
-      organizationId: event.orgId, eventId, actorUserId: req.user.id,
-      action: AuditActions.PAYMENT_PROVIDER_CREATED, resourceType: 'payment_provider', resourceId: provider.id,
-      newValue: body, sourceIp: req.ip,
-    })
+    const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
+    await writeAudit({ organizationId: event?.orgId, eventId, actorUserId: req.user.id, action: AuditActions.PAYMENT_PROVIDER_CREATED, resourceType: 'payment_provider', resourceId: provider.id, newValue: { name: provider.name }, sourceIp: req.ip })
     return reply.status(201).send({ data: provider })
   })
 
   app.patch('/providers/:providerId', async (req) => {
     const { eventId, providerId } = req.params as { eventId: string; providerId: string }
-    await requirePermission(req, 'payment.view', { eventId })
+    await requirePermission(req, 'payment.manage', { eventId })
     const body = providerSchema.partial().parse(req.body)
-    const existing = await prisma.paymentProvider.findFirst({ where: { id: providerId, eventId } })
-    if (!existing) throw errors.notFound('Payment provider not found')
-    const provider = await prisma.paymentProvider.update({
-      where: { id: providerId },
-      data: {
-        ...(body.name !== undefined ? { name: body.name.trim() } : {}),
-        ...(body.accountName !== undefined ? { accountName: body.accountName?.trim() || null } : {}),
-        ...(body.accountNumber !== undefined ? { accountNumber: body.accountNumber?.trim() || null } : {}),
-        ...(body.paymentPhone !== undefined ? { paymentPhone: body.paymentPhone?.trim() || null } : {}),
-        ...(body.paymentLink !== undefined ? { paymentLink: body.paymentLink?.trim() || null } : {}),
-        ...(body.instructions !== undefined ? { instructions: body.instructions?.trim() || null } : {}),
-        ...(body.imageUrl !== undefined ? { imageUrl: body.imageUrl?.trim() || null } : {}),
-        ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
-      },
-    })
-    const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
-    await writeAudit({
-      organizationId: event?.orgId, eventId, actorUserId: req.user.id,
-      action: AuditActions.PAYMENT_PROVIDER_UPDATED, resourceType: 'payment_provider', resourceId: providerId,
-      previousValue: existing, newValue: body, sourceIp: req.ip,
-    })
+    const existing = await prisma.paymentProvider.findUnique({ where: { id: providerId } })
+    if (!existing || existing.eventId !== eventId) throw errors.notFound('Payment provider not found')
+    const provider = await prisma.paymentProvider.update({ where: { id: providerId }, data: { ...body, paymentLink: body.paymentLink === '' ? null : body.paymentLink } })
     return { data: provider }
   })
 
   app.delete('/providers/:providerId', async (req, reply) => {
     const { eventId, providerId } = req.params as { eventId: string; providerId: string }
-    await requirePermission(req, 'payment.view', { eventId })
-    const existing = await prisma.paymentProvider.findFirst({ where: { id: providerId, eventId } })
-    if (!existing) throw errors.notFound('Payment provider not found')
+    await requirePermission(req, 'payment.manage', { eventId })
+    const existing = await prisma.paymentProvider.findUnique({ where: { id: providerId } })
+    if (!existing || existing.eventId !== eventId) throw errors.notFound('Payment provider not found')
     await prisma.paymentProvider.delete({ where: { id: providerId } })
-    const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
-    await writeAudit({
-      organizationId: event?.orgId, eventId, actorUserId: req.user.id,
-      action: AuditActions.PAYMENT_PROVIDER_DELETED, resourceType: 'payment_provider', resourceId: providerId,
-      previousValue: existing, sourceIp: req.ip,
-    })
     return reply.status(204).send()
   })
 
   app.get('/pending', async (req) => {
     const { eventId } = req.params as { eventId: string }
-    await requirePermission(req, 'payment.view', { eventId })
-    const rows = await prisma.ticket.findMany({
-      where: {
-        eventId,
-        paymentStatus: 'PENDING',
-        paymentSubmittedAt: { not: null },
-        status: { in: ['ISSUED', 'ACTIVE'] },
-      },
-      orderBy: { paymentSubmittedAt: 'desc' },
-      take: 200,
-      select: {
-        id: true, reservationCode: true, reservationName: true, reservationEmail: true, reservationPhone: true,
-        status: true, approvalStatus: true, paymentStatus: true, price: true, paymentAmount: true,
-        paymentReference: true, paymentProofUrl: true, paymentSubmittedAt: true, paymentReviewNote: true,
-        paymentProvider: { select: { id: true, name: true } },
-        attendee: { select: { id: true, name: true, email: true, phone: true } },
-        ticketType: { select: { id: true, name: true, price: true } },
-      },
+    await requirePermission(req, 'payment.review', { eventId })
+    const tickets = await prisma.ticket.findMany({
+      where: { eventId, metadata: { path: ['paymentStatus'], equals: 'PENDING' } },
+      include: { attendee: true, ticketType: { select: { id: true, name: true, category: true, price: true } } },
+      orderBy: { issuedAt: 'desc' }, take: 200,
     })
-    return { data: rows }
+    return {
+      data: tickets.map((t) => {
+        const meta = (t.metadata ?? {}) as Record<string, unknown>
+        return { ...t, reservationCode: reservationCodeOf(t as any), paymentReference: typeof meta.paymentReference === 'string' ? meta.paymentReference : null, paymentProofUrl: typeof meta.paymentProofUrl === 'string' ? meta.paymentProofUrl : null, paymentProvider: typeof meta.paymentProvider === 'string' ? meta.paymentProvider : null }
+      }),
+    }
   })
 
-  app.get('/summary', async (req) => {
-    const { eventId } = req.params as { eventId: string }
-    await requirePermission(req, 'report.view', { eventId })
-    const [pending, confirmed, failed, revenueAgg] = await Promise.all([
-      prisma.ticket.count({ where: { eventId, paymentStatus: 'PENDING' } }),
-      prisma.ticket.count({ where: { eventId, paymentStatus: 'CONFIRMED' } }),
-      prisma.ticket.count({ where: { eventId, paymentStatus: 'FAILED' } }),
-      prisma.ticket.aggregate({ where: { eventId, paymentStatus: 'CONFIRMED' }, _sum: { paymentAmount: true, price: true } }),
-    ])
-    return { data: { pending, confirmed, failed, totalRevenue: Number(revenueAgg._sum.paymentAmount ?? revenueAgg._sum.price ?? 0) } }
+  app.get('/reference/:reference', async (req) => {
+    const { eventId, reference } = req.params as { eventId: string; reference: string }
+    await requirePermission(req, 'payment.review', { eventId })
+    const ref = decodeURIComponent(reference).trim()
+    if (!ref) throw errors.badRequest('Reference is required')
+    const tickets = await prisma.ticket.findMany({
+      where: { eventId, metadata: { path: ['paymentReference'], equals: ref } },
+      include: { attendee: true, ticketType: { select: { id: true, name: true } } },
+      orderBy: { issuedAt: 'desc' }, take: 20,
+    })
+    return { data: tickets.map(t => ({ ...t, reservationCode: reservationCodeOf(t as any) })) }
   })
 
   app.post('/reservations/:ticketId/review', async (req) => {
     const { eventId, ticketId } = req.params as { eventId: string; ticketId: string }
-    await requirePermission(req, 'payment.view', { eventId })
+    await requirePermission(req, 'payment.review', { eventId })
     const body = reviewSchema.parse(req.body)
-    const event = await prisma.event.findUnique({ where: { id: eventId } })
-    if (!event) throw errors.notFound('Event not found')
-    const ticket = await prisma.ticket.findFirst({
-      where: { id: ticketId, eventId },
-      include: {
-        attendee: { select: { id: true, name: true, email: true, phone: true } },
-        ticketType: { select: { id: true, name: true, price: true } },
-        credential: { select: { id: true, code: true, status: true } },
-      },
-    })
-    if (!ticket) throw errors.notFound('Reservation not found')
-    if (ticket.paymentStatus !== 'PENDING') throw errors.conflict('Payment is not pending review')
 
-    if (body.action === 'CONFIRM') {
+    const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: { attendee: true, ticketType: true, event: true } })
+    if (!ticket || ticket.eventId !== eventId) throw errors.notFound('Ticket not found')
+    const meta = (ticket.metadata ?? {}) as Record<string, unknown>
+    if (meta.paymentStatus !== 'PENDING') throw errors.conflict('Payment is not pending review')
+
+    if (body.action === 'REJECT') {
       const updated = await prisma.ticket.update({
-        where: { id: ticket.id },
-        data: {
-          paymentStatus: 'CONFIRMED',
-          paymentConfirmedAt: new Date(),
-          paymentReviewedAt: new Date(),
-          paymentReviewedById: req.user.id,
-          paymentReviewNote: body.note?.trim() || null,
-        },
-        include: {
-          attendee: { select: { id: true, name: true, email: true, phone: true } },
-          ticketType: { select: { id: true, name: true, price: true } },
-          credential: { select: { id: true, code: true, status: true } },
-        },
+        where: { id: ticketId },
+        data: { status: 'CANCELLED', metadata: { ...meta, paymentStatus: 'FAILED', approval: 'REJECTED', rejectedReason: body.note ?? 'Payment proof rejected', rejectedAt: new Date().toISOString(), reviewedByUserId: req.user.id } as any },
       })
-      let credential = updated.credential
-      if (updated.approvalStatus === 'APPROVED' && !credential) {
-        const issued = await issueReservationCredential({
-          event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName },
-          ticket: updated as any,
-          issuerUserId: req.user.id,
-        })
-        credential = issued.credential
-      }
-      await writeAudit({
-        organizationId: event.orgId, eventId, actorUserId: req.user.id,
-        action: AuditActions.PAYMENT_CONFIRMED, resourceType: 'ticket', resourceId: ticket.id,
-        previousValue: { paymentStatus: ticket.paymentStatus }, newValue: { paymentStatus: 'CONFIRMED', note: body.note ?? null },
-        sourceIp: req.ip,
-      })
-      logActivity(eventId, 'payment', `Payment confirmed · ${reservationCodeOf(updated as any) ?? ticket.id.slice(0, 8)}`, req.user.name)
-      publish(channelFor.reservation(eventId), 'payment.confirmed', { ticketId: ticket.id })
-      return { data: { ticket: await prisma.ticket.findUnique({ where: { id: ticket.id }, include: { credential: { select: { id: true, code: true, status: true } } } }), credential } }
+      await writeAudit({ organizationId: ticket.event.orgId, eventId, actorUserId: req.user.id, action: AuditActions.PAYMENT_REJECTED, resourceType: 'ticket', resourceId: ticketId, newValue: { action: body.action }, sourceIp: req.ip })
+      return { data: updated }
     }
 
-    const updated = await prisma.ticket.update({
-      where: { id: ticket.id },
-      data: { paymentStatus: 'FAILED', paymentReviewedAt: new Date(), paymentReviewedById: req.user.id, paymentReviewNote: body.note?.trim() || 'Payment rejected' },
+    const confirmed = await prisma.ticket.update({
+      where: { id: ticketId },
+      data: { metadata: { ...meta, paymentStatus: 'CONFIRMED', paymentConfirmedAt: new Date().toISOString(), reviewedByUserId: req.user.id } as any },
+      include: { attendee: true, ticketType: true, event: true },
     })
-    await writeAudit({
-      organizationId: event.orgId, eventId, actorUserId: req.user.id,
-      action: AuditActions.PAYMENT_REJECTED, resourceType: 'ticket', resourceId: ticket.id,
-      previousValue: { paymentStatus: ticket.paymentStatus }, newValue: { paymentStatus: 'FAILED', note: body.note ?? null },
-      sourceIp: req.ip,
-    })
-    logActivity(eventId, 'payment', `Payment rejected · ${reservationCodeOf(ticket as any) ?? ticket.id.slice(0, 8)}`, req.user.name)
-    publish(channelFor.reservation(eventId), 'payment.rejected', { ticketId: ticket.id })
-    return { data: { ticket: updated } }
+
+    const issued = await issueReservationCredential({ event: { id: ticket.event.id, orgId: ticket.event.orgId, name: ticket.event.name, startAt: ticket.event.startAt, endAt: ticket.event.endAt, venueName: ticket.event.venueName }, ticket: confirmed as any, issuerUserId: req.user.id, sendEmail: true })
+    await writeAudit({ organizationId: ticket.event.orgId, eventId, actorUserId: req.user.id, action: AuditActions.PAYMENT_CONFIRMED, resourceType: 'ticket', resourceId: ticketId, newValue: { action: body.action, credentialId: issued.credential.id }, sourceIp: req.ip })
+    return { data: { ticket: confirmed, credentialId: issued.credential.id } }
+  })
+
+  app.get('/summary', async (req) => {
+    const { eventId } = req.params as { eventId: string }
+    await requirePermission(req, 'payment.view', { eventId })
+
+    const [event, tickets, ticketTypes] = await Promise.all([
+      prisma.event.findUnique({ where: { id: eventId }, select: { settings: true } }),
+      prisma.ticket.findMany({ where: { eventId }, select: { id: true, status: true, price: true, metadata: true, ticketTypeId: true, ticketType: { select: { id: true, name: true, category: true, price: true } } } }),
+      prisma.ticketType.findMany({ where: { eventId }, select: { id: true, name: true, category: true, price: true, quota: true, _count: { select: { tickets: true } } } }),
+    ])
+    if (!event) throw errors.notFound('Event not found')
+
+    const byStatus: Record<string, number> = {}
+    const byCategory: Record<string, { count: number; revenue: number }> = {}
+    const byProvider: Record<string, { count: number; revenue: number }> = {}
+    let confirmedRevenue = 0; let pendingRevenue = 0; let failedRevenue = 0; let refundedRevenue = 0
+
+    for (const t of tickets) {
+      const meta = (t.metadata ?? {}) as Record<string, unknown>
+      const ps = String(meta.paymentStatus ?? (toNumber(t.price) > 0 ? 'CONFIRMED' : 'NOT_REQUIRED'))
+      byStatus[ps] = (byStatus[ps] ?? 0) + 1
+      const amount = toNumber(t.price)
+      if (ps === 'CONFIRMED' || ps === 'NOT_REQUIRED') confirmedRevenue += amount
+      if (ps === 'PENDING') pendingRevenue += amount
+      if (ps === 'FAILED') failedRevenue += amount
+      if (ps === 'REFUNDED') refundedRevenue += amount
+      const cat = t.ticketType?.category ?? 'UNCATEGORIZED'
+      byCategory[cat] ??= { count: 0, revenue: 0 }; byCategory[cat].count += 1; if (ps === 'CONFIRMED' || ps === 'NOT_REQUIRED') byCategory[cat].revenue += amount
+      const prov = typeof meta.paymentProvider === 'string' && meta.paymentProvider ? meta.paymentProvider : 'Unspecified'
+      byProvider[prov] ??= { count: 0, revenue: 0 }; byProvider[prov].count += 1; if (ps === 'CONFIRMED' || ps === 'NOT_REQUIRED') byProvider[prov].revenue += amount
+    }
+
+    const totalCapacity = ticketTypes.reduce((s, t) => s + (t.quota ?? 0), 0)
+    const soldCount = tickets.filter(t => t.status !== 'CANCELLED').length
+    const remainingTickets = totalCapacity > 0 ? Math.max(0, totalCapacity - soldCount) : null
+    const finance = getEstimatedCost(event)
+    const netRevenue = confirmedRevenue - refundedRevenue
+
+    return {
+      data: {
+        currency: finance.currency, estimatedCost: finance.estimatedCost, financeNotes: finance.notes,
+        confirmedRevenue, pendingRevenue, failedRevenue, refundedRevenue, netRevenue, estimatedProfit: netRevenue - finance.estimatedCost,
+        totalTickets: tickets.length, soldTickets: soldCount, totalCapacity: totalCapacity || null, remainingTickets,
+        byPaymentStatus: Object.entries(byStatus).map(([status, count]) => ({ status, count })),
+        byCategory: Object.entries(byCategory).map(([category, v]) => ({ category, ...v })),
+        byProvider: Object.entries(byProvider).map(([provider, v]) => ({ provider, ...v })),
+        byTicketType: ticketTypes.map(t => ({ id: t.id, name: t.name, category: t.category, price: toNumber(t.price), capacity: t.quota, sold: t._count.tickets, remaining: t.quota == null ? null : Math.max(0, t.quota - t._count.tickets) })),
+      },
+    }
+  })
+
+  app.get('/export.xlsx', async (req, reply) => {
+    const { eventId } = req.params as { eventId: string }
+    await requirePermission(req, 'report.export', { eventId })
+    const tickets = await prisma.ticket.findMany({ where: { eventId }, include: { attendee: true, ticketType: true }, orderBy: { issuedAt: 'desc' }, take: 5000 })
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('Payments')
+    ws.columns = [
+      { header: 'Reservation Code', key: 'reservationCode', width: 24 }, { header: 'Attendee', key: 'attendee', width: 24 }, { header: 'Email', key: 'email', width: 28 },
+      { header: 'Ticket Type', key: 'ticketType', width: 20 }, { header: 'Category', key: 'category', width: 16 }, { header: 'Amount', key: 'amount', width: 12 },
+      { header: 'Payment Status', key: 'paymentStatus', width: 16 }, { header: 'Reference', key: 'reference', width: 24 }, { header: 'Provider', key: 'provider', width: 20 },
+      { header: 'Proof URL', key: 'proof', width: 40 }, { header: 'Issued At', key: 'issuedAt', width: 22 },
+    ]
+    for (const t of tickets) {
+      const meta = (t.metadata ?? {}) as Record<string, unknown>
+      ws.addRow({ reservationCode: reservationCodeOf(t as any), attendee: t.attendee?.name ?? '', email: t.attendee?.email ?? '', ticketType: t.ticketType?.name ?? '', category: t.ticketType?.category ?? '', amount: toNumber(t.price), paymentStatus: String(meta.paymentStatus ?? ''), reference: String(meta.paymentReference ?? ''), provider: String(meta.paymentProvider ?? ''), proof: String(meta.paymentProofUrl ?? ''), issuedAt: t.issuedAt.toISOString() })
+    }
+    const buf = await wb.xlsx.writeBuffer()
+    reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    reply.header('Content-Disposition', `attachment; filename="payments-${eventId}.xlsx"`)
+    return reply.send(Buffer.from(buf))
   })
 }
+

@@ -212,6 +212,7 @@ model Event {
   eventMapAssets        EventMapAsset?
   opsAlerts             OpsAlert[]
   teamChatMessages      TeamChatMessage[]
+  buses                 Bus[]
 
   @@index([orgId])
   @@index([status])
@@ -545,6 +546,7 @@ model Ticket {
   paymentReviewedBy User?                       @relation("TicketPaymentReview", fields: [paymentReviewedById], references: [id])
   deliveryLogs      CredentialDeliveryAttempt[]
   redeemedAccessCodes AccessCode[] @relation("AccessCodeRedeemedTicket")
+  busSeat           BusSeat?
 
   @@index([eventId])
   @@index([attendeeId])
@@ -1182,4 +1184,51 @@ model AuditLog {
   @@index([eventId, timestamp])
   @@index([actorUserId, timestamp])
   @@index([action])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Transport / bus seat reservation (2D seat map MVP)
+// ─────────────────────────────────────────────────────────────
+
+model Bus {
+  id        String   @id @default(cuid())
+  eventId   String
+  name      String
+  layout    Json     // { rows, cols, aisleAfterCol, seats: [{label,row,col,state}] }
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  event Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  seats BusSeat[]
+
+  @@index([eventId])
+}
+
+enum SeatState {
+  AVAILABLE
+  RESERVED
+  UNAVAILABLE
+}
+
+model BusSeat {
+  id          String    @id @default(cuid())
+  busId       String
+  label       String
+  row         Int
+  col         Int
+  state       SeatState @default(AVAILABLE)
+  ticketId    String?   @unique
+  holderName  String?
+  groupId     String?
+  reservedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  bus    Bus     @relation(fields: [busId], references: [id], onDelete: Cascade)
+  ticket Ticket? @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+
+  @@unique([busId, row, col])
+  @@index([busId, state])
+  @@index([groupId])
 }
