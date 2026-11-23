@@ -378,7 +378,7 @@ async function main() {
       name: 'Egypt Tech Summit 2026',
       description: 'Three days of product, AI and engineering — the largest developer summit in the region.',
       type: 'CONFERENCE',
-      daysFromNow: 45,
+      daysFromNow: 30,
       venueName: 'Grand Nile Tower Ballroom',
       venueAddress: 'Cairo',
       ticketTypes: [['Early Bird', 120], ['Standard', 180], ['VIP + Workshop', 450]] as const,
@@ -387,49 +387,57 @@ async function main() {
       name: 'Cairo Sound Festival 2026',
       description: 'A weekend of live bands, electronic stages and food markets under the stars.',
       type: 'CONCERT',
-      daysFromNow: 70,
+      daysFromNow: 45,
       venueName: 'Al-Azhar Park Outdoor Stage',
       venueAddress: 'Cairo',
       ticketTypes: [['General Admission', 60], ['VIP Deck', 200]] as const,
     },
     {
       name: 'Nile Valley Film Nights',
-      description: 'Open-air screenings of regional cinema, curated with independent filmmakers.',
-      type: 'EXHIBITION',
-      daysFromNow: 30,
-      venueName: 'Zamalek Open-Air Courtyard',
+      description: 'Open-air screenings and director talks by the river.',
+      type: 'FESTIVAL',
+      daysFromNow: 15,
+      venueName: 'Zamalek Riverfront',
       venueAddress: 'Cairo',
-      ticketTypes: [['Single Night', 40], ['Festival Pass', 120]] as const,
+      ticketTypes: [['Screening Pass', 25], ['Festival Pass', 80]] as const,
     },
   ]
 
   for (const def of upcomingDefs) {
+    const startAt = new Date(Date.now() + def.daysFromNow * 24 * 3600 * 1000)
+    const endAt = new Date(startAt.getTime() + 8 * 3600 * 1000)
     let ev = await prisma.event.findFirst({ where: { name: def.name } })
     if (!ev) {
-      const start = new Date(Date.now() + def.daysFromNow * 24 * 3600 * 1000)
-      start.setHours(18, 0, 0, 0)
-      const end = new Date(start.getTime() + 8 * 3600 * 1000)
       ev = await prisma.event.create({
         data: {
-          orgId,
+          orgId: org.id,
           name: def.name,
           description: def.description,
-          type: def.type as any,
+          type: def.type,
           status: 'PUBLISHED',
-          startAt: start,
-          endAt: end,
-          timezone: 'Africa/Cairo',
+          startAt,
+          endAt,
           venueName: def.venueName,
           venueAddress: def.venueAddress,
           settings: { registration: { enabled: true, open: true } },
         },
       })
-    }
-    for (const [ttName, price] of def.ticketTypes) {
-      const exists = await prisma.ticketType.findFirst({ where: { eventId: ev.id, name: ttName } })
-      if (!exists) {
-        await prisma.ticketType.create({ data: { eventId: ev.id, name: ttName, price, quota: 200 } })
+      for (const [tName, price] of def.ticketTypes) {
+        await prisma.ticketType.create({
+          data: { eventId: ev.id, name: tName, price, quota: 200 },
+        })
       }
+      await logActivity(ev.id, 'event', def.name + ' published', 'System')
+    } else {
+      ev = await prisma.event.update({
+        where: { id: ev.id },
+        data: {
+          status: 'PUBLISHED',
+          startAt,
+          endAt,
+          settings: { registration: { enabled: true, open: true } },
+        },
+      })
     }
   }
 
