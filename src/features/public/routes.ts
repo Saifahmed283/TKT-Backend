@@ -69,6 +69,12 @@ function reservationCode(): string {
   return `TKT-${randomBytes(4).toString('hex').toUpperCase()}`
 }
 
+function paidAmountMismatch(clientAmount: number | null, computedTotal: number): boolean {
+  if (clientAmount == null) return false
+  if (!Number.isFinite(clientAmount) || !Number.isFinite(computedTotal)) return true
+  return Math.abs(clientAmount - computedTotal) > 0.01
+}
+
 // ─────────────────────────────────────────────────────────────
 // Reservation availability — mirrors SAC's eventAvailability.
 // States: upcoming | open | sold_out | locked | closed
@@ -347,8 +353,18 @@ export async function publicRoutes(app: FastifyInstance) {
     const seatIds = Array.isArray(body.seatIds) ? [...new Set(body.seatIds)] : []
     const code = reservationCode()
     const ticketPrice = Number(ticketType.price ?? 0)
-    const busSeatUnitPriceForPricing = seatIds.length ? Number((await prisma.bus.findUnique({ where: { id: body.busId ?? '' }, select: { seatPrice: true } }).catch(() => null))?.seatPrice ?? 0) : 0
+    const bus = seatIds.length
+      ? await prisma.bus.findUnique({ where: { id: body.busId ?? '' }, select: { id: true, eventId: true, seatPrice: true, currency: true, isActive: true } }).catch(() => null)
+      : null
+    if (seatIds.length && (!body.busId || !bus || bus.eventId !== eventId || !bus.isActive)) {
+      throw errors.badRequest('Valid bus is required for seat reservations')
+    }
+    const busSeatUnitPriceForPricing = seatIds.length ? Number(bus?.seatPrice ?? 0) : 0
     const computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0) + (seatIds.length * (Number.isFinite(busSeatUnitPriceForPricing) ? busSeatUnitPriceForPricing : 0))
+    const clientPaymentAmount = body.paymentAmount == null ? null : Number(body.paymentAmount)
+    if (paidAmountMismatch(clientPaymentAmount, computedTotalForPricing)) {
+      throw errors.badRequest('Payment amount does not match ticket and seat total')
+    }
     const paid = computedTotalForPricing > 0
     const state = reservationStatePatch({ paid, approved: !paid })
     const emailNorm = normalizeReservationEmail(body.email)
@@ -561,8 +577,15 @@ export async function publicRoutes(app: FastifyInstance) {
       qr = issued.qrCode
     }
 
-    const busSeatUnitPrice = reservedSeats.length ? Number((await prisma.bus.findUnique({ where: { id: body.busId ?? '' }, select: { seatPrice: true } }).catch(() => null))?.seatPrice ?? 0) : 0
+    const busSeatUnitPrice = reservedSeats.length ? Number(bus?.seatPrice ?? 0) : 0
     const computedTotal = (Number(ticketType.price ?? 0) || 0) + (reservedSeats.length * (Number.isFinite(busSeatUnitPrice) ? busSeatUnitPrice : 0))
+    if (reservedSeats.length && Math.abs(computedTotal - computedTotalForPricing) > 0.01) {
+      await prisma.busSeat.updateMany({
+        where: { id: { in: reservedSeats.map((s) => s.id) }, holdToken: body.holdToken ?? undefined },
+        data: { state: 'AVAILABLE', holderName: null, groupId: null, ticketId: null, passengerName: null, passengerEmail: null, passengerPhone: null, holdToken: null, holdExpiresAt: null },
+      }).catch(() => null)
+      throw errors.conflict('Seat pricing changed; please retry')
+    }
     const seatSuffix = reservedSeats.length ? ` · seats ${reservedSeats.map((s) => s.label).join(', ')}` : ''
     logActivity(eventId, 'reservation', `${body.name} reserved ${ticketType.name} · ${code}${seatSuffix}`, body.name)
     publish(channelFor.reservation(eventId), 'reservation.created', {

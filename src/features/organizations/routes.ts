@@ -24,6 +24,12 @@ const updateOrgSchema = z.object({
   settings: z.record(z.string(), z.unknown()).optional(),
 })
 
+const folderSchema = z.object({
+  name: z.string().min(1).max(80),
+  color: z.string().max(32).nullable().optional(),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+})
+
 const inviteSchema = z.object({
   email: z.string().email(),
   role: z.enum(['OWNER', 'ADMIN', 'VIEWER']),
@@ -65,8 +71,8 @@ export async function organizationRoutes(app: FastifyInstance) {
     if (user?.platformRole === 'super_admin') {
       const orgs = await prisma.organization.findMany({
         select: {
-          id: true, name: true, slug: true, description: true, status: true, createdAt: true,
-          _count: { select: { events: true, members: true } },
+          id: true, name: true, slug: true, description: true, logoUrl: true, status: true, createdAt: true,
+          _count: { select: { events: true, members: true, folders: true } },
           events: { select: { id: true, name: true, status: true }, orderBy: { startAt: 'desc' }, take: 8 },
         },
         orderBy: { createdAt: 'asc' },
@@ -80,8 +86,8 @@ export async function organizationRoutes(app: FastifyInstance) {
         role: true,
         org: {
           select: {
-            id: true, name: true, slug: true, description: true, status: true, createdAt: true,
-            _count: { select: { events: true, members: true } },
+            id: true, name: true, slug: true, description: true, logoUrl: true, status: true, createdAt: true,
+            _count: { select: { events: true, members: true, folders: true } },
             events: { select: { id: true, name: true, status: true }, orderBy: { startAt: 'desc' }, take: 8 },
           },
         },
@@ -129,9 +135,14 @@ export async function organizationRoutes(app: FastifyInstance) {
     const ctx = await resolveOrgContext(req, orgId)
     const org = await prisma.organization.findUnique({
       where: { id: orgId },
-      select: {
-        id: true, name: true, slug: true, description: true, logoUrl: true, settings: true, status: true, createdAt: true,
-        _count: { select: { events: true, members: true } },
+      include: {
+        _count: { select: { members: true, events: true } },
+        folders: { orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }], include: { _count: { select: { events: true } } } },
+        events: {
+          select: { id: true, name: true, status: true, startAt: true, endAt: true, type: true, folderId: true },
+          orderBy: { startAt: 'desc' },
+          take: 100,
+        },
       },
     })
     if (!org) throw errors.notFound('Organization not found')
@@ -361,6 +372,46 @@ export async function organizationRoutes(app: FastifyInstance) {
         scopes: ['PLATFORM', 'ORGANIZATION', 'EVENT', 'TEAM', 'AREA'],
       },
     }
+  })
+
+  // ── Folders ───────────────────────────────────────────────────
+  app.post('/:orgId/folders', async (req, reply) => {
+    const { orgId } = req.params as { orgId: string }
+    const ctx = await resolveOrgContext(req, orgId)
+    if (!ctx.isAdmin) throw errors.forbidden()
+    const body = folderSchema.parse(req.body)
+    const existing = await prisma.organizationFolder.findUnique({ where: { orgId_name: { orgId, name: body.name } } }).catch(() => null)
+    if (existing) throw errors.conflict('Folder name already exists')
+    const folder = await prisma.organizationFolder.create({ data: { orgId, name: body.name, color: body.color ?? null, sortOrder: body.sortOrder ?? 0 } })
+    await writeAudit({ organizationId: orgId, actorUserId: req.user.id, action: 'organization.folder.created', resourceType: 'organization_folder', resourceId: folder.id, newValue: body, sourceIp: req.ip })
+    return reply.status(201).send({ data: folder })
+  })
+
+  app.patch('/:orgId/folders/:folderId', async (req) => {
+    const { orgId, folderId } = req.params as { orgId: string; folderId: string }
+    const ctx = await resolveOrgContext(req, orgId)
+    if (!ctx.isAdmin) throw errors.forbidden()
+    const body = folderSchema.partial().parse(req.body)
+    const folder = await prisma.organizationFolder.findFirst({ where: { id: folderId, orgId } })
+    if (!folder) throw errors.notFound('Folder not found')
+    if (body.name && body.name !== folder.name) {
+      const dup = await prisma.organizationFolder.findUnique({ where: { orgId_name: { orgId, name: body.name } } }).catch(() => null)
+      if (dup) throw errors.conflict('Folder name already exists')
+    }
+    const updated = await prisma.organizationFolder.update({ where: { id: folderId }, data: body as any })
+    await writeAudit({ organizationId: orgId, actorUserId: req.user.id, action: 'organization.folder.updated', resourceType: 'organization_folder', resourceId: folderId, newValue: body, sourceIp: req.ip })
+    return { data: updated }
+  })
+
+  app.delete('/:orgId/folders/:folderId', async (req, reply) => {
+    const { orgId, folderId } = req.params as { orgId: string; folderId: string }
+    const ctx = await resolveOrgContext(req, orgId)
+    if (!ctx.isAdmin) throw errors.forbidden()
+    const folder = await prisma.organizationFolder.findFirst({ where: { id: folderId, orgId } })
+    if (!folder) throw errors.notFound('Folder not found')
+    await prisma.organizationFolder.delete({ where: { id: folderId } })
+    await writeAudit({ organizationId: orgId, actorUserId: req.user.id, action: 'organization.folder.deleted', resourceType: 'organization_folder', resourceId: folderId, previousValue: { name: folder.name }, sourceIp: req.ip })
+    return reply.status(204).send()
   })
 
   app.post('/:orgId/test-email', async (req) => {

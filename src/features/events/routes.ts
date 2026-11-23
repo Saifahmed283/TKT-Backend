@@ -24,6 +24,7 @@ const STATUS_FLOW: Record<string, string[]> = {
 
 const createEventSchema = z.object({
   organizationId: z.string(),
+  folderId: z.string().nullable().optional(),
   name: z.string().min(2),
   description: z.string().optional(),
   type: z.enum(EVENT_TYPES).default('OTHER'),
@@ -36,6 +37,7 @@ const createEventSchema = z.object({
 })
 
 const updateEventSchema = z.object({
+  folderId: z.string().nullable().optional(),
   name: z.string().min(2).optional(),
   description: z.string().nullable().optional(),
   type: z.enum(EVENT_TYPES).optional(),
@@ -114,9 +116,14 @@ export async function eventRoutes(app: FastifyInstance) {
     const ctx = await resolveOrgContext(req, body.organizationId)
     if (!ctx.isAdmin) throw errors.forbidden()
 
+    if (body.folderId) {
+      const folder = await prisma.organizationFolder.findFirst({ where: { id: body.folderId, orgId: body.organizationId }, select: { id: true } })
+      if (!folder) throw errors.badRequest('Folder not found in this organization')
+    }
     const event = await prisma.event.create({
       data: {
         orgId: body.organizationId,
+        folderId: body.folderId ?? null,
         name: body.name,
         description: body.description,
         type: body.type,
@@ -174,6 +181,12 @@ export async function eventRoutes(app: FastifyInstance) {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'event.update', { eventId })
     const body = updateEventSchema.parse(req.body)
+    const existing = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
+    if (!existing) throw errors.notFound('Event not found')
+    if (body.folderId !== undefined && body.folderId !== null) {
+      const folder = await prisma.organizationFolder.findFirst({ where: { id: body.folderId, orgId: existing.orgId }, select: { id: true } })
+      if (!folder) throw errors.badRequest('Folder not found in this organization')
+    }
     const event = await prisma.event.update({ where: { id: eventId }, data: body as any })
     await writeAudit({
       organizationId: event.orgId,

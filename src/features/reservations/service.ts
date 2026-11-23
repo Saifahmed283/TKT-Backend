@@ -230,7 +230,7 @@ export async function resendReservationCredential(params: {
  * QR ticket to the attendee. Idempotent per ticket.
  */
 export async function issueReservationCredential(params: {
-  event: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; venueName: string | null }
+  event: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; venueName: string | null; settings?: unknown }
   ticket: ReservationTicket
   issuerUserId?: string
   sendEmail?: boolean
@@ -286,22 +286,26 @@ export async function issueReservationCredential(params: {
     const codeOf = reservationCodeOf(ticket)
     const qr = await qrDataUrl(code).catch(() => null)
     const attempt = ((ticket as any).deliveryAttempts ?? 0) + 1
+    const settings = ((event as any).settings ?? {}) as Record<string, any>
+    const tpl = (settings.ticketEmail ?? {}) as Record<string, any>
+    const eventDate = event.startAt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
     const delivery = await getDeliveryAdapter('EMAIL').send({
       to: ticket.attendee.email ?? '',
-      subject: `Your ticket — ${event.name}`,
+      subject: typeof tpl.subject === 'string' && tpl.subject ? tpl.subject.replaceAll('{event}', event.name) : `Your ticket — ${event.name}`,
       html: ticketEmailShell({
-        preheader: `Ticket for ${event.name} — present your QR at check-in`,
-        title: `You're in, ${ticket.attendee.name.split(' ')[0]}`,
-        body: `Your reservation for <strong>${event.name}</strong> is confirmed. Show this QR at the gate — it is signed, single-use and cannot be forged.`,
+        preheader: typeof tpl.preheader === 'string' && tpl.preheader ? tpl.preheader.replaceAll('{event}', event.name) : `Ticket for ${event.name} — present your QR at check-in`,
+        title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replaceAll('{event}', event.name) : `You're in, ${ticket.attendee.name.split(' ')[0]}`,
+        body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replaceAll('{event}', `<strong>${event.name}</strong>`) : `Your reservation for <strong>${event.name}</strong> is confirmed. Show this QR at the gate — it is signed, single-use and cannot be forged.`,
         rows: [
           { label: 'Event', value: event.name },
           { label: 'Ticket', value: ticket.ticketType.name },
-          { label: 'Date', value: event.startAt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) },
+          { label: 'Date', value: eventDate },
           { label: 'Venue', value: event.venueName ?? 'TBA' },
           ...(codeOf ? [{ label: 'Reservation', value: codeOf }] : []),
+          ...(shortCode ? [{ label: 'Ticket code', value: shortCode }] : []),
         ],
         qrDataUrl: qr,
-        footer: 'TKT · Control center for live events',
+        footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · Control center for live events',
       }),
     })
     deliveryOk = delivery.ok
