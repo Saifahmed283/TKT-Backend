@@ -178,6 +178,10 @@ export async function resendReservationCredential(params: {
         { label: 'Venue', value: ticket.event.venueName ?? 'TBA' },
         ...(codeOf ? [{ label: 'Reservation', value: codeOf }] : []),
         ...(shortCode ? [{ label: 'Ticket code', value: shortCode }] : []),
+        ...await (async () => {
+          const seats = await prisma.busSeat.findMany({ where: { ticketId: ticket.id }, select: { label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } }).catch(() => [] as any[])
+          return seats.length ? [{ label: 'Seats', value: seats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}${s.passengerName ? ` (${s.passengerName})` : ''}`).join(', ') }] : []
+        })(),
       ],
       qrDataUrl: qr,
       footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · Control center for live events',
@@ -303,6 +307,10 @@ export async function issueReservationCredential(params: {
           { label: 'Venue', value: event.venueName ?? 'TBA' },
           ...(codeOf ? [{ label: 'Reservation', value: codeOf }] : []),
           ...(shortCode ? [{ label: 'Ticket code', value: shortCode }] : []),
+          ...await (async () => {
+            const seats = await prisma.busSeat.findMany({ where: { ticketId: ticket.id }, select: { label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } }).catch(() => [] as any[])
+            return seats.length ? [{ label: 'Seats', value: seats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}${s.passengerName ? ` (${s.passengerName})` : ''}`).join(', ') }] : []
+          })(),
         ],
         qrDataUrl: qr,
         footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · Control center for live events',

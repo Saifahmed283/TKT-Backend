@@ -59,6 +59,7 @@ export async function credentialRoutes(app: FastifyInstance) {
               deliveryChannel: true,
               lastDeliveryAt: true,
               ticketType: { select: { name: true } },
+              busSeats: { select: { id: true, label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } },
             },
           },
           _count: { select: { accessLogs: true } },
@@ -156,7 +157,7 @@ export async function credentialRoutes(app: FastifyInstance) {
       where: { id: credentialId, eventId },
       include: {
         attendee: { select: { id: true, name: true, email: true, phone: true, category: true, status: true } },
-        ticket: { include: { ticketType: { select: { name: true, price: true } } } },
+        ticket: { include: { ticketType: { select: { name: true, price: true } }, busSeats: { select: { id: true, label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } } } },
         accessLogs: { orderBy: { timestamp: 'desc' }, take: 20, include: { area: { select: { name: true } }, operator: { select: { name: true } } } },
         deliveryLogs: { orderBy: { createdAt: 'desc' }, take: 20 },
       },
@@ -216,7 +217,7 @@ export async function credentialRoutes(app: FastifyInstance) {
         id: true, shortCode: true, code: true, status: true, validFrom: true, validUntil: true,
         singleUse: true, allowReentry: true, areaIds: true,
         attendee: { select: { name: true, id: true } },
-        ticket: { select: { ticketType: { select: { name: true } } } },
+        ticket: { select: { ticketType: { select: { name: true } }, busSeats: { select: { id: true, label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } } } },
       },
     })
     if (!credential) throw errors.notFound('Credential not found')

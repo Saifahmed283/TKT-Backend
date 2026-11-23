@@ -151,7 +151,12 @@ export async function attendeeRoutes(app: FastifyInstance) {
         { phone: { contains: q, mode: 'insensitive' } },
       ]
     }
-    const rows = await prisma.attendee.findMany({ where: where as any, orderBy: { createdAt: 'desc' }, take: 5000, include: { _count: { select: { tickets: true, credentials: true } } } })
+    const rows = await prisma.attendee.findMany({
+      where: where as any,
+      include: { tickets: { include: { busSeats: { select: { label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } }, ticketType: { select: { name: true } } }, orderBy: { issuedAt: 'desc' } }, _count: { select: { tickets: true, credentials: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 5000,
+    })
     const wb = new ExcelJS.Workbook()
     const ws = wb.addWorksheet('Attendees')
     ws.columns = [
@@ -162,10 +167,23 @@ export async function attendeeRoutes(app: FastifyInstance) {
       { header: 'Status', key: 'status', width: 16 },
       { header: 'Tickets', key: 'tickets', width: 10 },
       { header: 'Credentials', key: 'credentials', width: 12 },
+      { header: 'Ticket Types', key: 'ticketTypes', width: 24 },
+      { header: 'Seats', key: 'seats', width: 30 },
+      { header: 'Seat Passengers', key: 'seatPassengers', width: 34 },
       { header: 'Notes', key: 'notes', width: 40 },
       { header: 'Created At', key: 'createdAt', width: 22 },
     ]
-    for (const a of rows) ws.addRow({ name: a.name, email: a.email ?? '', phone: a.phone ?? '', category: a.category ?? '', status: a.status, tickets: a._count.tickets, credentials: a._count.credentials, notes: a.notes ?? '', createdAt: a.createdAt.toISOString() })
+    for (const a of rows) {
+      const seats = (a.tickets as any[]).flatMap((t: any) => (t.busSeats ?? []).map((s: any) => ({ ...s, busName: s.bus?.name ?? '' })))
+      ws.addRow({
+        name: a.name, email: a.email ?? '', phone: a.phone ?? '', category: a.category ?? '', status: a.status,
+        tickets: a._count.tickets, credentials: a._count.credentials,
+        ticketTypes: (a.tickets as any[]).map((t: any) => t.ticketType?.name).filter(Boolean).join(', '),
+        seats: seats.map((s: any) => `${s.busName ? s.busName + ' ' : ''}${s.label}`).join(', '),
+        seatPassengers: seats.map((s: any) => `${s.label}: ${s.passengerName ?? a.name}`).join('; '),
+        notes: a.notes ?? '', createdAt: a.createdAt.toISOString(),
+      })
+    }
     const buf = await wb.xlsx.writeBuffer()
     reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     reply.header('Content-Disposition', `attachment; filename="attendees-${eventId}.xlsx"`)

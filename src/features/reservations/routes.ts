@@ -58,6 +58,7 @@ export async function reservationRoutes(app: FastifyInstance) {
           ticketType: { select: { id: true, name: true, price: true } },
           credential: { select: { id: true, code: true, status: true } },
           paymentProvider: { select: { id: true, name: true } },
+          busSeats: { select: { id: true, label: true, busId: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } },
         },
       }),
     ])
@@ -80,6 +81,7 @@ export async function reservationRoutes(app: FastifyInstance) {
           paymentReviewedAt: (t as any).paymentReviewedAt ?? null,
           paymentReviewNote: (t as any).paymentReviewNote ?? null,
           paymentProvider: (t as any).paymentProvider ?? null,
+          seats: ((t as any).busSeats ?? []).map((s: any) => ({ id: s.id, label: s.label, busId: s.busId, passengerName: s.passengerName ?? null, busName: s.bus?.name ?? null })),
           issuedAt: t.issuedAt,
           approvedAt: t.approvedAt,
           rejectedReason: t.rejectedReason,
@@ -168,7 +170,7 @@ export async function reservationRoutes(app: FastifyInstance) {
         { reservationPhone: { contains: q, mode: 'insensitive' } },
       ]
     }
-    const rows = await prisma.ticket.findMany({ where: where as any, include: { attendee: true, ticketType: true }, orderBy: { issuedAt: 'desc' }, take: 5000 })
+    const rows = await prisma.ticket.findMany({ where: where as any, include: { attendee: true, ticketType: true, busSeats: { select: { label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } } }, orderBy: { issuedAt: 'desc' }, take: 5000 })
     const wb = new ExcelJS.Workbook()
     const ws = wb.addWorksheet('Reservations')
     ws.columns = [
@@ -177,20 +179,25 @@ export async function reservationRoutes(app: FastifyInstance) {
       { header: 'Email', key: 'email', width: 30 },
       { header: 'Phone', key: 'phone', width: 18 },
       { header: 'Ticket Type', key: 'ticketType', width: 20 },
+      { header: 'Seats', key: 'seats', width: 28 },
+      { header: 'Seat Passengers', key: 'seatPassengers', width: 34 },
       { header: 'Amount', key: 'price', width: 12 },
       { header: 'Approval', key: 'approval', width: 14 },
       { header: 'Payment', key: 'payment', width: 14 },
       { header: 'Delivery', key: 'delivery', width: 14 },
       { header: 'Issued At', key: 'issuedAt', width: 22 },
     ]
-    for (const t of rows) {
+    for (const t of rows as any[]) {
       const meta = (t.metadata ?? {}) as Record<string, any>
+      const seats = t.busSeats ?? []
       ws.addRow({
         reservationCode: t.reservationCode ?? meta.reservationCode ?? '',
         name: t.reservationName ?? t.attendee?.name ?? '',
         email: t.reservationEmail ?? t.attendee?.email ?? '',
         phone: t.reservationPhone ?? t.attendee?.phone ?? '',
         ticketType: t.ticketType?.name ?? '',
+        seats: seats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}`).join(', '),
+        seatPassengers: seats.map((s: any) => `${s.label}: ${s.passengerName ?? t.attendee?.name ?? ''}`).join('; '),
         price: Number(t.price ?? 0),
         approval: t.approvalStatus ?? meta.approval ?? '',
         payment: t.paymentStatus ?? meta.paymentStatus ?? '',

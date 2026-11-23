@@ -1,4 +1,4 @@
-﻿import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance } from 'fastify'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
@@ -375,8 +375,8 @@ export async function publicRoutes(app: FastifyInstance) {
         paymentProvider = await prisma.paymentProvider.findFirst({ where: { id: body.paymentProviderId, eventId, isActive: true }, select: { id: true, name: true } })
         if (!paymentProvider) throw errors.badRequest('Payment provider not found')
       }
-      if (body.paymentProofUrl && !(body.paymentProofUrl.startsWith('data:image/') || body.paymentProofUrl.startsWith('https://'))) {
-        throw errors.badRequest('Payment proof must be an image data URL or https URL')
+      if (body.paymentProofUrl && !(body.paymentProofUrl.startsWith('data:image/') || body.paymentProofUrl.startsWith('https://') || body.paymentProofUrl.startsWith('http://') || body.paymentProofUrl.startsWith('/uploads/'))) {
+        throw errors.badRequest('Payment proof must be an uploaded file URL or image URL')
       }
     }
 
@@ -524,6 +524,7 @@ export async function publicRoutes(app: FastifyInstance) {
             { label: 'Event', value: event.name },
             { label: 'Ticket', value: ticketType.name },
             { label: 'Reservation', value: code },
+            ...(reservedSeats.length ? [{ label: 'Seats', value: reservedSeats.map(s => s.label).join(', ') }] : []),
             ...(paymentProvider ? [{ label: 'Payment method', value: paymentProvider.name }] : []),
             ...(body.paymentReference?.trim() ? [{ label: 'Payment reference', value: body.paymentReference.trim() }] : []),
             { label: 'Status', value: submittedPayment ? 'Awaiting payment review' : 'Awaiting approval' },
@@ -729,7 +730,7 @@ export async function publicRoutes(app: FastifyInstance) {
         ticketName: ticket.ticketType.name,
         attendeeName: ticket.attendee.name,
         qr: ticket.credential?.code ?? null,
-        seats: await prisma.busSeat.findMany({ where: { ticketId: ticket.id }, select: { id: true, label: true, busId: true } }).catch(() => []),
+        seats: await prisma.busSeat.findMany({ where: { ticketId: ticket.id }, select: { id: true, label: true, busId: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } }).catch(() => []),
       },
     }
   })
