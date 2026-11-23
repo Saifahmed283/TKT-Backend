@@ -1,4 +1,4 @@
-﻿import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import ExcelJS from 'exceljs'
 import { prisma } from '../../lib/db.js'
@@ -159,18 +159,6 @@ export async function attendeeRoutes(app: FastifyInstance) {
     })
     const wb = new ExcelJS.Workbook()
     const ws = wb.addWorksheet('Attendees')
-    ws.columns = [
-      { header: 'Name', key: 'name', width: 28 },
-      { header: 'Email', key: 'email', width: 30 },
-      { header: 'Phone', key: 'phone', width: 18 },
-      { header: 'Category', key: 'category', width: 16 },
-      { header: 'Status', key: 'status', width: 16 },
-      { header: 'Tickets', key: 'tickets', width: 10 },
-      { header: 'Credentials', key: 'credentials', width: 12 },
-      { header: 'Ticket Types', key: 'ticketTypes', width: 24 },
-      { header: 'Seats', key: 'seats', width: 30 },
-      { header: 'Seat Passengers', key: 'seatPassengers', width: 34 },
-      { header: 'Notes', key: 'notes', width: 40 },
       { header: 'Created At', key: 'createdAt', width: 22 },
     ]
     for (const a of rows) {
