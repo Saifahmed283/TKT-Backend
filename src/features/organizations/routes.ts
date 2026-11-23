@@ -58,8 +58,21 @@ export async function organizationRoutes(app: FastifyInstance) {
     return { data: custom }
   })
 
-  // List my organizations
+  // List organizations visible to user (all for super_admin/platform, else memberships)
   app.get('/', async (req) => {
+    const user = await prisma.user.findUnique({ where: { id: req.user.id }, select: { platformRole: true } })
+    if (user?.platformRole === 'super_admin') {
+      const orgs = await prisma.organization.findMany({
+        select: {
+          id: true, name: true, slug: true, description: true, status: true, createdAt: true,
+          _count: { select: { events: true, members: true } },
+          events: { select: { id: true, name: true, status: true }, orderBy: { startAt: 'desc' }, take: 8 },
+        },
+        orderBy: { createdAt: 'asc' },
+      })
+      return { data: orgs.map((org) => ({ ...org, myRole: { name: 'PLATFORM_ADMIN' } })) }
+    }
+
     const rows = await prisma.organizationMember.findMany({
       where: { userId: req.user.id },
       select: {
