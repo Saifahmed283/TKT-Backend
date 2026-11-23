@@ -6,7 +6,7 @@ import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
-import { credentialCode, verifyCredentialIntegrity, type CredentialPayload } from '../../lib/credentials.js'
+import { credentialCode, generateUniqueShortCode, verifyCredentialIntegrity, type CredentialPayload } from '../../lib/credentials.js'
 import { logActivity } from '../../lib/activity.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 
@@ -36,6 +36,7 @@ export async function credentialRoutes(app: FastifyInstance) {
       where.OR = [
         { attendee: { name: { contains: q, mode: 'insensitive' } } },
         { attendee: { email: { contains: q, mode: 'insensitive' } } },
+        { shortCode: { contains: q.toUpperCase() } },
         { code: { contains: q } },
         { id: q },
       ]
@@ -48,7 +49,7 @@ export async function credentialRoutes(app: FastifyInstance) {
         skip: (Number(page) - 1) * Number(pageSize),
         take: Number(pageSize),
         select: {
-          id: true, code: true, type: true, status: true, validFrom: true, validUntil: true,
+          id: true, shortCode: true, code: true, type: true, status: true, validFrom: true, validUntil: true,
           singleUse: true, allowReentry: true, areaIds: true, issuedAt: true,
           attendee: { select: { id: true, name: true, email: true } },
           ticket: {
@@ -96,9 +97,12 @@ export async function credentialRoutes(app: FastifyInstance) {
     const validFrom = body.validFrom ?? event.startAt
     const validUntil = body.validUntil !== undefined ? body.validUntil : event.endAt ?? null
 
+    const shortCode = await generateUniqueShortCode()
+
     const payload: CredentialPayload = {
       v: 1,
       credId: '',
+      shortCode,
       attendeeId: attendee.id,
       eventId,
       ticketType: ticket?.ticketType.name ?? (attendee.category ?? 'GUEST'),
@@ -115,6 +119,7 @@ export async function credentialRoutes(app: FastifyInstance) {
         attendeeId: attendee.id,
         ticketId: body.ticketId ?? null,
         type: body.type,
+        shortCode,
         code: `PENDING-${randomUUID()}`,
         status: 'ACTIVE',
         validFrom,
@@ -208,7 +213,7 @@ export async function credentialRoutes(app: FastifyInstance) {
     const credential = await prisma.credential.findFirst({
       where: { id: credentialId, eventId },
       select: {
-        id: true, code: true, status: true, validFrom: true, validUntil: true,
+        id: true, shortCode: true, code: true, status: true, validFrom: true, validUntil: true,
         singleUse: true, allowReentry: true, areaIds: true,
         attendee: { select: { name: true, id: true } },
         ticket: { select: { ticketType: { select: { name: true } } } },
@@ -216,5 +221,16 @@ export async function credentialRoutes(app: FastifyInstance) {
     })
     if (!credential) throw errors.notFound('Credential not found')
     return { data: credential }
+  })
+
+  app.delete('/:credentialId', async (req, reply) => {
+    const { eventId, credentialId } = req.params as { eventId: string; credentialId: string }
+    await requirePermission(req, 'credential.revoke', { eventId })
+    const credential = await prisma.credential.findFirst({ where: { id: credentialId, eventId }, include: { _count: { select: { accessLogs: true } } } })
+    if (!credential) throw errors.notFound('Credential not found')
+    if (credential._count.accessLogs > 0) throw errors.conflict('Cannot delete credential with access logs; revoke it instead')
+    await prisma.credential.delete({ where: { id: credentialId } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'credential.deleted', resourceType: 'credential', resourceId: credentialId, previousValue: { status: credential.status, code: credential.code.slice(0, 16) }, sourceIp: req.ip })
+    return reply.status(204).send()
   })
 }

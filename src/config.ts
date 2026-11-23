@@ -35,6 +35,10 @@ export const config = {
     pass: optional('SMTP_PASS', ''),
     from: optional('MAIL_FROM', 'TKT Ops <no-reply@tkt.local>'),
   },
+  uploads: {
+    dir: optional('UPLOAD_DIR', 'uploads'),
+    maxBytes: Number(optional('UPLOAD_MAX_BYTES', String(5 * 1024 * 1024))),
+  },
   publicUrl: optional('PUBLIC_URL', 'http://localhost:5173'),
   isProd: optional('NODE_ENV', 'development') === 'production',
 }

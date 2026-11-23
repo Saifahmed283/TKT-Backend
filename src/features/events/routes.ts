@@ -403,6 +403,24 @@ export async function eventRoutes(app: FastifyInstance) {
     return reply.status(204).send()
   })
 
+  app.delete('/:eventId', async (req, reply) => {
+    const { eventId } = req.params as { eventId: string }
+    await requirePermission(req, 'event.delete', { eventId })
+    const event = await prisma.event.findUnique({ where: { id: eventId }, select: { id: true, orgId: true, name: true } })
+    if (!event) throw errors.notFound('Event not found')
+    await prisma.event.delete({ where: { id: eventId } })
+    await writeAudit({
+      organizationId: event.orgId,
+      actorUserId: req.user.id,
+      action: 'event.deleted',
+      resourceType: 'event',
+      resourceId: eventId,
+      previousValue: { name: event.name },
+      sourceIp: req.ip,
+    })
+    return reply.status(204).send()
+  })
+
   // ── Overview (role-aware dashboard data) ──────────────
   // Roles assignable within this event (system catalog + organization custom roles)
   app.get('/:eventId/roles', async (req) => {

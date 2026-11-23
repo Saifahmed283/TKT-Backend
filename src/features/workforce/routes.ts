@@ -279,4 +279,24 @@ export async function workforceRoutes(app: FastifyInstance) {
     })
     return { data: { token, expiresAt: new Date(exp * 1000).toISOString(), payload } }
   })
+
+  app.delete('/applications/:id', async (req, reply) => {
+    const { eventId, id } = req.params as { eventId: string; id: string }
+    await requirePermission(req, 'workforce.manage', { eventId })
+    const existing = await prisma.workforceApplication.findFirst({ where: { id, eventId } })
+    if (!existing) throw errors.notFound('Application not found')
+    await prisma.workforceApplication.delete({ where: { id } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'workforce.application.deleted', resourceType: 'workforce_application', resourceId: id, previousValue: { fullName: existing.fullName, status: existing.status }, sourceIp: req.ip })
+    return reply.status(204).send()
+  })
+
+  app.delete('/profiles/:profileId', async (req, reply) => {
+    const { eventId, profileId } = req.params as { eventId: string; profileId: string }
+    await requirePermission(req, 'workforce.manage', { eventId })
+    const existing = await prisma.staffProfile.findFirst({ where: { id: profileId, OR: [{ eventId }, { eventId: null }] } })
+    if (!existing) throw errors.notFound('Profile not found')
+    await prisma.staffProfile.delete({ where: { id: profileId } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'workforce.profile.deleted', resourceType: 'staff_profile', resourceId: profileId, previousValue: { userId: existing.userId }, sourceIp: req.ip })
+    return reply.status(204).send()
+  })
 }

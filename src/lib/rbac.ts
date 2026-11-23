@@ -28,6 +28,7 @@ export const PERMISSIONS = {
   'event.update': 'Update event configuration',
   'event.publish': 'Publish event',
   'event.archive': 'Archive event',
+  'event.delete': 'Delete event',
   'event.settings': 'Manage event settings',
   'event.members.view': 'View event staff',
   'event.members.assign': 'Assign staff to event',
@@ -54,6 +55,7 @@ export const PERMISSIONS = {
   'attendee.view': 'View attendees',
   'attendee.create': 'Register attendees',
   'attendee.update': 'Update attendees',
+  'attendee.delete': 'Delete attendees',
   'attendee.export': 'Export attendee data',
 
   // Tickets

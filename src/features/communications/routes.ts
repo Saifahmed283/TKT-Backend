@@ -190,4 +190,34 @@ export async function communicationRoutes(app: FastifyInstance) {
     publish(channelFor.activity(eventId), 'chat.message', { id: row.id })
     return reply.status(201).send({ data: row })
   })
+
+  app.delete('/announcements/:id', async (req, reply) => {
+    const { eventId, id } = req.params as { eventId: string; id: string }
+    await requirePermission(req, 'announcement.publish', { eventId })
+    const existing = await prisma.announcement.findFirst({ where: { id, eventId } })
+    if (!existing) throw errors.notFound('Announcement not found')
+    await prisma.announcement.delete({ where: { id } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'announcement.deleted', resourceType: 'announcement', resourceId: id, previousValue: { title: existing.title }, sourceIp: req.ip })
+    return reply.status(204).send()
+  })
+
+  app.delete('/alerts/:id', async (req, reply) => {
+    const { eventId, id } = req.params as { eventId: string; id: string }
+    await requirePermission(req, 'notification.read', { eventId })
+    const existing = await (prisma as any).opsAlert.findFirst({ where: { id, eventId } })
+    if (!existing) throw errors.notFound('Alert not found')
+    await (prisma as any).opsAlert.delete({ where: { id } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'alert.deleted', resourceType: 'ops_alert', resourceId: id, previousValue: { type: existing.type }, sourceIp: req.ip })
+    return reply.status(204).send()
+  })
+
+  app.delete('/chat/:id', async (req, reply) => {
+    const { eventId, id } = req.params as { eventId: string; id: string }
+    await requirePermission(req, 'message.send', { eventId })
+    const existing = await (prisma as any).teamChatMessage.findFirst({ where: { id, eventId } })
+    if (!existing) throw errors.notFound('Chat message not found')
+    await (prisma as any).teamChatMessage.delete({ where: { id } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'chat.deleted', resourceType: 'team_chat_message', resourceId: id, sourceIp: req.ip })
+    return reply.status(204).send()
+  })
 }

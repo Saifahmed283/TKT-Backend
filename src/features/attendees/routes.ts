@@ -146,4 +146,17 @@ export async function attendeeRoutes(app: FastifyInstance) {
     })
     return { data: logs }
   })
+
+  app.delete('/:attendeeId', async (req, reply) => {
+    const { eventId, attendeeId } = req.params as { eventId: string; attendeeId: string }
+    await requirePermission(req, 'attendee.delete', { eventId })
+    const attendee = await prisma.attendee.findFirst({ where: { id: attendeeId, eventId }, include: { _count: { select: { tickets: true, credentials: true, accessLogs: true } } } })
+    if (!attendee) throw errors.notFound('Attendee not found')
+    if (attendee._count.tickets > 0 || attendee._count.credentials > 0 || attendee._count.accessLogs > 0) {
+      throw errors.conflict('Cannot delete attendee with tickets, credentials, or access history; cancel/block instead')
+    }
+    await prisma.attendee.delete({ where: { id: attendeeId } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'attendee.deleted', resourceType: 'attendee', resourceId: attendeeId, previousValue: { name: attendee.name, email: attendee.email }, sourceIp: req.ip })
+    return reply.status(204).send()
+  })
 }

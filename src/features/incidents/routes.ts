@@ -198,4 +198,14 @@ export async function incidentRoutes(app: FastifyInstance) {
     })
     return reply.status(201).send({ data: comment })
   })
+
+  app.delete('/:incidentId', async (req, reply) => {
+    const { eventId, incidentId } = req.params as { eventId: string; incidentId: string }
+    await requirePermission(req, 'incident.update', { eventId })
+    const incident = await prisma.incident.findFirst({ where: { id: incidentId, eventId } })
+    if (!incident) throw errors.notFound('Incident not found')
+    await prisma.incident.delete({ where: { id: incidentId } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'incident.deleted', resourceType: 'incident', resourceId: incidentId, previousValue: { title: incident.title, status: incident.status }, sourceIp: req.ip })
+    return reply.status(204).send()
+  })
 }

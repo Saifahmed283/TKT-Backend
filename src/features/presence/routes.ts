@@ -32,7 +32,7 @@ export async function presenceRoutes(app: FastifyInstance) {
       where: { eventId_userId: { eventId, userId: req.user.id } },
       select: { id: true, user: { select: { name: true } } },
     })
-    if (!member) throw errors.forbidden('Not a member of this event')
+    if (!member) return { data: { status: 'disconnected', lastSeen: null, shiftStart: null, ignored: true } }
 
     const status = body.status ?? 'active'
     const prev = presence.get(member.id)

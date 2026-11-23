@@ -361,4 +361,23 @@ export async function organizationRoutes(app: FastifyInstance) {
       },
     }
   })
+
+  app.delete('/:orgId', async (req, reply) => {
+    const { orgId } = req.params as { orgId: string }
+    const ctx = await resolveOrgContext(req, orgId)
+    if (!ctx.isAdmin) throw errors.forbidden()
+    const org = await prisma.organization.findUnique({ where: { id: orgId }, include: { _count: { select: { events: true, members: true } } } })
+    if (!org) throw errors.notFound('Organization not found')
+    await prisma.organization.delete({ where: { id: orgId } })
+    await writeAudit({
+      organizationId: orgId,
+      actorUserId: req.user.id,
+      action: 'organization.deleted',
+      resourceType: 'organization',
+      resourceId: orgId,
+      previousValue: { name: org.name, events: org._count.events, members: org._count.members },
+      sourceIp: req.ip,
+    })
+    return reply.status(204).send()
+  })
 }

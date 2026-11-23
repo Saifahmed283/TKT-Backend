@@ -5,6 +5,7 @@ import { config } from '../config.js'
 export type CredentialPayload = {
   v: 1
   credId: string
+  shortCode?: string
   attendeeId: string
   eventId: string
   ticketType: string
@@ -13,6 +14,19 @@ export type CredentialPayload = {
   validUntil: number | null
   singleUse: boolean
   allowReentry: boolean
+}
+
+const SHORT_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+export async function generateUniqueShortCode(): Promise<string> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    let suffix = ''
+    for (let i = 0; i < 5; i++) suffix += SHORT_CODE_CHARS[Math.floor(Math.random() * SHORT_CODE_CHARS.length)]
+    const shortCode = `TKT-${suffix}`
+    const exists = await prisma.credential.findFirst({ where: { shortCode }, select: { id: true } })
+    if (!exists) return shortCode
+  }
+  throw new Error('Could not generate unique ticket code')
 }
 
 function getKeyPair() {
@@ -88,7 +102,12 @@ export async function verifyCredentialIntegrity(
     const credential = await prisma.credential.findUnique({ where: { id: decoded.payload.credId } })
     return { credential, payload: decoded.payload, signature: decoded.signature, decoded: true, verified: validSig }
   }
-  // fallback: raw code match (legacy badge codes)
-  const credential = await prisma.credential.findUnique({ where: { code } })
+  // fallback: raw code / shortCode match (legacy badge codes)
+  const normalized = code.trim().toUpperCase()
+  const credential = await prisma.credential.findFirst({
+    where: normalized.startsWith('TKT-') && normalized.length <= 12
+      ? { OR: [{ shortCode: normalized }, { code }] }
+      : { code },
+  })
   return credential ? { credential, payload: null, signature: null, decoded: false, verified: false } : null
 }

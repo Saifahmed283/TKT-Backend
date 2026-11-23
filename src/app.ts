@@ -2,7 +2,11 @@
 import cookie from '@fastify/cookie'
 import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
+import multipart from '@fastify/multipart'
 import rateLimit from '@fastify/rate-limit'
+import fastifyStatic from '@fastify/static'
+import fs from 'node:fs'
+import path from 'node:path'
 import { ZodError } from 'zod'
 import { config } from './config.js'
 import { AppError } from './lib/errors.js'
@@ -25,6 +29,7 @@ import { realtimeRoutes } from './features/realtime/routes.js'
 import { publicRoutes } from './features/public/routes.js'
 import { reservationRoutes } from './features/reservations/routes.js'
 import { presenceRoutes } from './features/presence/routes.js'
+import { uploadRoutes } from './features/uploads/routes.js'
 import { paymentRoutes } from './features/payments/routes.js'
 import { accessCodeRoutes } from './features/access-codes/routes.js'
 import { deviceRoutes } from './features/devices/routes.js'
@@ -54,13 +59,25 @@ export async function buildApp(): Promise<FastifyInstance> {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", 'data:'],
-        connectSrc: ["'self'", 'wss:', 'ws:'],
+        imgSrc: ["'self'", 'data:', 'blob:', 'http://localhost:*', 'https:'],
+        connectSrc: ["'self'", 'wss:', 'ws:', 'http://localhost:*', 'https:'],
         frameAncestors: ["'none'"],
         baseUri: ["'none'"],
       },
     },
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
     referrerPolicy: { policy: 'no-referrer' },
+  })
+
+  const uploadDir = path.resolve(process.cwd(), config.uploads.dir)
+  fs.mkdirSync(uploadDir, { recursive: true })
+  await app.register(multipart, {
+    limits: { fileSize: config.uploads.maxBytes, files: 1 },
+  })
+  await app.register(fastifyStatic, {
+    root: uploadDir,
+    prefix: '/uploads/',
+    decorateReply: false,
   })
 
   await app.register(rateLimit, {
@@ -163,6 +180,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(workforceRoutes, { prefix: '/events/:eventId/workforce' })
   await app.register(integrationRoutes, { prefix: '/events/:eventId/integrations' })
   await app.register(presenceRoutes, { prefix: '/events/:eventId' })
+  await app.register(uploadRoutes, { prefix: '/uploads' })
   await app.register(searchRoutes, { prefix: '/search' })
   await app.register(dashboardRoutes, { prefix: '/dashboard' })
   await app.register(realtimeRoutes, { prefix: '/realtime' })

@@ -574,6 +574,7 @@ model Credential {
   attendeeId   String
   ticketId     String?
   type         CredentialType   @default(QR)
+  shortCode    String?          @unique // Human-readable code, e.g. TKT-G45UI
   code         String           @unique // QR payload — a signed token
   status       CredentialStatus @default(ISSUED)
   validFrom    DateTime

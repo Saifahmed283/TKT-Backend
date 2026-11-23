@@ -155,4 +155,26 @@ export async function ticketRoutes(app: FastifyInstance) {
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.refunded', resourceType: 'ticket', resourceId: ticketId, previousValue: { status: ticket.status }, newValue: { status: 'REFUNDED' }, sourceIp: req.ip })
     return { data: updated }
   })
+
+  app.delete('/types/:typeId', async (req, reply) => {
+    const { eventId, typeId } = req.params as { eventId: string; typeId: string }
+    await requirePermission(req, 'ticket.issue', { eventId })
+    const type = await prisma.ticketType.findFirst({ where: { id: typeId, eventId }, include: { _count: { select: { tickets: true } } } })
+    if (!type) throw errors.notFound('Ticket type not found')
+    if (type._count.tickets > 0) throw errors.conflict('Cannot delete ticket type with issued tickets; deactivate it instead')
+    await prisma.ticketType.delete({ where: { id: typeId } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.type_deleted', resourceType: 'ticket_type', resourceId: typeId, previousValue: { name: type.name }, sourceIp: req.ip })
+    return reply.status(204).send()
+  })
+
+  app.delete('/:ticketId', async (req, reply) => {
+    const { eventId, ticketId } = req.params as { eventId: string; ticketId: string }
+    await requirePermission(req, 'ticket.cancel', { eventId })
+    const ticket = await prisma.ticket.findFirst({ where: { id: ticketId, eventId }, include: { credential: { select: { id: true } } } })
+    if (!ticket) throw errors.notFound('Ticket not found')
+    if (ticket.credential) throw errors.conflict('Cannot delete ticket with credential; cancel/revoke credential first')
+    await prisma.ticket.delete({ where: { id: ticketId } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.deleted', resourceType: 'ticket', resourceId: ticketId, previousValue: { status: ticket.status }, sourceIp: req.ip })
+    return reply.status(204).send()
+  })
 }

@@ -27,10 +27,11 @@ const insuranceSchema = z.object({
   claimStatus: z.string().optional(),
 })
 
+const assetUrl = z.string().trim().min(1).refine((v) => /^https?:\/\//i.test(v) || v.startsWith('/uploads/'), 'Invalid asset URL')
 const mapSchema = z.object({
-  map3dUrl: z.string().url().optional().or(z.literal('').transform(() => undefined)),
-  mapImageUrl: z.string().url().optional().or(z.literal('').transform(() => undefined)),
-  mapPdfUrl: z.string().url().optional().or(z.literal('').transform(() => undefined)),
+  map3dUrl: assetUrl.optional().or(z.literal('').transform(() => undefined)),
+  mapImageUrl: assetUrl.optional().or(z.literal('').transform(() => undefined)),
+  mapPdfUrl: assetUrl.optional().or(z.literal('').transform(() => undefined)),
   routeNotes: z.string().optional(),
 })
 
@@ -135,5 +136,25 @@ export async function integrationRoutes(app: FastifyInstance) {
     })
     await writeAudit({ organizationId: event.orgId, eventId, actorUserId: req.user.id, action: AuditActions.EVENT_MAP_UPSERTED, resourceType: 'event_map_asset', resourceId: row.id, newValue: body, sourceIp: req.ip })
     return { data: row }
+  })
+
+  app.delete('/insurance/:id', async (req, reply) => {
+    const { eventId, id } = req.params as { eventId: string; id: string }
+    await requirePermission(req, 'integration.manage', { eventId })
+    const existing = await prisma.eventInsurancePolicy.findFirst({ where: { id, eventId } })
+    if (!existing) throw errors.notFound('Insurance policy not found')
+    await prisma.eventInsurancePolicy.delete({ where: { id } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'insurance.deleted', resourceType: 'event_insurance_policy', resourceId: id, previousValue: { provider: existing.provider, policyNumber: existing.policyNumber }, sourceIp: req.ip })
+    return reply.status(204).send()
+  })
+
+  app.delete('/map', async (req, reply) => {
+    const { eventId } = req.params as { eventId: string }
+    await requirePermission(req, 'integration.manage', { eventId })
+    const existing = await prisma.eventMapAsset.findUnique({ where: { eventId } })
+    if (!existing) return reply.status(204).send()
+    await prisma.eventMapAsset.delete({ where: { eventId } })
+    await writeAudit({ eventId, actorUserId: req.user.id, action: 'event_map.deleted', resourceType: 'event_map_asset', resourceId: existing.id, sourceIp: req.ip })
+    return reply.status(204).send()
   })
 }

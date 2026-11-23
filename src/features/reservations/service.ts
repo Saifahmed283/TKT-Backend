@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
-import { credentialCode, type CredentialPayload } from '../../lib/credentials.js'
+import { credentialCode, generateUniqueShortCode, type CredentialPayload } from '../../lib/credentials.js'
 import { getDeliveryAdapter, ticketEmailShell } from '../../lib/delivery.js'
 import { qrDataUrl } from '../../lib/qr.js'
 import { writeAudit } from '../../lib/audit.js'
@@ -238,9 +238,12 @@ export async function issueReservationCredential(params: {
   const existing = await prisma.credential.findUnique({ where: { ticketId: ticket.id } })
   if (existing) return { credential: existing, qrCode: existing.code }
 
+  const shortCode = await generateUniqueShortCode()
+
   const payload: CredentialPayload = {
     v: 1,
     credId: '',
+    shortCode,
     attendeeId: ticket.attendee.id,
     eventId: event.id,
     ticketType: ticket.ticketType.name,
@@ -257,6 +260,7 @@ export async function issueReservationCredential(params: {
       attendeeId: ticket.attendee.id,
       ticketId: ticket.id,
       type: 'QR',
+      shortCode,
       code: `PENDING-${randomUUID()}`,
       status: 'ACTIVE',
       validFrom: event.startAt,
