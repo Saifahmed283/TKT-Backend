@@ -59,7 +59,7 @@ export async function attendeeRoutes(app: FastifyInstance) {
         skip: (page - 1) * pageSize,
         take: pageSize,
         select: {
-          id: true, name: true, email: true, phone: true, category: true, status: true,
+          id: true, name: true, email: true, phone: true, category: true, attendeeType: true, status: true,
           notes: true, createdAt: true, updatedAt: true,
           _count: { select: { tickets: true, credentials: true, accessLogs: true } },
         },

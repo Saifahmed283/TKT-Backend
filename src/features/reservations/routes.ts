@@ -55,7 +55,7 @@ export async function reservationRoutes(app: FastifyInstance) {
         take: pageSize,
         include: {
           attendee: { select: { id: true, name: true, email: true, phone: true, status: true } },
-          ticketType: { select: { id: true, name: true, price: true } },
+          ticketType: { select: { id: true, name: true, price: true, tier: true } },
           credential: { select: { id: true, code: true, status: true } },
           paymentProvider: { select: { id: true, name: true } },
           busSeats: { select: { id: true, label: true, busId: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } },

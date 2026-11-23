@@ -524,7 +524,7 @@ export async function accessRoutes(app: FastifyInstance) {
           area: { select: { id: true, name: true } },
           operator: { select: { id: true, name: true } },
           attendee: { select: { id: true, name: true } },
-          credential: { select: { id: true, code: true } },
+          credential: { select: { id: true, code: true, ticket: { select: { ticketType: { select: { name: true, tier: true } }, busSeats: { select: { id: true, label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } } } } } },
         },
       }),
     ])

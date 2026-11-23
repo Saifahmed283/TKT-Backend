@@ -134,7 +134,7 @@ export async function publicRoutes(app: FastifyInstance) {
         org: { select: { id: true, name: true, logoUrl: true } },
         ticketTypes: {
           where: { active: true },
-          select: { id: true, name: true, description: true, category: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, _count: { select: { tickets: true } } },
+          select: { id: true, name: true, description: true, category: true, tier: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, _count: { select: { tickets: true } } },
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         },
         buses: {
@@ -211,7 +211,7 @@ export async function publicRoutes(app: FastifyInstance) {
         org: { select: { id: true, name: true, logoUrl: true } },
         ticketTypes: {
           where: { active: true },
-          select: { id: true, name: true, description: true, category: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, _count: { select: { tickets: true } } },
+          select: { id: true, name: true, description: true, category: true, tier: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, _count: { select: { tickets: true } } },
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         },
         paymentProviders: {
