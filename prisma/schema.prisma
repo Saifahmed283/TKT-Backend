@@ -373,13 +373,28 @@ enum AttendeeStatus {
   BLOCKED
 }
 
+enum AttendeeType {
+  ATTENDEE
+  VIP
+  SPEAKER
+  SPONSOR
+  EXHIBITOR
+  MEDIA
+  STAFF
+  ORGANIZER
+  STUDENT
+  GUEST
+  OTHER
+}
+
 model Attendee {
   id             String         @id @default(cuid())
   eventId        String
   name           String
   email          String?
   phone          String?
-  category       String? // e.g. VIP, SPEAKER, PRESS, STAFF, GUEST
+  category       String? // legacy compatibility label
+  attendeeType   AttendeeType?  // additive normalized type
   status         AttendeeStatus @default(REGISTERED)
   notes          String?
   registeredById String?
@@ -399,12 +414,26 @@ model Attendee {
   @@index([eventId, email])
 }
 
+enum TicketTier {
+  STANDARD
+  VIP
+  PREMIUM
+  EARLY_BIRD
+  STUDENT
+  COMPLIMENTARY
+  STAFF
+  SPEAKER
+  SPONSOR
+  OTHER
+}
+
 model TicketType {
   id          String    @id @default(cuid())
   eventId     String
   name        String
   description String?
-  category    String?
+  category    String?   // legacy compatibility label
+  tier        TicketTier? // additive normalized tier/class
   price       Decimal?  @db.Decimal(10, 2)
   currency  String    @default("EGP")
   quota       Int?

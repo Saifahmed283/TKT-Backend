@@ -75,7 +75,7 @@ async function resolveCredentialByCode(code: string, eventId: string) {
   if (resolved?.credential) {
     const credential = await prisma.credential.findUnique({
       where: { id: resolved.credential.id },
-      include: { attendee: true, ticket: { include: { ticketType: true } } },
+      include: { attendee: true, ticket: { include: { ticketType: true, busSeats: { select: { id: true, label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } } } } },
     })
     const tampered = resolved.decoded ? !resolved.verified : false
     return {
@@ -95,7 +95,7 @@ async function resolveCredentialByCode(code: string, eventId: string) {
       OR: [{ reservationCode: code }, { metadata: { path: ['reservationCode'], equals: code } }],
     },
     select: {
-      credential: { include: { attendee: true, ticket: { include: { ticketType: true } } } },
+      credential: { include: { attendee: true, ticket: { include: { ticketType: true, busSeats: { select: { id: true, label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } } } } } },
     },
   })
   if (byReservationCode?.credential) {
@@ -314,6 +314,7 @@ export async function accessRoutes(app: FastifyInstance) {
             }
           : null,
         ticketType: credential?.ticket?.ticketType.name ?? null,
+        seats: (credential?.ticket as any)?.busSeats?.map((s: any) => ({ id: s.id, label: s.label, passengerName: s.passengerName, busName: s.bus?.name ?? null })) ?? [],
         parseSource: resolvedScan.parseSource,
         lookupMethod: resolvedScan.lookupMethod,
       },

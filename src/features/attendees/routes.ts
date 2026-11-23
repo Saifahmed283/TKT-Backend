@@ -14,6 +14,7 @@ const createSchema = z.object({
   email: z.string().email().optional().or(z.literal('').transform(() => undefined)),
   phone: z.string().optional(),
   category: z.string().optional(),
+  attendeeType: z.enum(['ATTENDEE','VIP','SPEAKER','SPONSOR','EXHIBITOR','MEDIA','STAFF','ORGANIZER','STUDENT','GUEST','OTHER']).optional().nullable(),
   notes: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 })

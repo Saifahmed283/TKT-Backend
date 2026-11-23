@@ -10,6 +10,7 @@ const typeSchema = z.object({
   name: z.string().min(2),
   description: z.string().optional().nullable(),
   category: z.string().max(80).optional().nullable(),
+  tier: z.enum(['STANDARD','VIP','PREMIUM','EARLY_BIRD','STUDENT','COMPLIMENTARY','STAFF','SPEAKER','SPONSOR','OTHER']).optional().nullable(),
   price: z.coerce.number().nonnegative().optional().nullable(),
   currency: z.string().min(3).max(8).optional(),
   quota: z.number().int().positive().optional().nullable(),
@@ -35,7 +36,7 @@ export async function ticketRoutes(app: FastifyInstance) {
     const types = await prisma.ticketType.findMany({
       where: { eventId },
       select: {
-        id: true, name: true, description: true, category: true, price: true, currency: true, quota: true,
+        id: true, name: true, description: true, category: true, tier: true, price: true, currency: true, quota: true,
         salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, active: true,
         _count: { select: { tickets: true } },
       },
@@ -91,8 +92,9 @@ export async function ticketRoutes(app: FastifyInstance) {
         select: {
           id: true, status: true, price: true, issuedAt: true,
           attendee: { select: { id: true, name: true, email: true } },
-          ticketType: { select: { id: true, name: true } },
+          ticketType: { select: { id: true, name: true, tier: true } },
           credential: { select: { id: true, code: true, status: true } },
+          busSeats: { select: { id: true, label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } },
         },
       }),
     ])
