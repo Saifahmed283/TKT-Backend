@@ -496,11 +496,11 @@ async function main() {
   ]
 
   for (const def of pastDefs) {
+    const start = new Date(Date.now() - def.daysAgo * 24 * 3600 * 1000)
+    start.setHours(9, 0, 0, 0)
+    const end = new Date(start.getTime() + 8 * 3600 * 1000)
     let ev = await prisma.event.findFirst({ where: { name: def.name } })
     if (!ev) {
-      const start = new Date(Date.now() - def.daysAgo * 24 * 3600 * 1000)
-      start.setHours(9, 0, 0, 0)
-      const end = new Date(start.getTime() + 8 * 3600 * 1000)
       ev = await prisma.event.create({
         data: {
           orgId,
@@ -516,33 +516,16 @@ async function main() {
           settings: { registration: { enabled: false, open: false } },
         },
       })
+    } else {
+      await prisma.event.update({ where: { id: ev.id }, data: { status: def.status as any, startAt: start, endAt: end, settings: { registration: { enabled: false, open: false } } } })
     }
     let ga = await prisma.ticketType.findFirst({ where: { eventId: ev.id, name: 'General Admission' } })
-    if (!ga) {
-      ga = await prisma.ticketType.create({ data: { eventId: ev.id, name: 'General Admission', price: 50, quota: 500 } })
-    }
+    if (!ga) ga = await prisma.ticketType.create({ data: { eventId: ev.id, name: 'General Admission', price: 50, quota: 500 } })
     for (const [name, email] of def.attendees) {
       const exists = await prisma.attendee.findFirst({ where: { eventId: ev.id, email } })
       if (exists) continue
-      const attendee = await prisma.attendee.create({
-        data: { eventId: ev.id, name, email, status: 'CHECKED_IN', metadata: { source: 'seed' } },
-      })
-      await prisma.ticket.create({
-        data: { eventId: ev.id, attendeeId: attendee.id, ticketTypeId: ga.id, status: 'CONSUMED', price: 50 },
-      })
-      const logs = 1 + (Math.floor(Math.random() * 3))
-      for (let i = 0; i < logs; i++) {
-        await prisma.accessLog.create({
-          data: {
-            eventId: ev.id,
-            attendeeId: attendee.id,
-            result: 'GRANTED',
-            reason: 'NONE',
-            timestamp: new Date(start.getTime() + (i * 45 + 20) * 60000),
-            metadata: { source: 'seed' },
-          },
-        })
-      }
+      const attendee = await prisma.attendee.create({ data: { eventId: ev.id, name, email, status: 'CHECKED_IN', metadata: { source: 'seed' } } })
+      await prisma.ticket.create({ data: { eventId: ev.id, attendeeId: attendee.id, ticketTypeId: ga.id, status: 'CONSUMED', price: 50 } })
     }
   }
 
