@@ -133,7 +133,7 @@ export async function busRoutes(app: FastifyInstance) {
       if (body.ticketId) {
         const ticket = await tx.ticket.findFirst({ where: { id: body.ticketId, eventId } })
         if (!ticket) throw errors.notFound('Ticket not found')
-        const existing = await tx.busSeat.findUnique({ where: { ticketId: body.ticketId } })
+        const existing = await tx.busSeat.findFirst({ where: { ticketId: body.ticketId } })
         if (existing) throw errors.conflict('Ticket already has a seat assigned')
       }
       await tx.busSeat.updateMany({

@@ -546,7 +546,7 @@ model Ticket {
   paymentReviewedBy User?                       @relation("TicketPaymentReview", fields: [paymentReviewedById], references: [id])
   deliveryLogs      CredentialDeliveryAttempt[]
   redeemedAccessCodes AccessCode[] @relation("AccessCodeRedeemedTicket")
-  busSeat           BusSeat?
+  busSeats          BusSeat[]
 
   @@index([eventId])
   @@index([attendeeId])
@@ -1218,7 +1218,7 @@ model BusSeat {
   row         Int
   col         Int
   state       SeatState @default(AVAILABLE)
-  ticketId    String?   @unique
+  ticketId    String?
   holderName  String?
   groupId     String?
   reservedAt  DateTime?
