@@ -115,6 +115,83 @@ export async function paymentRoutes(app: FastifyInstance) {
     return { data: tickets.map(t => ({ ...t, reservationCode: reservationCodeOf(t as any) })) }
   })
 
+  app.post('/reference/:reference/fetch', async (req) => {
+    const { eventId, reference } = req.params as { eventId: string; reference: string }
+    await requirePermission(req, 'payment.review', { eventId })
+    const ref = decodeURIComponent(reference).trim()
+    if (!ref) throw errors.badRequest('Reference is required')
+
+    const local = await prisma.ticket.findMany({
+      where: { eventId, metadata: { path: ['paymentReference'], equals: ref } },
+      include: { attendee: true, ticketType: { select: { id: true, name: true } }, paymentProvider: true },
+      orderBy: { issuedAt: 'desc' }, take: 20,
+    })
+
+    // Provider adapter framework: real external fetch happens only when a provider exposes a configured fetch URL.
+    // This keeps behavior auditable and safe without claiming fake external verification.
+    const provider = local.find(t => t.paymentProviderId)?.paymentProvider ?? null
+    const providerMeta = (provider as any)?.metadata && typeof (provider as any).metadata === 'object' ? (provider as any).metadata as Record<string, unknown> : {}
+    const fetchUrlTemplate = typeof providerMeta.fetchUrlTemplate === 'string' ? providerMeta.fetchUrlTemplate : null
+    let external: { attempted: boolean; ok: boolean; status?: number; body?: unknown; error?: string; url?: string } = { attempted: false, ok: false }
+
+    if (fetchUrlTemplate) {
+      const url = fetchUrlTemplate.replace('{reference}', encodeURIComponent(ref)).replace('{eventId}', encodeURIComponent(eventId))
+      external.attempted = true
+      external.url = url
+      try {
+        const headers: Record<string, string> = { Accept: 'application/json' }
+        if (typeof providerMeta.fetchAuthHeader === 'string' && typeof providerMeta.fetchAuthValue === 'string') {
+          headers[providerMeta.fetchAuthHeader] = providerMeta.fetchAuthValue
+        }
+        const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) })
+        external.status = res.status
+        external.ok = res.ok
+        const text = await res.text()
+        try { external.body = text ? JSON.parse(text) : null } catch { external.body = text.slice(0, 2000) }
+      } catch (e: any) {
+        external.error = e?.message ?? 'Fetch failed'
+      }
+    }
+
+    const now = new Date().toISOString()
+    const updatedIds: string[] = []
+    for (const t of local) {
+      const meta = (t.metadata ?? {}) as Record<string, unknown>
+      const next = {
+        ...meta,
+        paymentReference: ref,
+        proofFetchedAt: now,
+        proofFetch: {
+          byUserId: req.user.id,
+          at: now,
+          localMatchCount: local.length,
+          external,
+        },
+      }
+      await prisma.ticket.update({ where: { id: t.id }, data: { metadata: next as any } }).catch(() => null)
+      updatedIds.push(t.id)
+    }
+
+    await writeAudit({
+      organizationId: (await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } }))?.orgId,
+      eventId, actorUserId: req.user.id, action: 'payment.reference_fetched',
+      resourceType: 'payment_reference', resourceId: ref,
+      newValue: { reference: ref, localMatchCount: local.length, updatedTicketIds: updatedIds, external }, sourceIp: req.ip,
+    })
+
+    return {
+      data: {
+        reference: ref,
+        localMatchCount: local.length,
+        tickets: local.map(t => ({ ...t, reservationCode: reservationCodeOf(t as any) })),
+        external,
+        message: external.attempted
+          ? (external.ok ? 'Reference fetched from configured provider adapter.' : 'Provider adapter fetch attempted but did not confirm payment.')
+          : 'No external provider fetch adapter configured; returned verified local TKT records for this reference.',
+      },
+    }
+  })
+
   app.post('/reservations/:ticketId/review', async (req) => {
     const { eventId, ticketId } = req.params as { eventId: string; ticketId: string }
     await requirePermission(req, 'payment.review', { eventId })

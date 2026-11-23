@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify'
+﻿import type { FastifyInstance } from 'fastify'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
@@ -46,6 +46,8 @@ const reservationSchema = z.object({
   paymentAmount: z.coerce.number().nonnegative().optional().nullable(),
   busId: z.string().optional().nullable(),
   seatIds: z.array(z.string()).max(20).optional(),
+  seatPassengers: z.array(z.object({ seatId: z.string(), name: z.string().min(2), email: z.string().email().optional().nullable(), phone: z.string().optional().nullable() })).optional(),
+  holdToken: z.string().optional().nullable(),
 })
 
 const contactSchema = z.object({
@@ -148,7 +150,7 @@ export async function publicRoutes(app: FastifyInstance) {
         const ticketTypes: PublicTicketType[] = e.ticketTypes.map((t: any) => {
           const sold = t._count.tickets
           const remaining = t.quota != null ? Math.max(0, t.quota - sold) : null
-          return { id: t.id, name: t.name, description: t.description ?? null, category: t.category ?? null, price: t.price?.toString() ?? '0', currency: t.currency ?? 'USD', quota: t.quota, sold, remaining, soldOut: t.quota != null && sold >= t.quota, salesStartAt: t.salesStartAt?.toISOString() ?? null, salesEndAt: t.salesEndAt?.toISOString() ?? null, isPublic: t.isPublic !== false }
+          return { id: t.id, name: t.name, description: t.description ?? null, category: t.category ?? null, price: t.price?.toString() ?? '0', currency: t.currency ?? 'EGP', quota: t.quota, sold, remaining, soldOut: t.quota != null && sold >= t.quota, salesStartAt: t.salesStartAt?.toISOString() ?? null, salesEndAt: t.salesEndAt?.toISOString() ?? null, isPublic: t.isPublic !== false }
         })
         const soldOut = ticketTypes.some((t: PublicTicketType) => t.quota != null) && ticketTypes.every((t: PublicTicketType) => t.soldOut)
         return {
@@ -231,7 +233,7 @@ export async function publicRoutes(app: FastifyInstance) {
         description: t.description,
         category: t.category ?? null,
         price: t.price?.toString() ?? '0',
-        currency: t.currency ?? 'USD',
+        currency: t.currency ?? 'EGP',
         quota: t.quota,
         sold,
         remaining: t.quota != null ? Math.max(0, t.quota - sold) : null,
@@ -266,10 +268,40 @@ export async function publicRoutes(app: FastifyInstance) {
         buses: ((event as any).buses ?? []).map((b: any) => ({
           id: b.id, name: b.name, layout: b.layout, totalSeats: b._count?.seats ?? b.seats?.length ?? 0,
           availableSeats: (b.seats ?? []).filter((s: any) => s.state === 'AVAILABLE').length,
-          seats: (b.seats ?? []).map((s: any) => ({ id: s.id, label: s.label, row: s.row, col: s.col, state: s.state, holderName: s.state === 'RESERVED' ? (s.holderName ?? 'Reserved') : null })),
+          seatPrice: b.seatPrice != null ? String(b.seatPrice) : '0',
+          currency: b.currency ?? 'EGP',
+          seats: (b.seats ?? []).map((s: any) => ({ id: s.id, label: s.label, row: s.row, col: s.col, state: s.state, holderName: s.state === 'RESERVED' ? (s.holderName ?? 'Reserved') : null, passengerName: s.passengerName ?? null })),
         })),
       },
     }
+  })
+
+  app.post('/events/:eventId/buses/:busId/hold', async (req) => {
+    const { eventId, busId } = req.params as { eventId: string; busId: string }
+    const body = z.object({ seatIds: z.array(z.string()).min(1).max(20), sessionId: z.string().min(8).max(120), holdMinutes: z.number().int().min(1).max(20).optional() }).parse(req.body)
+    const holdExpiresAt = new Date(Date.now() + (body.holdMinutes ?? 10) * 60_000)
+    const now = new Date()
+    const seats = await prisma.$transaction(async (tx) => {
+      const rows = await tx.busSeat.findMany({ where: { id: { in: body.seatIds }, busId, bus: { eventId, isActive: true } } })
+      if (rows.length !== body.seatIds.length) throw errors.notFound('One or more seats not found')
+      const blocked = rows.filter(s => !(s.state === 'AVAILABLE' || (s.state === 'HELD' && s.holdToken === body.sessionId && s.holdExpiresAt && s.holdExpiresAt > now)))
+      if (blocked.length) throw errors.conflict(`Seats unavailable: ${blocked.map(s => s.label).join(', ')}`)
+      for (const id of body.seatIds) {
+        await tx.busSeat.update({ where: { id }, data: { state: 'HELD', holdToken: body.sessionId, holdExpiresAt, ticketId: null, groupId: null, reservedAt: null } })
+      }
+      return tx.busSeat.findMany({ where: { id: { in: body.seatIds } }, select: { id: true, label: true, row: true, col: true, state: true, holdExpiresAt: true } })
+    })
+    return { data: { holdToken: body.sessionId, holdExpiresAt: holdExpiresAt.toISOString(), seats } }
+  })
+
+  app.post('/events/:eventId/buses/:busId/release-hold', async (req) => {
+    const { eventId, busId } = req.params as { eventId: string; busId: string }
+    const body = z.object({ seatIds: z.array(z.string()).min(1).max(20), sessionId: z.string().min(8).max(120) }).parse(req.body)
+    await prisma.busSeat.updateMany({
+      where: { id: { in: body.seatIds }, busId, bus: { eventId }, state: 'HELD', holdToken: body.sessionId },
+      data: { state: 'AVAILABLE', holdToken: null, holdExpiresAt: null, holderName: null, passengerName: null, passengerEmail: null, passengerPhone: null, groupId: null, ticketId: null, reservedAt: null },
+    })
+    return { data: { ok: true } }
   })
 
   // ── Public reservation ────────────────────────────────────
@@ -312,9 +344,12 @@ export async function publicRoutes(app: FastifyInstance) {
       throw errors.badRequest('This ticket type has sold out')
     }
 
+    const seatIds = Array.isArray(body.seatIds) ? [...new Set(body.seatIds)] : []
     const code = reservationCode()
-    const price = Number(ticketType.price ?? 0)
-    const paid = Number.isFinite(price) && price > 0
+    const ticketPrice = Number(ticketType.price ?? 0)
+    const busSeatUnitPriceForPricing = seatIds.length ? Number((await prisma.bus.findUnique({ where: { id: body.busId ?? '' }, select: { seatPrice: true } }).catch(() => null))?.seatPrice ?? 0) : 0
+    const computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0) + (seatIds.length * (Number.isFinite(busSeatUnitPriceForPricing) ? busSeatUnitPriceForPricing : 0))
+    const paid = computedTotalForPricing > 0
     const state = reservationStatePatch({ paid, approved: !paid })
     const emailNorm = normalizeReservationEmail(body.email)
     const phoneNorm = normalizeReservationPhone(body.phone)
@@ -347,13 +382,17 @@ export async function publicRoutes(app: FastifyInstance) {
           throw Object.assign(new Error('DUPLICATE_RESERVATION'), { existing })
         }
 
-        const seatIds = Array.isArray(body.seatIds) ? [...new Set(body.seatIds)] : []
         let seatRows: any[] = []
         if (seatIds.length > 0) {
           if (!body.busId) throw errors.badRequest('busId is required when reserving seats')
           seatRows = await tx.busSeat.findMany({ where: { id: { in: seatIds }, busId: body.busId, bus: { eventId, isActive: true } } })
           if (seatRows.length !== seatIds.length) throw errors.badRequest('One or more seats are invalid')
-          const blocked = seatRows.filter((s: any) => s.state !== 'AVAILABLE')
+          const now = new Date()
+          const blocked = seatRows.filter((s: any) => {
+            if (s.state === 'AVAILABLE') return false
+            if (s.state === 'HELD' && body.holdToken && s.holdToken === body.holdToken && s.holdExpiresAt && s.holdExpiresAt > now) return false
+            return true
+          })
           if (blocked.length) throw errors.conflict(`Seats no longer available: ${blocked.map((s: any) => s.label).join(', ')}`)
         }
 
@@ -373,7 +412,7 @@ export async function publicRoutes(app: FastifyInstance) {
             eventId,
             attendeeId: attendee.id,
             ticketTypeId: ticketType.id,
-            price: ticketType.price,
+            price: computedTotalForPricing,
             status: paid ? 'ISSUED' : 'ACTIVE',
             reservationCode: code,
             reservationEmail: emailNorm,
@@ -384,7 +423,7 @@ export async function publicRoutes(app: FastifyInstance) {
             paymentProviderId: paid ? (paymentProvider?.id ?? null) : null,
             paymentReference: paid ? (body.paymentReference?.trim() || null) : null,
             paymentProofUrl: paid ? (body.paymentProofUrl || null) : null,
-            paymentAmount: paid ? (body.paymentAmount ?? ticketType.price ?? null) : null,
+            paymentAmount: paid ? computedTotalForPricing : null,
             paymentSubmittedAt: paid && (body.paymentReference || body.paymentProofUrl || body.paymentProviderId) ? new Date() : null,
             ...state,
             metadata: {
@@ -404,12 +443,27 @@ export async function publicRoutes(app: FastifyInstance) {
 
         if (seatIds.length > 0) {
           const groupId = randomUUID()
-          const updated = await tx.busSeat.updateMany({
-            where: { id: { in: seatIds }, busId: body.busId!, state: 'AVAILABLE' },
-            data: { state: 'RESERVED', holderName: body.name.trim(), groupId, ticketId: ticket.id, reservedAt: new Date() },
-          })
-          if (updated.count !== seatIds.length) throw errors.conflict('Seat reservation conflict — please reselect seats')
-          seatRows = seatRows.map((s: any) => ({ ...s, groupId, ticketId: ticket.id }))
+          const now = new Date()
+          for (const id of seatIds) {
+            const passenger = body.seatPassengers?.find(p => p.seatId === id)
+            const updated = await tx.busSeat.updateMany({
+              where: { id, busId: body.busId!, OR: [{ state: 'AVAILABLE' }, { state: 'HELD', holdToken: body.holdToken ?? undefined, holdExpiresAt: { gt: now } }] },
+              data: {
+                state: 'RESERVED',
+                holderName: body.name.trim(),
+                passengerName: passenger?.name?.trim() || body.name.trim(),
+                passengerEmail: passenger?.email?.trim() || body.email.trim(),
+                passengerPhone: passenger?.phone?.trim() || body.phone?.trim() || null,
+                groupId,
+                ticketId: ticket.id,
+                holdToken: null,
+                holdExpiresAt: null,
+                reservedAt: new Date(),
+              },
+            })
+            if (updated.count !== 1) throw errors.conflict('Seat reservation conflict — please reselect seats')
+          }
+          seatRows = await tx.busSeat.findMany({ where: { id: { in: seatIds } } })
         }
 
         return { attendee, ticket, seatRows }
@@ -507,6 +561,8 @@ export async function publicRoutes(app: FastifyInstance) {
       qr = issued.qrCode
     }
 
+    const busSeatUnitPrice = reservedSeats.length ? Number((await prisma.bus.findUnique({ where: { id: body.busId ?? '' }, select: { seatPrice: true } }).catch(() => null))?.seatPrice ?? 0) : 0
+    const computedTotal = (Number(ticketType.price ?? 0) || 0) + (reservedSeats.length * (Number.isFinite(busSeatUnitPrice) ? busSeatUnitPrice : 0))
     const seatSuffix = reservedSeats.length ? ` · seats ${reservedSeats.map((s) => s.label).join(', ')}` : ''
     logActivity(eventId, 'reservation', `${body.name} reserved ${ticketType.name} · ${code}${seatSuffix}`, body.name)
     publish(channelFor.reservation(eventId), 'reservation.created', {
@@ -538,7 +594,7 @@ export async function publicRoutes(app: FastifyInstance) {
         attendeeId: attendee.id,
         ticketId: ticket.id,
         reservationCode: code,
-        price: ticketType.price?.toString() ?? '0',
+        price: computedTotal.toString(),
         approval: paid ? 'PENDING' : 'APPROVED',
         paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
         qr,
@@ -808,3 +864,5 @@ export async function publicRoutes(app: FastifyInstance) {
     })
   })
 }
+
+

@@ -225,4 +225,29 @@ export async function reservationRoutes(app: FastifyInstance) {
     })
     return { data: rows }
   })
+
+  app.get('/deliveries/export.xlsx', async (req, reply) => {
+    const { eventId } = req.params as { eventId: string }
+    await requirePermission(req, 'report.export', { eventId })
+    const rows = await prisma.credentialDeliveryAttempt.findMany({
+      where: { eventId },
+      orderBy: { createdAt: 'desc' },
+      take: 5000,
+      include: { ticket: { select: { reservationCode: true, reservationName: true, reservationEmail: true } } },
+    })
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('Deliveries')
+    ws.columns = [
+      { header: 'Created At', key: 'createdAt', width: 22 }, { header: 'Reservation', key: 'reservation', width: 22 }, { header: 'Recipient', key: 'recipient', width: 28 },
+      { header: 'Channel', key: 'channel', width: 12 }, { header: 'Status', key: 'status', width: 12 }, { header: 'Provider', key: 'provider', width: 16 },
+      { header: 'Attempt', key: 'attempt', width: 10 }, { header: 'Error', key: 'error', width: 40 }, { header: 'Ticket ID', key: 'ticketId', width: 28 },
+    ]
+    for (const r of rows as any[]) {
+      ws.addRow({ createdAt: r.createdAt.toISOString(), reservation: r.ticket?.reservationCode ?? '', recipient: r.recipient ?? r.ticket?.reservationEmail ?? '', channel: r.channel, status: r.status, provider: r.provider ?? '', attempt: r.attempt, error: r.error ?? '', ticketId: r.ticketId })
+    }
+    const buf = await wb.xlsx.writeBuffer()
+    reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    reply.header('Content-Disposition', `attachment; filename="deliveries-${eventId}.xlsx"`)
+    return reply.send(Buffer.from(buf))
+  })
 }

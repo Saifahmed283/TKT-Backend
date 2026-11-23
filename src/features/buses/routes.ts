@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify'
+﻿import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import crypto from 'node:crypto'
 import { prisma } from '../../lib/db.js'
@@ -17,7 +17,16 @@ const layoutSchema = z.object({
 const busSchema = z.object({
   name: z.string().min(2),
   layout: layoutSchema,
+  seatPrice: z.coerce.number().nonnegative().optional(),
+  currency: z.string().min(3).max(8).optional(),
   isActive: z.boolean().optional(),
+})
+
+const passengerSchema = z.object({
+  seatId: z.string(),
+  name: z.string().min(2),
+  email: z.string().email().optional().nullable(),
+  phone: z.string().optional().nullable(),
 })
 
 const reserveSchema = z.object({
@@ -25,6 +34,7 @@ const reserveSchema = z.object({
   ticketId: z.string().optional(),
   holderName: z.string().min(2),
   groupId: z.string().optional(),
+  passengers: z.array(passengerSchema).optional(),
 })
 
 function buildSeats(layout: z.infer<typeof layoutSchema>) {
@@ -57,7 +67,7 @@ export async function busRoutes(app: FastifyInstance) {
     const seats = buildSeats(body.layout)
     const bus = await prisma.bus.create({
       data: {
-        eventId, name: body.name, layout: body.layout as any, isActive: body.isActive ?? true,
+        eventId, name: body.name, layout: body.layout as any, seatPrice: body.seatPrice ?? 0, currency: body.currency ?? 'EGP', isActive: body.isActive ?? true,
         seats: { create: seats.map(s => ({ label: s.label, row: s.row, col: s.col, state: s.state })) },
       },
       include: { seats: true },
@@ -88,10 +98,10 @@ export async function busRoutes(app: FastifyInstance) {
       await prisma.$transaction([
         prisma.busSeat.deleteMany({ where: { busId } }),
         prisma.busSeat.createMany({ data: seats.map(s => ({ busId, label: s.label, row: s.row, col: s.col, state: s.state })) }),
-        prisma.bus.update({ where: { id: busId }, data: { name: body.name ?? bus.name, layout: body.layout as any, isActive: body.isActive ?? bus.isActive } }),
+        prisma.bus.update({ where: { id: busId }, data: { name: body.name ?? bus.name, layout: body.layout as any, seatPrice: body.seatPrice ?? bus.seatPrice, currency: body.currency ?? bus.currency, isActive: body.isActive ?? bus.isActive } }),
       ])
     } else {
-      await prisma.bus.update({ where: { id: busId }, data: { name: body.name, isActive: body.isActive } })
+      await prisma.bus.update({ where: { id: busId }, data: { name: body.name, isActive: body.isActive, seatPrice: body.seatPrice, currency: body.currency ?? 'EGP' } })
     }
     const updated = await prisma.bus.findUnique({ where: { id: busId }, include: { seats: true } })
     return { data: updated }
@@ -136,10 +146,24 @@ export async function busRoutes(app: FastifyInstance) {
         const existing = await tx.busSeat.findFirst({ where: { ticketId: body.ticketId } })
         if (existing) throw errors.conflict('Ticket already has a seat assigned')
       }
-      await tx.busSeat.updateMany({
-        where: { id: { in: body.seatIds }, state: 'AVAILABLE' },
-        data: { state: 'RESERVED', holderName: body.holderName, groupId, ticketId: body.ticketId ?? null, reservedAt: new Date() },
-      })
+      for (const id of body.seatIds) {
+        const p = body.passengers?.find(x => x.seatId === id)
+        await tx.busSeat.update({
+          where: { id },
+          data: {
+            state: 'RESERVED',
+            holderName: body.holderName,
+            passengerName: p?.name ?? body.holderName,
+            passengerEmail: p?.email ?? null,
+            passengerPhone: p?.phone ?? null,
+            groupId,
+            ticketId: body.ticketId ?? null,
+            reservedAt: new Date(),
+            holdToken: null,
+            holdExpiresAt: null,
+          },
+        })
+      }
       const updated = await tx.busSeat.findMany({ where: { id: { in: body.seatIds } } })
       if (updated.some(s => s.state !== 'RESERVED')) throw errors.conflict('Seat reservation conflict — refresh and retry')
       return updated
@@ -153,7 +177,50 @@ export async function busRoutes(app: FastifyInstance) {
     const { eventId, busId } = req.params as { eventId: string; busId: string }
     await requirePermission(req, 'bus.manage', { eventId })
     const body = z.object({ seatIds: z.array(z.string()).min(1) }).parse(req.body)
-    await prisma.busSeat.updateMany({ where: { id: { in: body.seatIds }, busId, bus: { eventId }, state: 'RESERVED' }, data: { state: 'AVAILABLE', holderName: null, groupId: null, ticketId: null, reservedAt: null } })
+    await prisma.busSeat.updateMany({ where: { id: { in: body.seatIds }, busId, bus: { eventId }, state: { in: ['RESERVED', 'HELD'] } }, data: { state: 'AVAILABLE', holderName: null, passengerName: null, passengerEmail: null, passengerPhone: null, groupId: null, ticketId: null, holdToken: null, holdExpiresAt: null, reservedAt: null } })
     return { data: { ok: true } }
   })
+
+  app.post('/:busId/hold', async (req) => {
+    const { eventId, busId } = req.params as { eventId: string; busId: string }
+    const body = z.object({ seatIds: z.array(z.string()).min(1).max(20), holdMinutes: z.number().int().min(1).max(30).optional(), sessionId: z.string().optional() }).parse(req.body)
+    const holdToken = body.sessionId || crypto.randomUUID()
+    const holdExpiresAt = new Date(Date.now() + (body.holdMinutes ?? 10) * 60_000)
+    const now = new Date()
+    const result = await prisma.$transaction(async (tx) => {
+      const seats = await tx.busSeat.findMany({ where: { id: { in: body.seatIds }, busId, bus: { eventId, isActive: true } } })
+      if (seats.length !== body.seatIds.length) throw errors.notFound('One or more seats not found')
+      const blocked = seats.filter(s => !(s.state === 'AVAILABLE' || (s.state === 'HELD' && s.holdToken === holdToken && s.holdExpiresAt && s.holdExpiresAt > now)))
+      if (blocked.length) throw errors.conflict(`Seats unavailable: ${blocked.map(s => s.label).join(', ')}`)
+      for (const id of body.seatIds) {
+        await tx.busSeat.update({ where: { id }, data: { state: 'HELD', holdToken, holdExpiresAt, groupId: null, ticketId: null, reservedAt: null } })
+      }
+      return tx.busSeat.findMany({ where: { id: { in: body.seatIds } } })
+    })
+    return { data: { holdToken, holdExpiresAt: holdExpiresAt.toISOString(), seats: result } }
+  })
+
+  app.get('/:busId/manifest.xlsx', async (req, reply) => {
+    const { eventId, busId } = req.params as { eventId: string; busId: string }
+    await requirePermission(req, 'report.export', { eventId })
+    const bus = await prisma.bus.findFirst({ where: { id: busId, eventId }, include: { seats: { orderBy: [{ row: 'asc' }, { col: 'asc' }], include: { ticket: { select: { id: true, reservationCode: true, attendee: { select: { name: true, email: true, phone: true } } } } } } } })
+    if (!bus) throw errors.notFound('Bus not found')
+    const ExcelJS = (await import('exceljs')).default
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('Seat manifest')
+    ws.columns = [
+      { header: 'Seat', key: 'label', width: 10 }, { header: 'Row', key: 'row', width: 8 }, { header: 'Col', key: 'col', width: 8 },
+      { header: 'State', key: 'state', width: 12 }, { header: 'Passenger', key: 'passenger', width: 24 }, { header: 'Passenger email', key: 'email', width: 28 },
+      { header: 'Passenger phone', key: 'phone', width: 18 }, { header: 'Group', key: 'group', width: 20 }, { header: 'Reservation', key: 'reservation', width: 22 },
+      { header: 'Ticket holder', key: 'holder', width: 24 },
+    ]
+    for (const s of bus.seats as any[]) {
+      ws.addRow({ label: s.label, row: s.row, col: s.col, state: s.state, passenger: s.passengerName ?? '', email: s.passengerEmail ?? s.ticket?.attendee?.email ?? '', phone: s.passengerPhone ?? s.ticket?.attendee?.phone ?? '', group: s.groupId ?? '', reservation: s.ticket?.reservationCode ?? '', holder: s.holderName ?? s.ticket?.attendee?.name ?? '' })
+    }
+    const buf = await wb.xlsx.writeBuffer()
+    reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    reply.header('Content-Disposition', `attachment; filename="bus-${bus.name}-manifest.xlsx"`)
+    return reply.send(Buffer.from(buf))
+  })
 }
+

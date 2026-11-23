@@ -1,0 +1,10 @@
+﻿ALTER TYPE "SeatState" ADD VALUE IF NOT EXISTS 'HELD';
+
+ALTER TABLE "BusSeat"
+  ADD COLUMN IF NOT EXISTS "passengerName" TEXT,
+  ADD COLUMN IF NOT EXISTS "passengerEmail" TEXT,
+  ADD COLUMN IF NOT EXISTS "passengerPhone" TEXT,
+  ADD COLUMN IF NOT EXISTS "holdToken" TEXT,
+  ADD COLUMN IF NOT EXISTS "holdExpiresAt" TIMESTAMP(3);
+
+CREATE INDEX IF NOT EXISTS "BusSeat_holdToken_idx" ON "BusSeat"("holdToken");

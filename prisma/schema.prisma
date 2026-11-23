@@ -386,7 +386,7 @@ model TicketType {
   description String?
   category    String?
   price       Decimal?  @db.Decimal(10, 2)
-  currency    String    @default("USD")
+  currency  String    @default("EGP")
   quota       Int?
   salesStartAt DateTime?
   salesEndAt   DateTime?
@@ -1195,6 +1195,8 @@ model Bus {
   eventId   String
   name      String
   layout    Json     // { rows, cols, aisleAfterCol, seats: [{label,row,col,state}] }
+  seatPrice Decimal  @db.Decimal(10, 2) @default(0)
+  currency  String    @default("EGP")
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1207,23 +1209,29 @@ model Bus {
 
 enum SeatState {
   AVAILABLE
+  HELD
   RESERVED
   UNAVAILABLE
 }
 
 model BusSeat {
-  id          String    @id @default(cuid())
-  busId       String
-  label       String
-  row         Int
-  col         Int
-  state       SeatState @default(AVAILABLE)
-  ticketId    String?
-  holderName  String?
-  groupId     String?
-  reservedAt  DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id           String    @id @default(cuid())
+  busId        String
+  label        String
+  row          Int
+  col          Int
+  state        SeatState @default(AVAILABLE)
+  ticketId     String?
+  holderName   String?
+  passengerName String?
+  passengerEmail String?
+  passengerPhone String?
+  groupId      String?
+  holdToken    String?
+  holdExpiresAt DateTime?
+  reservedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   bus    Bus     @relation(fields: [busId], references: [id], onDelete: Cascade)
   ticket Ticket? @relation(fields: [ticketId], references: [id], onDelete: SetNull)
@@ -1231,4 +1239,6 @@ model BusSeat {
   @@unique([busId, row, col])
   @@index([busId, state])
   @@index([groupId])
+  @@index([holdToken])
 }
+

@@ -49,7 +49,7 @@ export async function ticketRoutes(app: FastifyInstance) {
     await requirePermission(req, 'ticket.issue', { eventId })
     const body = typeSchema.parse(req.body)
     if (body.salesStartAt && body.salesEndAt && body.salesStartAt > body.salesEndAt) throw errors.badRequest('salesStartAt must be before salesEndAt')
-    const type = await prisma.ticketType.create({ data: { eventId, ...body, currency: body.currency ?? 'USD' } })
+    const type = await prisma.ticketType.create({ data: { eventId, ...body, currency: body.currency ?? 'EGP' } })
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.type_created', resourceType: 'ticket_type', resourceId: type.id, newValue: body, sourceIp: req.ip })
     return reply.status(201).send({ data: type })
   })
@@ -141,7 +141,7 @@ export async function ticketRoutes(app: FastifyInstance) {
     if (!ticket) throw errors.notFound('Ticket not found')
     const updated = await prisma.ticket.update({ where: { id: ticketId }, data: { status: 'CANCELLED' } })
     await prisma.credential.updateMany({ where: { ticketId }, data: { status: 'REVOKED' } })
-    await prisma.busSeat.updateMany({ where: { ticketId }, data: { state: 'AVAILABLE', ticketId: null, holderName: null, groupId: null, reservedAt: null } }).catch(() => {})
+    await prisma.busSeat.updateMany({ where: { ticketId }, data: { state: 'AVAILABLE', ticketId: null, holderName: null, passengerName: null, passengerEmail: null, passengerPhone: null, groupId: null, holdToken: null, holdExpiresAt: null, reservedAt: null } }).catch(() => {})
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.cancelled', resourceType: 'ticket', resourceId: ticketId, previousValue: { status: ticket.status }, newValue: { status: 'CANCELLED' }, sourceIp: req.ip })
     return { data: updated }
   })
@@ -153,7 +153,7 @@ export async function ticketRoutes(app: FastifyInstance) {
     if (!ticket) throw errors.notFound('Ticket not found')
     const updated = await prisma.ticket.update({ where: { id: ticketId }, data: { status: 'REFUNDED' } })
     await prisma.credential.updateMany({ where: { ticketId }, data: { status: 'REVOKED' } })
-    await prisma.busSeat.updateMany({ where: { ticketId }, data: { state: 'AVAILABLE', ticketId: null, holderName: null, groupId: null, reservedAt: null } }).catch(() => {})
+    await prisma.busSeat.updateMany({ where: { ticketId }, data: { state: 'AVAILABLE', ticketId: null, holderName: null, passengerName: null, passengerEmail: null, passengerPhone: null, groupId: null, holdToken: null, holdExpiresAt: null, reservedAt: null } }).catch(() => {})
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.refunded', resourceType: 'ticket', resourceId: ticketId, previousValue: { status: ticket.status }, newValue: { status: 'REFUNDED' }, sourceIp: req.ip })
     return { data: updated }
   })

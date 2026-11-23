@@ -91,17 +91,26 @@ export async function authRoutes(app: FastifyInstance) {
   })
 
   app.post('/refresh', async (req, reply) => {
-    const token = req.cookies.tkt_refresh
-    if (!token) throw errors.unauthorized('No refresh session')
-    const claims = await verifyRefreshToken(token)
-    if (!claims) throw errors.unauthorized('Refresh session expired')
-    const user = await prisma.user.findUnique({ where: { id: claims.sub, status: 'ACTIVE' } })
-    if (!user) throw errors.unauthorized('Account not found')
+    try {
+      const token = (req.cookies as Record<string, string | undefined> | undefined)?.tkt_refresh
+      if (!token) throw errors.unauthorized('No refresh session')
+      const claims = await verifyRefreshToken(token)
+      if (!claims) throw errors.unauthorized('Refresh session expired')
+      const user = await prisma.user.findUnique({ where: { id: claims.sub } })
+      if (!user || user.status !== 'ACTIVE') {
+        reply.clearCookie('tkt_refresh', { path: '/' })
+        throw errors.unauthorized('Account not found')
+      }
 
-    const access = await signAccessToken(user)
-    const refresh = await signRefreshToken(user.id)
-    setRefreshCookie(reply, refresh)
-    return reply.send({ data: { token: access, user: publicUser(user) } })
+      const access = await signAccessToken(user)
+      const refresh = await signRefreshToken(user.id)
+      setRefreshCookie(reply, refresh)
+      return reply.send({ data: { token: access, user: publicUser(user) } })
+    } catch (err) {
+      if (err && typeof err === 'object' && 'statusCode' in err) throw err
+      req.log.error({ err }, 'auth.refresh failed')
+      throw errors.unauthorized('Refresh session invalid')
+    }
   })
 
   app.post('/logout', async (req, reply) => {
