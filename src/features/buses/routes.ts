@@ -7,11 +7,24 @@ import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
 
+const seatDefSchema = z.object({
+  label: z.string().min(1).max(16),
+  row: z.number().int().min(1).max(80),
+  col: z.number().int().min(1).max(20),
+  state: z.enum(['AVAILABLE', 'UNAVAILABLE']).optional(),
+  kind: z.string().optional(),
+  x: z.number().optional(),
+  y: z.number().optional(),
+})
+
 const layoutSchema = z.object({
-  rows: z.number().int().min(1).max(60),
-  cols: z.number().int().min(1).max(8),
-  aisleAfterCol: z.number().int().min(0).max(8).optional(),
+  template: z.enum(['grid', 'mect49', 'coaster21', 'custom']).optional(),
+  look: z.string().optional(),
+  rows: z.number().int().min(1).max(80),
+  cols: z.number().int().min(1).max(20),
+  aisleAfterCol: z.number().int().min(0).max(20).optional(),
   unavailable: z.array(z.object({ row: z.number().int(), col: z.number().int() })).optional(),
+  seats: z.array(seatDefSchema).max(200).optional(),
 })
 
 const busSchema = z.object({
@@ -37,7 +50,38 @@ const reserveSchema = z.object({
   passengers: z.array(passengerSchema).optional(),
 })
 
+function templateSeats(template: string): { label: string; row: number; col: number; state: 'AVAILABLE' | 'UNAVAILABLE' }[] {
+  if (template === 'mect49') {
+    const seats: { label: string; row: number; col: number; state: 'AVAILABLE' | 'UNAVAILABLE' }[] = []
+    let n = 1
+    seats.push({ label: String(n++), row: 1, col: 3, state: 'AVAILABLE' })
+    seats.push({ label: String(n++), row: 1, col: 4, state: 'AVAILABLE' })
+    seats.push({ label: String(n++), row: 2, col: 3, state: 'AVAILABLE' })
+    seats.push({ label: String(n++), row: 2, col: 4, state: 'AVAILABLE' })
+    for (let r = 3; r <= 12; r++) for (const c of [1, 2, 3, 4]) seats.push({ label: String(n++), row: r, col: c, state: 'AVAILABLE' })
+    for (let c = 1; c <= 5; c++) seats.push({ label: String(n++), row: 13, col: c, state: 'AVAILABLE' })
+    return seats
+  }
+  if (template === 'coaster21') {
+    const seats: { label: string; row: number; col: number; state: 'AVAILABLE' | 'UNAVAILABLE' }[] = []
+    let n = 1
+    seats.push({ label: String(n++), row: 1, col: 1, state: 'AVAILABLE' })
+    seats.push({ label: String(n++), row: 1, col: 3, state: 'AVAILABLE' })
+    seats.push({ label: String(n++), row: 1, col: 4, state: 'AVAILABLE' })
+    for (let r = 2; r <= 5; r++) for (const c of [1, 2, 3, 4]) seats.push({ label: String(n++), row: r, col: c, state: 'AVAILABLE' })
+    seats.push({ label: String(n++), row: 6, col: 1, state: 'AVAILABLE' })
+    seats.push({ label: String(n++), row: 6, col: 4, state: 'AVAILABLE' })
+    return seats
+  }
+  return []
+}
+
 function buildSeats(layout: z.infer<typeof layoutSchema>) {
+  if (Array.isArray(layout.seats) && layout.seats.length) {
+    return layout.seats.map(s => ({ label: String(s.label), row: Number(s.row), col: Number(s.col), state: (s.state === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'AVAILABLE') as 'AVAILABLE' | 'UNAVAILABLE' }))
+  }
+  const fromTemplate = layout.template ? templateSeats(layout.template) : []
+  if (fromTemplate.length) return fromTemplate
   const unavailable = new Set((layout.unavailable ?? []).map(s => `${s.row}:${s.col}`))
   const seats: { label: string; row: number; col: number; state: 'AVAILABLE' | 'UNAVAILABLE' }[] = []
   let n = 1
