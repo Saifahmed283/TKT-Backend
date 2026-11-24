@@ -75,3 +75,8 @@ export const prisma = new Proxy(basePrisma, {
     return value
   },
 }) as unknown as PrismaClient
+
+/** Lightweight connectivity probe used by the readiness endpoint. */
+export async function checkDatabase(): Promise<void> {
+  await basePrisma.$queryRaw`SELECT 1`
+}

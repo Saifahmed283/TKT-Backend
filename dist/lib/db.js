@@ -68,4 +68,8 @@ export const prisma = new Proxy(basePrisma, {
         return value;
     },
 });
+/** Lightweight connectivity probe used by the readiness endpoint. */
+export async function checkDatabase() {
+    await basePrisma.$queryRaw `SELECT 1`;
+}
 //# sourceMappingURL=db.js.map
