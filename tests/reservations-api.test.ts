@@ -1,5 +1,7 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { startTestApp, stopTestApp, app, registerUser, createOrg, auth, expectStatus } from './helpers.js'
+import { startTestApp, stopTestApp, app, registerUser, createOrg, auth, expectStatus, assignStaff, login } from './helpers.js'
 import { prisma } from '../src/lib/db.js'
 import { runWithDbContext } from '../src/lib/dbContext.js'
 
@@ -50,6 +52,16 @@ async function createTicketType(token: string, eventId: string, name: string, pr
   return res.json().data.id as string
 }
 
+async function addOrgMember(token: string, orgId: string, email: string) {
+  const res = await app.inject({
+    method: 'POST',
+    url: `/organizations/${orgId}/members`,
+    headers: auth(token),
+    payload: { email, role: 'VIEWER' },
+  })
+  expect([200, 201]).toContain(res.statusCode)
+}
+
 async function createBus(token: string, eventId: string, seatPrice = 0) {
   const res = await app.inject({
     method: 'POST',
@@ -92,6 +104,7 @@ describe('public reservation integrity', () => {
     const payload = {
       name: 'Guest One',
       email: 'duplicate@test.tkt',
+      phone: '+20 100 123 4567',
       ticketTypeId,
     }
 
@@ -123,7 +136,7 @@ describe('public reservation integrity', () => {
     const reserve = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations`,
-      payload: { name: 'Free Guest', email: `free-decision-${Date.now()}@test.tkt`, ticketTypeId },
+      payload: { name: 'Free Guest', email: `free-decision-${Date.now()}@test.tkt`, phone: '+20 100 123 4567', ticketTypeId },
     })
     expectStatus(reserve, 201)
     const ticketId = reserve.json().data.ticketId as string
@@ -169,9 +182,13 @@ describe('public reservation integrity', () => {
     const orgId = await createOrg(admin.token, `Org ResTransport ${Date.now()}`)
     cleanupOrgIds.push(orgId)
     const eventId = await createPublishedEvent(admin.token, orgId, `Event ResTransport ${Date.now()}`)
+    const manager = await registerUser('ResTransportMgr')
+    await addOrgMember(admin.token, orgId, manager.email)
+    await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
+    const managerToken = await login(manager.email, manager.password)
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Conference', 0)
     const transportTypeId = await createTicketType(admin.token, eventId, 'Conference + Bus', 100, true)
-    const bus = await createBus(admin.token, eventId, 50)
+    const bus = await createBus(managerToken, eventId, 50)
     const email = `transport-${Date.now()}@test.tkt`
 
     const noPhone = await app.inject({
@@ -228,6 +245,10 @@ describe('public reservation integrity', () => {
     const orgId = await createOrg(admin.token, `Org ResPaymentGuard ${Date.now()}`)
     cleanupOrgIds.push(orgId)
     const eventId = await createPublishedEvent(admin.token, orgId, `Event ResPaymentGuard ${Date.now()}`)
+    const manager = await registerUser('ResPaymentMgr')
+    await addOrgMember(admin.token, orgId, manager.email)
+    await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
+    const managerToken = await login(manager.email, manager.password)
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid Guard', 50)
 
     const reserve = await app.inject({
@@ -247,7 +268,7 @@ describe('public reservation integrity', () => {
     const blocked = await app.inject({
       method: 'POST',
       url: `/events/${eventId}/reservations/${ticketId}/decision`,
-      headers: auth(admin.token),
+      headers: auth(managerToken),
       payload: { approved: true },
     })
     expectStatus(blocked, 409)
@@ -257,7 +278,7 @@ describe('public reservation integrity', () => {
     const review = await app.inject({
       method: 'POST',
       url: `/events/${eventId}/payments/reservations/${ticketId}/review`,
-      headers: auth(admin.token),
+      headers: auth(managerToken),
       payload: { action: 'CONFIRM' },
     })
     expectStatus(review, 200)
@@ -267,7 +288,7 @@ describe('public reservation integrity', () => {
     const alreadyDecided = await app.inject({
       method: 'POST',
       url: `/events/${eventId}/reservations/${ticketId}/decision`,
-      headers: auth(admin.token),
+      headers: auth(managerToken),
       payload: { approved: true },
     })
     expectStatus(alreadyDecided, 200)
@@ -279,7 +300,11 @@ describe('public reservation integrity', () => {
     const orgId = await createOrg(admin.token, `Org ResAttendeeVisibility ${Date.now()}`)
     cleanupOrgIds.push(orgId)
     const eventId = await createPublishedEvent(admin.token, orgId, `Event ResAttendeeVisibility ${Date.now()}`)
-    const ticketTypeId = await createTicketType(admin.token, eventId, 'Free Visible', 0)
+    const manager = await registerUser('ResAttendeeMgr')
+    await addOrgMember(admin.token, orgId, manager.email)
+    await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
+    const managerToken = await login(manager.email, manager.password)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid Visible', 50)
     const email = `attendee-visible-${Date.now()}@test.tkt`
 
     const reserve = await app.inject({
@@ -292,7 +317,7 @@ describe('public reservation integrity', () => {
     const defaultList = await app.inject({
       method: 'GET',
       url: `/events/${eventId}/attendees`,
-      headers: auth(admin.token),
+      headers: auth(managerToken),
     })
     expectStatus(defaultList, 200)
     expect(defaultList.json().data.rows.some((a: any) => a.email === email)).toBe(false)
@@ -300,25 +325,99 @@ describe('public reservation integrity', () => {
     const pendingList = await app.inject({
       method: 'GET',
       url: `/events/${eventId}/attendees?scope=pending`,
-      headers: auth(admin.token),
+      headers: auth(managerToken),
     })
     expectStatus(pendingList, 200)
     expect(pendingList.json().data.rows.some((a: any) => a.email === email)).toBe(true)
 
-    const approve = await app.inject({
+    const review = await app.inject({
       method: 'POST',
-      url: `/events/${eventId}/reservations/${reserve.json().data.ticketId}/decision`,
-      headers: auth(admin.token),
-      payload: { approved: true },
+      url: `/events/${eventId}/payments/reservations/${reserve.json().data.ticketId}/review`,
+      headers: auth(managerToken),
+      payload: { action: 'CONFIRM' },
     })
-    expectStatus(approve, 200)
+    expectStatus(review, 200)
 
     const approvedList = await app.inject({
       method: 'GET',
       url: `/events/${eventId}/attendees`,
-      headers: auth(admin.token),
+      headers: auth(managerToken),
     })
     expectStatus(approvedList, 200)
     expect(approvedList.json().data.rows.some((a: any) => a.email === email)).toBe(true)
+  })
+
+  it('lists explicit pending payments and permanently removes rejected reservations', async () => {
+    const admin = await registerUser('ResPurge')
+    const orgId = await createOrg(admin.token, `Org ResPurge ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event ResPurge ${Date.now()}`)
+    const manager = await registerUser('ResPurgeMgr')
+    await addOrgMember(admin.token, orgId, manager.email)
+    await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
+    const managerToken = await login(manager.email, manager.password)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid Purge', 50)
+    const email = `purge-${Date.now()}@test.tkt`
+
+    const reserve = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: { name: 'Purge Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+    })
+    expectStatus(reserve, 201)
+    const ticketId = reserve.json().data.ticketId as string
+
+    const pending = await app.inject({
+      method: 'GET',
+      url: `/events/${eventId}/payments/pending`,
+      headers: auth(managerToken),
+    })
+    expectStatus(pending, 200)
+    expect(pending.json().data.some((p: any) => p.id === ticketId && p.paymentStatus === 'PENDING')).toBe(true)
+
+    const reject = await app.inject({
+      method: 'POST',
+      url: `/events/${eventId}/payments/reservations/${ticketId}/review`,
+      headers: auth(managerToken),
+      payload: { action: 'REJECT' },
+    })
+    expectStatus(reject, 200)
+
+    await runWithDbContext({ isInternal: true }, async () => {
+      expect(await prisma.ticket.findUnique({ where: { id: ticketId } })).toBeNull()
+      expect(await prisma.attendee.count({ where: { eventId, email } })).toBe(0)
+    })
+
+    const after = await app.inject({
+      method: 'GET',
+      url: `/events/${eventId}/payments/pending`,
+      headers: auth(managerToken),
+    })
+    expectStatus(after, 200)
+    expect(after.json().data.some((p: any) => p.id === ticketId)).toBe(false)
+  })
+
+  it('allows unauthenticated payment proof uploads', async () => {
+    const boundary = 'tkt-proof-boundary'
+    const body = [
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="file"; filename="proof.png"',
+      'Content-Type: image/png',
+      '',
+      'proof-bytes',
+      `--${boundary}--`,
+      '',
+    ].join('\r\n')
+
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/uploads/proof',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: body,
+    })
+    expectStatus(upload, 200)
+    const url = upload.json().data.url as string
+    expect(url).toContain('/uploads/')
+    await fs.unlink(path.resolve(process.cwd(), 'uploads', path.basename(new URL(url).pathname))).catch(() => {})
   })
 })

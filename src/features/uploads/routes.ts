@@ -1,46 +1,18 @@
 ﻿import type { FastifyInstance } from 'fastify'
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { randomUUID } from 'node:crypto'
-import { config } from '../../config.js'
 import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
-
-const ALLOWED = new Map<string, string>([
-  ['image/jpeg', 'jpg'],
-  ['image/png', 'png'],
-  ['image/webp', 'webp'],
-  ['image/gif', 'gif'],
-  ['image/svg+xml', 'svg'],
-  ['application/pdf', 'pdf'],
-])
+import { saveUpload } from '../../lib/uploadStore.js'
 
 export async function uploadRoutes(app: FastifyInstance) {
-  app.addHook('preHandler', authenticate)
-
-  app.post('/', async (req) => {
+  app.post('/', { preHandler: authenticate }, async (req) => {
     const file = await req.file()
     if (!file) throw errors.badRequest('No file uploaded')
-    const ext = ALLOWED.get(file.mimetype)
-    if (!ext) throw errors.badRequest('Unsupported file type. Allowed: jpg, png, webp, gif, svg, pdf')
-    const buf = await file.toBuffer()
-    if (!buf.length) throw errors.badRequest('Empty file')
-    if (buf.length > config.uploads.maxBytes) throw errors.badRequest('File too large')
+    return { data: await saveUpload(file) }
+  })
 
-    const dir = path.resolve(process.cwd(), config.uploads.dir)
-    await fs.mkdir(dir, { recursive: true })
-    const name = `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`
-    await fs.writeFile(path.join(dir, name), buf)
-
-    const base = config.publicUrl.replace(/\/$/, '')
-    return {
-      data: {
-        url: `${base}/uploads/${name}`,
-        path: `/uploads/${name}`,
-        name: file.filename,
-        mimeType: file.mimetype,
-        size: buf.length,
-      },
-    }
+  app.post('/proof', async (req) => {
+    const file = await req.file()
+    if (!file) throw errors.badRequest('No file uploaded')
+    return { data: await saveUpload(file) }
   })
 }

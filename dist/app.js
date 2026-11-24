@@ -39,12 +39,14 @@ import { dashboardRoutes } from './features/dashboard/routes.js';
 import { busRoutes } from './features/buses/routes.js';
 import { metaRoutes } from './features/meta/routes.js';
 import { assertRoleCatalogValid } from './lib/roleAliases.js';
+import { syncSystemRoles } from './lib/roleSync.js';
 import { enterDbContext } from './lib/dbContext.js';
 import { prisma } from './lib/db.js';
 import { verifyAccessToken } from './lib/auth.js';
 const requestDbTransactions = new WeakMap();
 export async function buildApp() {
     assertRoleCatalogValid();
+    await syncSystemRoles();
     const app = Fastify({
         logger: config.isProd
             ? { level: 'warn' }

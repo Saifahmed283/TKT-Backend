@@ -6,7 +6,7 @@ import { authenticate } from '../../middleware/auth.js';
 import { requirePermission } from '../../middleware/authorize.js';
 import { writeAudit } from '../../lib/audit.js';
 import { AuditActions } from '../../lib/audit-actions.js';
-import { decideReservation, reservationCodeOf } from '../reservations/service.js';
+import { decideReservation, reservationCodeOf, reservationPaymentOf } from '../reservations/service.js';
 import { publish, channelFor } from '../../lib/realtime.js';
 const providerSchema = z.object({
     name: z.string().min(2),
@@ -192,7 +192,7 @@ export async function paymentRoutes(app) {
         if (!ticket || ticket.eventId !== eventId)
             throw errors.notFound('Ticket not found');
         const meta = (ticket.metadata ?? {});
-        if (meta.paymentStatus !== 'PENDING')
+        if (reservationPaymentOf(ticket) !== 'PENDING')
             throw errors.conflict('Payment is not pending review');
         const confirmedPayment = body.action === 'CONFIRM';
         const paymentStatus = confirmedPayment ? 'CONFIRMED' : 'FAILED';
@@ -200,6 +200,7 @@ export async function paymentRoutes(app) {
         await prisma.ticket.update({
             where: { id: ticketId },
             data: {
+                paymentStatus,
                 metadata: {
                     ...meta,
                     paymentStatus,

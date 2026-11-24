@@ -7,7 +7,7 @@ import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
-import { decideReservation, reservationCodeOf } from '../reservations/service.js'
+import { decideReservation, reservationCodeOf, reservationPaymentOf } from '../reservations/service.js'
 import { publish, channelFor } from '../../lib/realtime.js'
 
 const providerSchema = z.object({
@@ -91,7 +91,13 @@ export async function paymentRoutes(app: FastifyInstance) {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'payment.review', { eventId })
     const tickets = await prisma.ticket.findMany({
-      where: { eventId, metadata: { path: ['paymentStatus'], equals: 'PENDING' } },
+      where: {
+        eventId,
+        OR: [
+          { paymentStatus: 'PENDING' },
+          { metadata: { path: ['paymentStatus'], equals: 'PENDING' } },
+        ],
+      },
       include: { attendee: true, ticketType: { select: { id: true, name: true, category: true, price: true } } },
       orderBy: { issuedAt: 'desc' }, take: 200,
     })
@@ -201,7 +207,7 @@ export async function paymentRoutes(app: FastifyInstance) {
     const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: { attendee: true, ticketType: true, event: true } })
     if (!ticket || ticket.eventId !== eventId) throw errors.notFound('Ticket not found')
     const meta = (ticket.metadata ?? {}) as Record<string, unknown>
-    if (meta.paymentStatus !== 'PENDING') throw errors.conflict('Payment is not pending review')
+    if (reservationPaymentOf(ticket) !== 'PENDING') throw errors.conflict('Payment is not pending review')
 
     const confirmedPayment = body.action === 'CONFIRM'
     const paymentStatus = confirmedPayment ? 'CONFIRMED' : 'FAILED'
@@ -210,6 +216,7 @@ export async function paymentRoutes(app: FastifyInstance) {
     await prisma.ticket.update({
       where: { id: ticketId },
       data: {
+        paymentStatus,
         metadata: {
           ...meta,
           paymentStatus,
@@ -263,7 +270,7 @@ export async function paymentRoutes(app: FastifyInstance) {
 
     const [event, tickets, ticketTypes] = await Promise.all([
       prisma.event.findUnique({ where: { id: eventId }, select: { settings: true } }),
-      prisma.ticket.findMany({ where: { eventId }, select: { id: true, status: true, price: true, metadata: true, ticketTypeId: true, ticketType: { select: { id: true, name: true, category: true, price: true } } } }),
+      prisma.ticket.findMany({ where: { eventId }, select: { id: true, status: true, price: true, paymentStatus: true, metadata: true, ticketTypeId: true, ticketType: { select: { id: true, name: true, category: true, price: true } } } }),
       prisma.ticketType.findMany({ where: { eventId }, select: { id: true, name: true, category: true, price: true, quota: true, _count: { select: { tickets: true } } } }),
     ])
     if (!event) throw errors.notFound('Event not found')
@@ -275,7 +282,7 @@ export async function paymentRoutes(app: FastifyInstance) {
 
     for (const t of tickets) {
       const meta = (t.metadata ?? {}) as Record<string, unknown>
-      const ps = String(meta.paymentStatus ?? (toNumber(t.price) > 0 ? 'CONFIRMED' : 'NOT_REQUIRED'))
+      const ps = reservationPaymentOf(t)
       byStatus[ps] = (byStatus[ps] ?? 0) + 1
       const amount = toNumber(t.price)
       if (ps === 'CONFIRMED' || ps === 'NOT_REQUIRED') confirmedRevenue += amount
