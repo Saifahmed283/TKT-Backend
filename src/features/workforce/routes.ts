@@ -9,6 +9,7 @@ import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { hashPassword } from '../../lib/auth.js'
 import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
+import { resolveLegacyRoleCode } from '../../lib/roleAliases.js'
 
 const applicationSchema = z.object({
   fullName: z.string().min(2),
@@ -156,12 +157,17 @@ export async function workforceRoutes(app: FastifyInstance) {
       }
     }
 
+    // Legacy SAC role codes are translated to existing TKT roles. Unknown
+    // values resolve to null and therefore cannot grant any access.
+    const requestedRoleCode = resolveLegacyRoleCode(appRow.requestedRoleCode)
     const role = body.roleId
       ? await prisma.role.findUnique({ where: { id: body.roleId } })
-      : appRow.requestedRoleCode
-        ? await prisma.role.findFirst({ where: { code: appRow.requestedRoleCode } })
+      : requestedRoleCode
+        ? await prisma.role.findFirst({ where: { code: requestedRoleCode } })
         : null
-    if (!role) throw errors.badRequest('Role not found for conversion')
+    if (!role || (role.orgId && role.orgId !== event.orgId)) {
+      throw errors.badRequest('Role not found for conversion')
+    }
 
     const teamId = body.teamId !== undefined ? body.teamId : appRow.requestedTeamId
     const areaIds = body.areaIds ?? (Array.isArray(appRow.requestedAreaIds) ? (appRow.requestedAreaIds as string[]) : [])

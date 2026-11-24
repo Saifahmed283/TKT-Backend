@@ -123,6 +123,7 @@ export async function publicRoutes(app: FastifyInstance) {
         name: true,
         description: true,
         type: true,
+        category: true,
         status: true,
         startAt: true,
         endAt: true,
@@ -152,11 +153,11 @@ export async function publicRoutes(app: FastifyInstance) {
         const settings = (e.settings as Record<string, any>) ?? {}
         const reg = (settings.registration as RegSettings) ?? {}
         type EventTicketType = (typeof e.ticketTypes)[number]
-        type PublicTicketType = { id: string; name: string; description: string | null; category: string | null; price: string; currency: string; quota: number | null; sold: number; remaining: number | null; soldOut: boolean; salesStartAt: string | null; salesEndAt: string | null; isPublic: boolean }
+        type PublicTicketType = { id: string; name: string; description: string | null; category: string | null; tier: string | null; price: string; currency: string; quota: number | null; sold: number; remaining: number | null; soldOut: boolean; salesStartAt: string | null; salesEndAt: string | null; isPublic: boolean }
         const ticketTypes: PublicTicketType[] = e.ticketTypes.map((t: any) => {
           const sold = t._count.tickets
           const remaining = t.quota != null ? Math.max(0, t.quota - sold) : null
-          return { id: t.id, name: t.name, description: t.description ?? null, category: t.category ?? null, price: t.price?.toString() ?? '0', currency: t.currency ?? 'EGP', quota: t.quota, sold, remaining, soldOut: t.quota != null && sold >= t.quota, salesStartAt: t.salesStartAt?.toISOString() ?? null, salesEndAt: t.salesEndAt?.toISOString() ?? null, isPublic: t.isPublic !== false }
+          return { id: t.id, name: t.name, description: t.description ?? null, category: t.category ?? null, tier: t.tier ?? null, price: t.price?.toString() ?? '0', currency: t.currency ?? 'EGP', quota: t.quota, sold, remaining, soldOut: t.quota != null && sold >= t.quota, salesStartAt: t.salesStartAt?.toISOString() ?? null, salesEndAt: t.salesEndAt?.toISOString() ?? null, isPublic: t.isPublic !== false }
         })
         const soldOut = ticketTypes.some((t: PublicTicketType) => t.quota != null) && ticketTypes.every((t: PublicTicketType) => t.soldOut)
         return {
@@ -164,6 +165,8 @@ export async function publicRoutes(app: FastifyInstance) {
           name: e.name,
           description: e.description,
           type: e.type,
+          category: e.category ?? null,
+          taxonomy: settings.taxonomy ?? null,
           status: e.status,
           startAt: e.startAt,
           endAt: e.endAt,
@@ -200,6 +203,7 @@ export async function publicRoutes(app: FastifyInstance) {
         name: true,
         description: true,
         type: true,
+        category: true,
         status: true,
         startAt: true,
         endAt: true,
@@ -238,6 +242,7 @@ export async function publicRoutes(app: FastifyInstance) {
         name: t.name,
         description: t.description,
         category: t.category ?? null,
+        tier: t.tier ?? null,
         price: t.price?.toString() ?? '0',
         currency: t.currency ?? 'EGP',
         quota: t.quota,
@@ -256,6 +261,8 @@ export async function publicRoutes(app: FastifyInstance) {
         name: event.name,
         description: event.description,
         type: event.type,
+        category: event.category ?? null,
+        taxonomy: settings.taxonomy ?? null,
         status: event.status,
         startAt: event.startAt,
         endAt: event.endAt,

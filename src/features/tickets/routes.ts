@@ -5,12 +5,13 @@ import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
+import { TICKET_TIER_CODES, resolveTicketTier } from '../../config/taxonomy.js'
 
 const typeSchema = z.object({
   name: z.string().min(2),
   description: z.string().optional().nullable(),
   category: z.string().max(80).optional().nullable(),
-  tier: z.enum(['STANDARD','VIP','PREMIUM','EARLY_BIRD','STUDENT','COMPLIMENTARY','STAFF','SPEAKER','SPONSOR','OTHER']).optional().nullable(),
+  tier: z.enum(TICKET_TIER_CODES).optional().nullable(),
   price: z.coerce.number().nonnegative().optional().nullable(),
   currency: z.string().min(3).max(8).optional(),
   quota: z.number().int().positive().optional().nullable(),
@@ -50,7 +51,13 @@ export async function ticketRoutes(app: FastifyInstance) {
     await requirePermission(req, 'ticket.issue', { eventId })
     const body = typeSchema.parse(req.body)
     if (body.salesStartAt && body.salesEndAt && body.salesStartAt > body.salesEndAt) throw errors.badRequest('salesStartAt must be before salesEndAt')
-    const type = await prisma.ticketType.create({ data: { eventId, ...body, currency: body.currency ?? 'EGP' } })
+    const tier =
+      body.tier === undefined && body.category
+        ? resolveTicketTier(body.category)?.code ?? null
+        : body.tier ?? null
+    const type = await prisma.ticketType.create({
+      data: { eventId, ...body, tier, currency: body.currency ?? 'EGP' } as any,
+    })
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.type_created', resourceType: 'ticket_type', resourceId: type.id, newValue: body, sourceIp: req.ip })
     return reply.status(201).send({ data: type })
   })
@@ -64,7 +71,12 @@ export async function ticketRoutes(app: FastifyInstance) {
     const salesStartAt = body.salesStartAt === undefined ? type.salesStartAt : body.salesStartAt
     const salesEndAt = body.salesEndAt === undefined ? type.salesEndAt : body.salesEndAt
     if (salesStartAt && salesEndAt && salesStartAt > salesEndAt) throw errors.badRequest('salesStartAt must be before salesEndAt')
-    const updated = await prisma.ticketType.update({ where: { id: typeId }, data: body })
+    const patch: Record<string, unknown> = { ...body }
+    if (body.tier === undefined && typeof body.category === 'string') {
+      const resolved = resolveTicketTier(body.category)
+      if (resolved) patch.tier = resolved.code
+    }
+    const updated = await prisma.ticketType.update({ where: { id: typeId }, data: patch as any })
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'ticket.type_updated', resourceType: 'ticket_type', resourceId: typeId, newValue: body, sourceIp: req.ip })
     return { data: updated }
   })

@@ -7,10 +7,31 @@ import { requirePermission, resolveOrgContext } from '../../middleware/authorize
 import { writeAudit } from '../../lib/audit.js'
 import { publish, channelFor } from '../../lib/realtime.js'
 import { logActivity } from '../../lib/activity.js'
+import {
+  EVENT_DOMAIN_CODES,
+  EVENT_FORMAT_CODES,
+  resolveEventCategory,
+  resolveEventDomain,
+  resolveEventFormat,
+} from '../../config/taxonomy.js'
 
-const EVENT_TYPES = ['CONFERENCE', 'CONCERT', 'WEDDING', 'SPORTS', 'EXHIBITION', 'CHARITY', 'CORPORATE', 'UNIVERSITY', 'OTHER'] as const
-const EVENT_CATEGORIES = ['CONFERENCE', 'EXHIBITION', 'CONCERT', 'FESTIVAL', 'SPORTS', 'CORPORATE', 'UNIVERSITY', 'COMMUNITY', 'PRIVATE', 'OTHER'] as const
 const EVENT_STATUSES = ['DRAFT', 'PLANNING', 'READY', 'PUBLISHED', 'LIVE', 'COMPLETED', 'ARCHIVED'] as const
+
+function mergeJsonObjects(base: Record<string, any>, patch: Record<string, any>): Record<string, any> {
+  const result: Record<string, any> = { ...base }
+  for (const [key, value] of Object.entries(patch)) {
+    const current = result[key]
+    if (
+      value && typeof value === 'object' && !Array.isArray(value) &&
+      current && typeof current === 'object' && !Array.isArray(current)
+    ) {
+      result[key] = mergeJsonObjects(current, value)
+    } else {
+      result[key] = value
+    }
+  }
+  return result
+}
 
 const STATUS_FLOW: Record<string, string[]> = {
   DRAFT: ['PLANNING', 'READY', 'ARCHIVED'],
@@ -27,8 +48,10 @@ const createEventSchema = z.object({
   folderId: z.string().nullable().optional(),
   name: z.string().min(2),
   description: z.string().optional(),
-  type: z.enum(EVENT_TYPES).default('OTHER'),
-  category: z.enum(EVENT_CATEGORIES).optional(),
+  type: z.enum(EVENT_FORMAT_CODES).default('OTHER'),
+  // Legacy label stays free-form so SAC values can be migrated additively.
+  category: z.string().max(80).optional(),
+  domain: z.enum(EVENT_DOMAIN_CODES).optional(),
   startAt: z.coerce.date(),
   endAt: z.coerce.date().optional(),
   timezone: z.string().default('UTC'),
@@ -40,8 +63,9 @@ const updateEventSchema = z.object({
   folderId: z.string().nullable().optional(),
   name: z.string().min(2).optional(),
   description: z.string().nullable().optional(),
-  type: z.enum(EVENT_TYPES).optional(),
-  category: z.enum(EVENT_CATEGORIES).nullable().optional(),
+  type: z.enum(EVENT_FORMAT_CODES).optional(),
+  category: z.string().max(80).nullable().optional(),
+  domain: z.enum(EVENT_DOMAIN_CODES).nullable().optional(),
   startAt: z.coerce.date().optional(),
   endAt: z.coerce.date().nullable().optional(),
   timezone: z.string().optional(),
@@ -127,13 +151,25 @@ export async function eventRoutes(app: FastifyInstance) {
         name: body.name,
         description: body.description,
         type: body.type,
-        category: body.category ?? body.type,
+        // Legacy class stays independent from the event format.
+        category: body.category ?? null,
         startAt: body.startAt,
         endAt: body.endAt,
         timezone: body.timezone,
         venueName: body.venueName,
         venueAddress: body.venueAddress,
-        settings: { registration: { enabled: true, open: false } },
+        settings: {
+          registration: { enabled: true, open: false },
+          taxonomy: {
+            format: resolveEventFormat(body.type)?.code ?? body.type,
+            category: body.category
+              ? resolveEventCategory(body.category)?.code ?? body.category
+              : null,
+            domain:
+              resolveEventDomain(body.domain ?? body.category)?.code ?? 'OTHER',
+            source: 'tkt',
+          },
+        },
       },
     })
 
@@ -181,13 +217,48 @@ export async function eventRoutes(app: FastifyInstance) {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'event.update', { eventId })
     const body = updateEventSchema.parse(req.body)
-    const existing = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
+    const { domain, settings: bodySettings, ...columnBody } = body
+    const existing = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true, settings: true, type: true, category: true } })
     if (!existing) throw errors.notFound('Event not found')
     if (body.folderId !== undefined && body.folderId !== null) {
       const folder = await prisma.organizationFolder.findFirst({ where: { id: body.folderId, orgId: existing.orgId }, select: { id: true } })
       if (!folder) throw errors.badRequest('Folder not found in this organization')
     }
-    const event = await prisma.event.update({ where: { id: eventId }, data: body as any })
+
+    const settings = mergeJsonObjects(
+      (existing.settings as Record<string, any>) ?? {},
+      (bodySettings as Record<string, any>) ?? {},
+    )
+    const taxonomy = (settings.taxonomy as Record<string, any>) ?? {}
+    const nextFormat = body.type ?? existing.type
+    const nextCategory = body.category === undefined ? existing.category : body.category
+    const nextDomain =
+      domain === null
+        ? null
+        : domain !== undefined
+          ? resolveEventDomain(domain)?.code ?? domain
+          : taxonomy.domain == null
+            ? null
+            : resolveEventDomain(taxonomy.domain)?.code ?? null
+
+    const event = await prisma.event.update({
+      where: { id: eventId },
+      data: {
+        ...columnBody,
+        settings: {
+          ...settings,
+          taxonomy: {
+            ...taxonomy,
+            format: resolveEventFormat(nextFormat)?.code ?? nextFormat,
+            category: nextCategory
+              ? resolveEventCategory(nextCategory)?.code ?? nextCategory
+              : null,
+            domain: nextDomain ?? null,
+            source: 'tkt',
+          },
+        },
+      } as any,
+    })
     await writeAudit({
       organizationId: event.orgId,
       eventId,

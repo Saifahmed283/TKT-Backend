@@ -2,10 +2,12 @@ import { PrismaClient } from '@prisma/client'
 import { BASE_ROLES } from '../src/lib/rbac.js'
 import { hashPassword } from '../src/lib/auth.js'
 import { credentialCode, type CredentialPayload } from '../src/lib/credentials.js'
+import { assertRoleCatalogValid } from '../src/lib/roleAliases.js'
 
 const prisma = new PrismaClient()
 
 async function main() {
+  assertRoleCatalogValid()
   console.log('Seeding system roles…')
   for (const role of BASE_ROLES) {
     const existing = await prisma.role.findUnique({ where: { code: role.code } })

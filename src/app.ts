@@ -37,8 +37,12 @@ import { workforceRoutes } from './features/workforce/routes.js'
 import { integrationRoutes } from './features/integrations/routes.js'
 import { dashboardRoutes } from './features/dashboard/routes.js'
 import { busRoutes } from './features/buses/routes.js'
+import { metaRoutes } from './features/meta/routes.js'
+import { assertRoleCatalogValid } from './lib/roleAliases.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
+  assertRoleCatalogValid()
+
   const app = Fastify({
     logger: config.isProd
       ? { level: 'warn' }
@@ -161,6 +165,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     },
     { prefix: '/auth' },
   )
+  await app.register(metaRoutes, { prefix: '/meta' })
   await app.register(organizationRoutes, { prefix: '/organizations' })
   await app.register(eventRoutes, { prefix: '/events' })
   await app.register(teamRoutes, { prefix: '/events/:eventId/teams' })
