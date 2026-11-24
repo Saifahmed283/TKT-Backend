@@ -440,6 +440,7 @@ model TicketType {
   salesStartAt DateTime?
   salesEndAt   DateTime?
   isPublic    Boolean   @default(true)
+  transportIncluded Boolean @default(false)
   sortOrder   Int       @default(0)
   active      Boolean   @default(true)
   createdAt   DateTime  @default(now())

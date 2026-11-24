@@ -39,15 +39,32 @@ async function createPublishedEvent(token: string, orgId: string, name: string) 
   return eventId
 }
 
-async function createTicketType(token: string, eventId: string, name: string, price = 0) {
+async function createTicketType(token: string, eventId: string, name: string, price = 0, transportIncluded = false) {
   const res = await app.inject({
     method: 'POST',
     url: `/events/${eventId}/tickets/types`,
     headers: auth(token),
-    payload: { name, price },
+    payload: { name, price, transportIncluded },
   })
   expectStatus(res, 201)
   return res.json().data.id as string
+}
+
+async function createBus(token: string, eventId: string, seatPrice = 0) {
+  const res = await app.inject({
+    method: 'POST',
+    url: `/events/${eventId}/buses`,
+    headers: auth(token),
+    payload: {
+      name: 'Shuttle One',
+      layout: { template: 'grid', rows: 2, cols: 2 },
+      seatPrice,
+      currency: 'EGP',
+    },
+  })
+  expectStatus(res, 201)
+  const bus = res.json().data
+  return { id: bus.id as string, seatIds: bus.seats.map((s: any) => s.id as string) }
 }
 
 beforeAll(async () => {
@@ -101,12 +118,12 @@ describe('public reservation integrity', () => {
     const orgId = await createOrg(admin.token, `Org ResDecision ${Date.now()}`)
     cleanupOrgIds.push(orgId)
     const eventId = await createPublishedEvent(admin.token, orgId, `Event ResDecision ${Date.now()}`)
-    const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid', 50)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Free Decision', 0)
 
     const reserve = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations`,
-      payload: { name: 'Paid Guest', email: `paid-${Date.now()}@test.tkt`, ticketTypeId },
+      payload: { name: 'Free Guest', email: `free-decision-${Date.now()}@test.tkt`, ticketTypeId },
     })
     expectStatus(reserve, 201)
     const ticketId = reserve.json().data.ticketId as string
@@ -145,5 +162,163 @@ describe('public reservation integrity', () => {
     expectStatus(history, 200)
     expect(Array.isArray(history.json().data)).toBe(true)
     expect(history.json().data.length).toBeGreaterThan(0)
+  })
+
+  it('requires a phone and enforces transport seat selection', async () => {
+    const admin = await registerUser('ResTransport')
+    const orgId = await createOrg(admin.token, `Org ResTransport ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event ResTransport ${Date.now()}`)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Conference', 0)
+    const transportTypeId = await createTicketType(admin.token, eventId, 'Conference + Bus', 100, true)
+    const bus = await createBus(admin.token, eventId, 50)
+    const email = `transport-${Date.now()}@test.tkt`
+
+    const noPhone = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: { name: 'Transit Guest', email, ticketTypeId },
+    })
+    expectStatus(noPhone, 400)
+    expect(noPhone.json().error.code).toBe('VALIDATION_ERROR')
+
+    const noSeat = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: { name: 'Transit Guest', email, phone: '+20 100 123 4567', ticketTypeId: transportTypeId },
+    })
+    expectStatus(noSeat, 400)
+    expect(noSeat.json().error.message).toContain('select exactly one seat')
+
+    const twoSeats = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Transit Guest',
+        email,
+        phone: '+20 100 123 4567',
+        ticketTypeId: transportTypeId,
+        busId: bus.id,
+        seatIds: bus.seatIds.slice(0, 2),
+      },
+    })
+    expectStatus(twoSeats, 400)
+    expect(twoSeats.json().error.message).toContain('select exactly one seat')
+
+    const reserved = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Transit Guest',
+        email,
+        phone: '+20 100 123 4567',
+        ticketTypeId: transportTypeId,
+        busId: bus.id,
+        seatIds: [bus.seatIds[0]],
+        seatPassengers: [{ seatId: bus.seatIds[0], name: 'Transit Guest' }],
+      },
+    })
+    expectStatus(reserved, 201)
+    expect(reserved.json().data.price).toBe('150')
+    expect(reserved.json().data.seats).toHaveLength(1)
+  })
+
+  it('blocks manual approval until payment proof is confirmed', async () => {
+    const admin = await registerUser('ResPaymentGuard')
+    const orgId = await createOrg(admin.token, `Org ResPaymentGuard ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event ResPaymentGuard ${Date.now()}`)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid Guard', 50)
+
+    const reserve = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Payment Guest',
+        email: `payment-guard-${Date.now()}@test.tkt`,
+        phone: '+20 100 123 4567',
+        ticketTypeId,
+      },
+    })
+    expectStatus(reserve, 201)
+    const ticketId = reserve.json().data.ticketId as string
+    expect(reserve.json().data.paymentStatus).toBe('PENDING')
+
+    const blocked = await app.inject({
+      method: 'POST',
+      url: `/events/${eventId}/reservations/${ticketId}/decision`,
+      headers: auth(admin.token),
+      payload: { approved: true },
+    })
+    expectStatus(blocked, 409)
+    expect(blocked.json().error.code).toBe('CONFLICT')
+    expect(blocked.json().error.message).toContain('Confirm payment proof')
+
+    const review = await app.inject({
+      method: 'POST',
+      url: `/events/${eventId}/payments/reservations/${ticketId}/review`,
+      headers: auth(admin.token),
+      payload: { action: 'CONFIRM' },
+    })
+    expectStatus(review, 200)
+    expect(review.json().data.approval).toBe('APPROVED')
+    expect(review.json().data.paymentStatus).toBe('CONFIRMED')
+
+    const alreadyDecided = await app.inject({
+      method: 'POST',
+      url: `/events/${eventId}/reservations/${ticketId}/decision`,
+      headers: auth(admin.token),
+      payload: { approved: true },
+    })
+    expectStatus(alreadyDecided, 200)
+    expect(alreadyDecided.json().data.alreadyDecided).toBe(true)
+  })
+
+  it('hides pending attendees until approval', async () => {
+    const admin = await registerUser('ResAttendeeVisibility')
+    const orgId = await createOrg(admin.token, `Org ResAttendeeVisibility ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event ResAttendeeVisibility ${Date.now()}`)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Free Visible', 0)
+    const email = `attendee-visible-${Date.now()}@test.tkt`
+
+    const reserve = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: { name: 'Visible Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+    })
+    expectStatus(reserve, 201)
+
+    const defaultList = await app.inject({
+      method: 'GET',
+      url: `/events/${eventId}/attendees`,
+      headers: auth(admin.token),
+    })
+    expectStatus(defaultList, 200)
+    expect(defaultList.json().data.rows.some((a: any) => a.email === email)).toBe(false)
+
+    const pendingList = await app.inject({
+      method: 'GET',
+      url: `/events/${eventId}/attendees?scope=pending`,
+      headers: auth(admin.token),
+    })
+    expectStatus(pendingList, 200)
+    expect(pendingList.json().data.rows.some((a: any) => a.email === email)).toBe(true)
+
+    const approve = await app.inject({
+      method: 'POST',
+      url: `/events/${eventId}/reservations/${reserve.json().data.ticketId}/decision`,
+      headers: auth(admin.token),
+      payload: { approved: true },
+    })
+    expectStatus(approve, 200)
+
+    const approvedList = await app.inject({
+      method: 'GET',
+      url: `/events/${eventId}/attendees`,
+      headers: auth(admin.token),
+    })
+    expectStatus(approvedList, 200)
+    expect(approvedList.json().data.rows.some((a: any) => a.email === email)).toBe(true)
   })
 })

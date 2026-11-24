@@ -7,7 +7,8 @@ import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
-import { issueReservationCredential, reservationCodeOf } from '../reservations/service.js'
+import { decideReservation, reservationCodeOf } from '../reservations/service.js'
+import { publish, channelFor } from '../../lib/realtime.js'
 
 const providerSchema = z.object({
   name: z.string().min(2),
@@ -202,24 +203,58 @@ export async function paymentRoutes(app: FastifyInstance) {
     const meta = (ticket.metadata ?? {}) as Record<string, unknown>
     if (meta.paymentStatus !== 'PENDING') throw errors.conflict('Payment is not pending review')
 
-    if (body.action === 'REJECT') {
-      const updated = await prisma.ticket.update({
-        where: { id: ticketId },
-        data: { status: 'CANCELLED', metadata: { ...meta, paymentStatus: 'FAILED', approval: 'REJECTED', rejectedReason: body.note ?? 'Payment proof rejected', rejectedAt: new Date().toISOString(), reviewedByUserId: req.user.id } as any },
-      })
-      await writeAudit({ organizationId: ticket.event.orgId, eventId, actorUserId: req.user.id, action: AuditActions.PAYMENT_REJECTED, resourceType: 'ticket', resourceId: ticketId, newValue: { action: body.action }, sourceIp: req.ip })
-      return { data: updated }
-    }
+    const confirmedPayment = body.action === 'CONFIRM'
+    const paymentStatus = confirmedPayment ? 'CONFIRMED' : 'FAILED'
+    const reviewedAt = new Date().toISOString()
 
-    const confirmed = await prisma.ticket.update({
+    await prisma.ticket.update({
       where: { id: ticketId },
-      data: { metadata: { ...meta, paymentStatus: 'CONFIRMED', paymentConfirmedAt: new Date().toISOString(), reviewedByUserId: req.user.id } as any },
-      include: { attendee: true, ticketType: true, event: true },
+      data: {
+        metadata: {
+          ...meta,
+          paymentStatus,
+          paymentReviewedAt: reviewedAt,
+          reviewedByUserId: req.user.id,
+          ...(confirmedPayment
+            ? { paymentConfirmedAt: reviewedAt }
+            : { paymentRejectedAt: reviewedAt, rejectedReason: body.note ?? 'Payment proof rejected' }),
+        } as any,
+      },
     })
 
-    const issued = await issueReservationCredential({ event: { id: ticket.event.id, orgId: ticket.event.orgId, name: ticket.event.name, startAt: ticket.event.startAt, endAt: ticket.event.endAt, venueName: ticket.event.venueName }, ticket: confirmed as any, issuerUserId: req.user.id, sendEmail: true })
-    await writeAudit({ organizationId: ticket.event.orgId, eventId, actorUserId: req.user.id, action: AuditActions.PAYMENT_CONFIRMED, resourceType: 'ticket', resourceId: ticketId, newValue: { action: body.action, credentialId: issued.credential.id }, sourceIp: req.ip })
-    return { data: { ticket: confirmed, credentialId: issued.credential.id } }
+    const decided = await decideReservation({
+      eventId,
+      ticketId,
+      approved: confirmedPayment,
+      actorUserId: req.user.id,
+      actorName: req.user.name,
+      reason: body.note,
+    })
+
+    publish(channelFor.reservation(eventId), confirmedPayment ? 'reservation.approved' : 'reservation.rejected', {
+      ticketId,
+      approval: confirmedPayment ? 'APPROVED' : 'REJECTED',
+      alreadyDecided: decided.alreadyDecided,
+    })
+    await writeAudit({
+      organizationId: ticket.event.orgId,
+      eventId,
+      actorUserId: req.user.id,
+      action: confirmedPayment ? AuditActions.PAYMENT_CONFIRMED : AuditActions.PAYMENT_REJECTED,
+      resourceType: 'ticket',
+      resourceId: ticketId,
+      newValue: { action: body.action, paymentStatus, approval: confirmedPayment ? 'APPROVED' : 'REJECTED', credentialId: decided.credential?.id ?? null },
+      sourceIp: req.ip,
+    })
+    return {
+      data: {
+        ticket: decided.ticket,
+        approval: confirmedPayment ? 'APPROVED' : 'REJECTED',
+        paymentStatus,
+        credentialId: decided.credential?.id ?? null,
+        alreadyDecided: decided.alreadyDecided,
+      },
+    }
   })
 
   app.get('/summary', async (req) => {

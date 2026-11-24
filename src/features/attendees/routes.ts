@@ -9,6 +9,8 @@ import { writeAudit } from '../../lib/audit.js'
 import { ATTENDEE_TYPE_CODES, resolveAttendeeType } from '../../config/taxonomy.js'
 
 const STATUSES = ['INVITED', 'REGISTERED', 'CONFIRMED', 'WAITLISTED', 'CANCELLED', 'CHECKED_IN', 'CHECKED_OUT', 'BLOCKED'] as const
+const APPROVED_STATUSES = ['CONFIRMED', 'CHECKED_IN', 'CHECKED_OUT'] as const
+const PENDING_STATUSES = ['INVITED', 'REGISTERED', 'WAITLISTED'] as const
 
 function csvCell(value: unknown): string {
   const text = value == null ? '' : String(value)
@@ -31,6 +33,7 @@ const updateSchema = createSchema.partial().extend({
 
 const querySchema = z.object({
   q: z.string().optional(),
+  scope: z.enum(['approved', 'pending', 'all']).default('approved'),
   status: z.enum(STATUSES).optional(),
   category: z.string().optional(),
   attendeeType: z.enum(ATTENDEE_TYPE_CODES).optional(),
@@ -44,10 +47,12 @@ export async function attendeeRoutes(app: FastifyInstance) {
   app.get('/', async (req) => {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'attendee.view', { eventId })
-    const { q, status, category, attendeeType, page, pageSize } = querySchema.parse(req.query)
+    const { q, scope, status, category, attendeeType, page, pageSize } = querySchema.parse(req.query)
 
     const where: any = { eventId }
     if (status) where.status = status
+    else if (scope === 'approved') where.status = { in: [...APPROVED_STATUSES] }
+    else if (scope === 'pending') where.status = { in: [...PENDING_STATUSES] }
     if (category) where.category = category
     if (attendeeType) where.attendeeType = attendeeType
     if (q) {

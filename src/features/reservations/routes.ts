@@ -2,10 +2,11 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import ExcelJS from 'exceljs'
 import { prisma } from '../../lib/db.js'
+import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { publish, channelFor } from '../../lib/realtime.js'
-import { decideReservation, resendReservationCredential, reservationApprovalOf, reservationCodeOf, reservationPaymentOf } from './service.js'
+import { decideReservation, isPaidTicket, resendReservationCredential, reservationApprovalOf, reservationCodeOf, reservationPaymentOf } from './service.js'
 
 const listQuerySchema = z.object({
   status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'ALL']).default('PENDING'),
@@ -101,6 +102,16 @@ export async function reservationRoutes(app: FastifyInstance) {
     const { eventId, ticketId } = req.params as { eventId: string; ticketId: string }
     await requirePermission(req, 'ticket.issue', { eventId })
     const { approved, reason } = decisionSchema.parse(req.body)
+    if (approved) {
+      const current = await prisma.ticket.findUnique({
+        where: { id: ticketId },
+        select: { eventId: true, price: true, paymentStatus: true, metadata: true, ticketType: { select: { price: true } } },
+      })
+      if (!current || current.eventId !== eventId) throw errors.notFound('Reservation not found')
+      if (isPaidTicket(current) && reservationPaymentOf(current) === 'PENDING') {
+        throw errors.conflict('Confirm payment proof before approving this paid reservation')
+      }
+    }
     const result = await decideReservation({
       eventId,
       ticketId,

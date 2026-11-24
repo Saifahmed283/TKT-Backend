@@ -18,6 +18,7 @@ const typeSchema = z.object({
   salesStartAt: z.coerce.date().optional().nullable(),
   salesEndAt: z.coerce.date().optional().nullable(),
   isPublic: z.boolean().optional(),
+  transportIncluded: z.boolean().optional(),
   sortOrder: z.number().int().min(0).optional(),
   active: z.boolean().optional(),
 })
@@ -37,7 +38,7 @@ export async function ticketRoutes(app: FastifyInstance) {
       where: { eventId },
       select: {
         id: true, name: true, description: true, category: true, tier: true, price: true, currency: true, quota: true,
-        salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, active: true,
+        salesStartAt: true, salesEndAt: true, isPublic: true, transportIncluded: true, sortOrder: true, active: true,
         _count: { select: { tickets: true } },
       },
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],

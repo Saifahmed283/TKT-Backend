@@ -39,7 +39,8 @@ const WHEEL_SEGMENTS = [
 const reservationSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
-  phone: z.string().optional(),
+  phone: z.string().min(6).max(40),
+  notes: z.string().max(1000).optional().nullable(),
   ticketTypeId: z.string(),
   paymentProviderId: z.string().optional().nullable(),
   paymentReference: z.string().max(200).optional().nullable(),
@@ -134,7 +135,7 @@ export async function publicRoutes(app: FastifyInstance) {
         org: { select: { id: true, name: true, logoUrl: true } },
         ticketTypes: {
           where: { active: true },
-          select: { id: true, name: true, description: true, category: true, tier: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, _count: { select: { tickets: true } } },
+          select: { id: true, name: true, description: true, category: true, tier: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, transportIncluded: true, sortOrder: true, _count: { select: { tickets: true } } },
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         },
         buses: {
@@ -152,11 +153,11 @@ export async function publicRoutes(app: FastifyInstance) {
         const settings = (e.settings as Record<string, any>) ?? {}
         const reg = (settings.registration as RegSettings) ?? {}
         type EventTicketType = (typeof e.ticketTypes)[number]
-        type PublicTicketType = { id: string; name: string; description: string | null; category: string | null; tier: string | null; price: string; currency: string; quota: number | null; sold: number; remaining: number | null; soldOut: boolean; salesStartAt: string | null; salesEndAt: string | null; isPublic: boolean }
+        type PublicTicketType = { id: string; name: string; description: string | null; category: string | null; tier: string | null; price: string; currency: string; quota: number | null; sold: number; remaining: number | null; soldOut: boolean; salesStartAt: string | null; salesEndAt: string | null; isPublic: boolean; transportIncluded: boolean }
         const ticketTypes: PublicTicketType[] = e.ticketTypes.map((t: any) => {
           const sold = t._count.tickets
           const remaining = t.quota != null ? Math.max(0, t.quota - sold) : null
-          return { id: t.id, name: t.name, description: t.description ?? null, category: t.category ?? null, tier: t.tier ?? null, price: t.price?.toString() ?? '0', currency: t.currency ?? 'EGP', quota: t.quota, sold, remaining, soldOut: t.quota != null && sold >= t.quota, salesStartAt: t.salesStartAt?.toISOString() ?? null, salesEndAt: t.salesEndAt?.toISOString() ?? null, isPublic: t.isPublic !== false }
+          return { id: t.id, name: t.name, description: t.description ?? null, category: t.category ?? null, tier: t.tier ?? null, price: t.price?.toString() ?? '0', currency: t.currency ?? 'EGP', quota: t.quota, sold, remaining, soldOut: t.quota != null && sold >= t.quota, salesStartAt: t.salesStartAt?.toISOString() ?? null, salesEndAt: t.salesEndAt?.toISOString() ?? null, isPublic: t.isPublic !== false, transportIncluded: t.transportIncluded === true }
         })
         const soldOut = ticketTypes.some((t: PublicTicketType) => t.quota != null) && ticketTypes.every((t: PublicTicketType) => t.soldOut)
         return {
@@ -214,7 +215,7 @@ export async function publicRoutes(app: FastifyInstance) {
         org: { select: { id: true, name: true, logoUrl: true } },
         ticketTypes: {
           where: { active: true },
-          select: { id: true, name: true, description: true, category: true, tier: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, sortOrder: true, _count: { select: { tickets: true } } },
+          select: { id: true, name: true, description: true, category: true, tier: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, transportIncluded: true, sortOrder: true, _count: { select: { tickets: true } } },
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         },
         paymentProviders: {
@@ -251,6 +252,7 @@ export async function publicRoutes(app: FastifyInstance) {
         salesStartAt: t.salesStartAt?.toISOString() ?? null,
         salesEndAt: t.salesEndAt?.toISOString() ?? null,
         isPublic: t.isPublic !== false,
+        transportIncluded: t.transportIncluded === true,
       }
     })
     const soldOut = ticketTypes.some((t: any) => t.quota != null) && ticketTypes.every((t: any) => t.soldOut)
@@ -350,6 +352,15 @@ export async function publicRoutes(app: FastifyInstance) {
     if (ticketType.salesStartAt && nowTs < ticketType.salesStartAt.getTime()) throw errors.badRequest('Ticket sales have not started yet')
     if (ticketType.salesEndAt && nowTs > ticketType.salesEndAt.getTime()) throw errors.badRequest('Ticket sales have ended')
 
+    const transportIncluded = ticketType.transportIncluded === true
+    const requestedSeatIds = Array.isArray(body.seatIds) ? [...new Set(body.seatIds)] : []
+    if (transportIncluded && requestedSeatIds.length !== 1) {
+      throw errors.badRequest('This ticket includes transportation — select exactly one seat')
+    }
+    if (!transportIncluded && requestedSeatIds.length > 0) {
+      throw errors.badRequest('Seat selection is only available for tickets with transportation included')
+    }
+
     const soldCount = async () =>
       prisma.ticket.count({
         where: { ticketTypeId: ticketType.id, status: { in: ['ISSUED', 'ACTIVE', 'CONSUMED'] } },
@@ -358,7 +369,7 @@ export async function publicRoutes(app: FastifyInstance) {
       throw errors.badRequest('This ticket type has sold out')
     }
 
-    const seatIds = Array.isArray(body.seatIds) ? [...new Set(body.seatIds)] : []
+    const seatIds = requestedSeatIds
     const code = reservationCode()
     const ticketPrice = Number(ticketType.price ?? 0)
     const bus = seatIds.length
@@ -427,7 +438,8 @@ export async function publicRoutes(app: FastifyInstance) {
             email: body.email,
             phone: body.phone,
             status: paid ? 'REGISTERED' : 'CONFIRMED',
-            metadata: { source: 'public' },
+            notes: body.notes?.trim() || null,
+            metadata: { source: 'public', notes: body.notes?.trim() || null },
           },
         })
 
@@ -461,6 +473,8 @@ export async function publicRoutes(app: FastifyInstance) {
               paymentReference: paid ? (body.paymentReference?.trim() || null) : null,
               busId: body.busId ?? null,
               seatIds,
+              notes: body.notes?.trim() || null,
+              transportIncluded,
             },
           },
         })
