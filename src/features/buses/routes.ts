@@ -139,11 +139,11 @@ export async function busRoutes(app: FastifyInstance) {
       const reserved = await prisma.busSeat.count({ where: { busId, state: 'RESERVED' } })
       if (reserved > 0) throw errors.conflict('Cannot rebuild layout while seats are reserved')
       const seats = buildSeats(body.layout)
-      await prisma.$transaction([
-        prisma.busSeat.deleteMany({ where: { busId } }),
-        prisma.busSeat.createMany({ data: seats.map(s => ({ busId, label: s.label, row: s.row, col: s.col, state: s.state })) }),
-        prisma.bus.update({ where: { id: busId }, data: { name: body.name ?? bus.name, layout: body.layout as any, seatPrice: body.seatPrice ?? bus.seatPrice, currency: body.currency ?? bus.currency, isActive: body.isActive ?? bus.isActive } }),
-      ])
+      await prisma.$transaction(async (tx) => {
+        await tx.busSeat.deleteMany({ where: { busId } })
+        await tx.busSeat.createMany({ data: seats.map(s => ({ busId, label: s.label, row: s.row, col: s.col, state: s.state })) })
+        await tx.bus.update({ where: { id: busId }, data: { name: body.name ?? bus.name, layout: body.layout as any, seatPrice: body.seatPrice ?? bus.seatPrice, currency: body.currency ?? bus.currency, isActive: body.isActive ?? bus.isActive } })
+      })
     } else {
       await prisma.bus.update({ where: { id: busId }, data: { name: body.name, isActive: body.isActive, seatPrice: body.seatPrice, currency: body.currency ?? 'EGP' } })
     }
@@ -227,6 +227,7 @@ export async function busRoutes(app: FastifyInstance) {
 
   app.post('/:busId/hold', async (req) => {
     const { eventId, busId } = req.params as { eventId: string; busId: string }
+    await requirePermission(req, 'bus.reserve', { eventId })
     const body = z.object({ seatIds: z.array(z.string()).min(1).max(20), holdMinutes: z.number().int().min(1).max(30).optional(), sessionId: z.string().optional() }).parse(req.body)
     const holdToken = body.sessionId || crypto.randomUUID()
     const holdExpiresAt = new Date(Date.now() + (body.holdMinutes ?? 10) * 60_000)

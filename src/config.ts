@@ -1,6 +1,6 @@
 import 'dotenv/config'
 
-function required(name: string): string {
+export function required(name: string): string {
   const v = process.env[name]
   if (!v) throw new Error(`Missing required environment variable: ${name}`)
   return v
@@ -19,6 +19,7 @@ export const config = {
   jwt: {
     accessSecret: required('JWT_ACCESS_SECRET'),
     refreshSecret: required('JWT_REFRESH_SECRET'),
+    staffSecret: required('JWT_SECRET'),
     accessTtl: optional('JWT_ACCESS_TTL', '1h'),
     refreshTtl: optional('JWT_REFRESH_TTL', '7d'),
   },
@@ -44,4 +45,9 @@ export const config = {
   },
   publicUrl: optional('PUBLIC_URL', 'http://localhost:5173'),
   isProd: optional('NODE_ENV', 'development') === 'production',
+  isTest: optional('NODE_ENV', 'development') === 'test',
+  rateLimits: {
+    // Integration tests need many registrations; a dedicated test opts back in.
+    enabledInTests: process.env.TKT_RATE_LIMIT_TEST === 'true',
+  },
 }

@@ -324,7 +324,7 @@ export async function accessRoutes(app: FastifyInstance) {
   // â”€â”€ Offline device registration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.post('/device/register', async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
-    await requirePermission(req, 'access.scan', { eventId })
+    await requirePermission(req, 'device.manage', { eventId })
     const body = registerSchema.parse(req.body)
 
     try {
@@ -388,6 +388,10 @@ export async function accessRoutes(app: FastifyInstance) {
     await requirePermission(req, 'access.scan', { eventId })
     const body = syncSchema.parse(req.body)
 
+    const areaIds = [...new Set(body.items.map((item) => item.areaId))]
+    const areaCount = await prisma.area.count({ where: { id: { in: areaIds }, eventId } })
+    if (areaCount !== areaIds.length) throw errors.badRequest('One or more areas not found in this event')
+
     const device = await prisma.device.findUnique({ where: { id: body.deviceId } })
     if (!device || device.eventId !== eventId) throw errors.badRequest('Unknown device')
     if (device.status === 'REVOKED' || device.status === 'DISABLED') throw errors.forbidden('Device is disabled')
@@ -416,7 +420,8 @@ export async function accessRoutes(app: FastifyInstance) {
       // Authoritative re-validation
       const resolvedScan = await resolveScanCredential(item.code, eventId)
       const credential = resolvedScan.credential
-      const area = await prisma.area.findUnique({ where: { id: item.areaId } })
+      const area = await prisma.area.findFirst({ where: { id: item.areaId, eventId } })
+      const itemCtx = await requirePermission(req, 'access.scan', { eventId, target: { areaId: item.areaId } })
 
       const decision = validateAccess({
         credential: credential
@@ -438,7 +443,7 @@ export async function accessRoutes(app: FastifyInstance) {
           : null,
         event: { id: eventId, status: event.status },
         area: area ? { id: area.id, active: area.active, accessPolicy: area.accessPolicy } : null,
-        operator: { areaIds: [], eventScope: 'EVENT', isSuperAdmin: true },
+        operator: { areaIds: itemCtx.areaIds, eventScope: itemCtx.eventScope, isSuperAdmin: itemCtx.isSuperAdmin },
       })
 
       const localDecision = item.decision === 'GRANTED' ? 'GRANTED' : 'DENIED'

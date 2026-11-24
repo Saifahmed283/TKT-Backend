@@ -8,6 +8,7 @@ import { writeAudit } from '../../lib/audit.js'
 import { BASE_ROLES, roleHasPermission, type BaseRoleDefinition } from '../../lib/rbac.js'
 import { ALL_PERMISSIONS, PERMISSIONS } from '../../lib/rbac.js'
 import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
+import { runWithDbContext } from '../../lib/dbContext.js'
 
 const slugify = (s: string) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
@@ -230,8 +231,8 @@ export async function organizationRoutes(app: FastifyInstance) {
     const body = updateMemberSchema.parse(req.body)
     const member = await prisma.organizationMember.findUnique({ where: { id: memberId } })
     if (!member || member.orgId !== orgId) throw errors.notFound('Member not found')
-    if (member.userId === req.user.id && body.role && body.role !== 'OWNER')
-      throw errors.badRequest('You cannot demote yourself')
+    if (member.userId === req.user.id && (body.role !== undefined || body.status !== undefined))
+      throw errors.badRequest('You cannot change your own membership')
 
     const updated = await prisma.organizationMember.update({
       where: { id: memberId },
@@ -351,7 +352,9 @@ export async function organizationRoutes(app: FastifyInstance) {
     const role = await prisma.role.findFirst({ where: { id: roleId, orgId } })
     if (!role) throw errors.notFound('Role not found')
     if (role.system) throw errors.badRequest('System roles cannot be deleted')
-    const inUse = await prisma.eventMember.count({ where: { roleId } })
+    const inUse = await runWithDbContext({ isInternal: true }, () =>
+      prisma.eventMember.count({ where: { roleId } }),
+    )
     if (inUse > 0) throw errors.conflict('Role is assigned to staff and cannot be deleted')
     await prisma.role.delete({ where: { id: roleId } })
     await writeAudit({

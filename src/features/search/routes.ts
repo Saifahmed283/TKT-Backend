@@ -3,6 +3,8 @@ import { z } from 'zod'
 import { prisma } from '../../lib/db.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
+import type { Permission } from '../../lib/rbac.js'
+import { updateDbContext } from '../../lib/dbContext.js'
 
 const querySchema = z.object({
   q: z.string().min(1),
@@ -36,68 +38,102 @@ export async function searchRoutes(app: FastifyInstance) {
       ? {}
       : { OR: [{ orgId: { in: adminOrgIds } }, { id: { in: memberEventIds } }] }
 
+    const candidateEvents = await prisma.event.findMany({ where: eventAccess, select: { id: true } })
+    const candidateEventIds = candidateEvents.map((e: (typeof candidateEvents)[number]) => e.id)
+    await updateDbContext({ userId: req.user.id, eventIds: candidateEventIds, isSuperAdmin: user.platformRole === 'super_admin' })
     const out: Record<string, unknown[]> = {}
     const like = { contains: q, mode: 'insensitive' as const }
 
+    const allowedEventIds = async (permission: Permission): Promise<string[]> => {
+      const allowed: string[] = []
+      for (const eventId of candidateEventIds) {
+        try {
+          await requirePermission(req, permission, { eventId })
+          allowed.push(eventId)
+        } catch (err: any) {
+          if (err?.statusCode !== 403) throw err
+        }
+      }
+      // requirePermission narrows context to one event at a time; restore the
+      // full candidate set before the actual search queries run.
+      await updateDbContext({
+        userId: req.user.id,
+        eventIds: candidateEventIds,
+        eventId: undefined,
+        orgId: undefined,
+        isSuperAdmin: user.platformRole === 'super_admin',
+      })
+      return allowed
+    }
+
     if (!scope || scope === 'EVENTS') {
+      const ids = await allowedEventIds('event.view')
       out.events = await prisma.event.findMany({
-        where: { ...eventAccess, OR: [{ name: like }, { venueName: like }, { description: like }] },
+        where: { id: { in: ids }, OR: [{ name: like }, { venueName: like }, { description: like }] },
         select: { id: true, name: true, status: true, type: true, startAt: true },
         take: 8,
       })
     }
     if (!scope || scope === 'ATTENDEES') {
+      const ids = await allowedEventIds('attendee.view')
       out.attendees = await prisma.attendee.findMany({
-        where: { event: eventAccess, OR: [{ name: like }, { email: like }] },
+        where: { eventId: { in: ids }, OR: [{ name: like }, { email: like }] },
         select: { id: true, name: true, email: true, status: true, eventId: true },
         take: 8,
       })
     }
     if (!scope || scope === 'TICKETS') {
+      const ids = await allowedEventIds('ticket.view')
       out.tickets = await prisma.ticket.findMany({
-        where: { event: eventAccess, attendee: { OR: [{ name: like }, { email: like }] } },
+        where: { eventId: { in: ids }, attendee: { OR: [{ name: like }, { email: like }] } },
         select: { id: true, status: true, eventId: true, attendee: { select: { name: true } }, ticketType: { select: { name: true } } },
         take: 8,
       })
     }
     if (!scope || scope === 'CREDENTIALS') {
+      const ids = await allowedEventIds('credential.view')
       out.credentials = await prisma.credential.findMany({
-        where: { event: eventAccess, OR: [{ code: { contains: q } }, { attendee: { name: like } }] },
+        where: { eventId: { in: ids }, OR: [{ code: { contains: q } }, { attendee: { name: like } }] },
         select: { id: true, code: true, status: true, eventId: true, attendee: { select: { name: true } } },
         take: 8,
       })
     }
     if (!scope || scope === 'STAFF') {
+      const ids = await allowedEventIds('staff.view')
       out.staff = await prisma.eventMember.findMany({
-        where: { event: eventAccess, user: { OR: [{ name: like }, { email: like }] } },
+        where: { eventId: { in: ids }, user: { OR: [{ name: like }, { email: like }] } },
         select: { id: true, eventId: true, user: { select: { id: true, name: true, email: true } }, role: { select: { name: true } } },
         take: 8,
       })
     }
     if (!scope || scope === 'TEAMS') {
+      const ids = await allowedEventIds('team.view')
       out.teams = await prisma.team.findMany({
-        where: { event: eventAccess, name: like },
+        where: { eventId: { in: ids }, name: like },
         select: { id: true, name: true, eventId: true },
         take: 8,
       })
     }
     if (!scope || scope === 'AREAS') {
+      const ids = await allowedEventIds('area.view')
       out.areas = await prisma.area.findMany({
-        where: { event: eventAccess, name: like },
+        where: { eventId: { in: ids }, name: like },
         select: { id: true, name: true, eventId: true, type: true },
         take: 8,
       })
     }
     if (!scope || scope === 'TASKS') {
+      const ids = await allowedEventIds('task.view')
       out.tasks = await prisma.task.findMany({
-        where: { event: eventAccess, title: like },
+        where: { eventId: { in: ids }, title: like },
         select: { id: true, title: true, status: true, eventId: true },
         take: 8,
       })
     }
     if (!scope || scope === 'INCIDENTS') {
+      const ids = await allowedEventIds('incident.view')
       out.incidents = await prisma.incident.findMany({
-        where: { event: eventAccess, OR: [{ title: like }, { code: { contains: q } }] },
+        where: { eventId: { in: ids }, OR: [{ title: like }, { code: { contains: q } }] },
         select: { id: true, code: true, title: true, status: true, priority: true, eventId: true },
         take: 8,
       })

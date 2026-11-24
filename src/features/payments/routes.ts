@@ -46,7 +46,7 @@ export async function paymentRoutes(app: FastifyInstance) {
 
   app.get('/providers', async (req) => {
     const { eventId } = req.params as { eventId: string }
-    await requirePermission(req, 'event.view', { eventId })
+    await requirePermission(req, 'payment.view', { eventId })
     const providers = await prisma.paymentProvider.findMany({ where: { eventId }, orderBy: { createdAt: 'asc' } })
     return { data: providers }
   })

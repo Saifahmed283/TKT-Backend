@@ -3,6 +3,17 @@ import type { Permission, ScopeContext } from '../lib/rbac.js'
 import { resolveEventContext, getScopedContextForOrg } from '../lib/scope.js'
 import { errors } from '../lib/errors.js'
 import { prisma } from '../lib/db.js'
+import { updateDbContext } from '../lib/dbContext.js'
+
+async function applyScopeToDbContext(userId: string, ctx: ScopeContext): Promise<void> {
+  await updateDbContext({
+    userId,
+    orgId: ctx.organizationId || undefined,
+    eventId: ctx.eventId || undefined,
+    eventIds: ctx.eventId ? [ctx.eventId] : undefined,
+    isSuperAdmin: ctx.isSuperAdmin,
+  })
+}
 
 /**
  * Performs the full authorization chain:
@@ -25,7 +36,7 @@ export async function requirePermission(
     select: { platformRole: true },
   })
   if (user?.platformRole === 'super_admin') {
-    return {
+    const ctx: ScopeContext = {
       organizationId: opts?.eventId ? (await prisma.event.findUnique({ where: { id: opts.eventId }, select: { orgId: true } }))?.orgId ?? '' : '',
       eventId: opts?.eventId ?? '',
       teamId: null,
@@ -34,13 +45,15 @@ export async function requirePermission(
       isSuperAdmin: true,
       orgRole: null,
     }
+    await applyScopeToDbContext(userId, ctx)
+    return ctx
   }
 
   if (opts?.eventId) {
     const ctx = await resolveEventContext(userId, opts.eventId)
     if (!ctx) throw errors.forbidden()
-    const member = await prisma.eventMember.findUnique({
-      where: { eventId_userId: { eventId: opts.eventId, userId } },
+    const member = await prisma.eventMember.findFirst({
+      where: { eventId: opts.eventId, userId, status: 'ACTIVE' },
       select: { role: { select: { permissions: true } } },
     })
     const perms = Array.isArray(member?.role?.permissions)
@@ -51,21 +64,22 @@ export async function requirePermission(
       if (ctx.eventScope !== 'ORGANIZATION') throw errors.forbidden()
     }
     if (!hasScopeAccess(ctx, permission, opts.target)) throw errors.forbidden()
+    await applyScopeToDbContext(userId, ctx)
     return ctx
   }
 
   // Organization-scoped permission
   const orgId = (req.params as any).orgId ?? (req.params as any).organizationId
   if (orgId) {
-    const orgMember = await prisma.organizationMember.findUnique({
-      where: { orgId_userId: { orgId, userId } },
+    const orgMember = await prisma.organizationMember.findFirst({
+      where: { orgId, userId, status: 'ACTIVE' },
       select: { role: true },
     })
     if (!orgMember) throw errors.forbidden()
     const allowed = orgMember.role === 'OWNER' || orgMember.role === 'ADMIN'
     if (!allowed && permission !== 'org.view' && permission !== 'org.members.view' && permission !== 'org.roles.view' && permission !== 'org.analytics')
       throw errors.forbidden()
-    return {
+    const ctx: ScopeContext = {
       organizationId: orgId,
       eventId: '',
       teamId: null,
@@ -74,6 +88,8 @@ export async function requirePermission(
       isSuperAdmin: false,
       orgRole: orgMember.role,
     }
+    await applyScopeToDbContext(req.user.id, ctx)
+    return ctx
   }
 
   throw errors.forbidden()
@@ -106,13 +122,15 @@ export async function resolveOrgContext(
     select: { platformRole: true },
   })
   if (user?.platformRole === 'super_admin') {
+    await updateDbContext({ userId: req.user.id, orgId: organizationId, isSuperAdmin: true })
     return { role: 'ADMIN', isAdmin: true }
   }
-  const member = await prisma.organizationMember.findUnique({
-    where: { orgId_userId: { orgId: organizationId, userId: req.user.id } },
+  const member = await prisma.organizationMember.findFirst({
+    where: { orgId: organizationId, userId: req.user.id, status: 'ACTIVE' },
     select: { role: true },
   })
   if (!member) throw errors.forbidden()
+  await updateDbContext({ userId: req.user.id, orgId: organizationId, isSuperAdmin: false })
   return { role: member.role, isAdmin: member.role === 'OWNER' || member.role === 'ADMIN' }
 }
 

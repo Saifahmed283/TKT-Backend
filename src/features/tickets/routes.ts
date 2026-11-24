@@ -25,7 +25,6 @@ const typeSchema = z.object({
 const issueSchema = z.object({
   attendeeId: z.string(),
   ticketTypeId: z.string(),
-  price: z.coerce.number().nonnegative().optional(),
 })
 
 export async function ticketRoutes(app: FastifyInstance) {
@@ -130,7 +129,7 @@ export async function ticketRoutes(app: FastifyInstance) {
         eventId,
         attendeeId: body.attendeeId,
         ticketTypeId: body.ticketTypeId,
-        price: body.price ?? type.price,
+        price: type.price,
         issuedById: req.user.id,
         status: 'ACTIVE',
       },
@@ -142,7 +141,7 @@ export async function ticketRoutes(app: FastifyInstance) {
       action: 'ticket.issued',
       resourceType: 'ticket',
       resourceId: ticket.id,
-      newValue: { attendeeId: body.attendeeId, ticketTypeId: body.ticketTypeId },
+      newValue: { attendeeId: body.attendeeId, ticketTypeId: body.ticketTypeId, price: type.price },
       sourceIp: req.ip,
     })
     return reply.status(201).send({ data: ticket })

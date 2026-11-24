@@ -3,10 +3,12 @@ import { BASE_ROLES } from '../src/lib/rbac.js'
 import { hashPassword } from '../src/lib/auth.js'
 import { credentialCode, type CredentialPayload } from '../src/lib/credentials.js'
 import { assertRoleCatalogValid } from '../src/lib/roleAliases.js'
+import { required } from '../src/config.js'
 
 const prisma = new PrismaClient()
 
 async function main() {
+  await prisma.$executeRaw`SELECT set_config('app.is_internal', 'true', false)`
   assertRoleCatalogValid()
   console.log('Seeding system roles…')
   for (const role of BASE_ROLES) {
@@ -34,7 +36,7 @@ async function main() {
   }
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL ?? 'admin@tkt.local'
-  const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? 'Admin12345!'
+  const adminPassword = required('SEED_ADMIN_PASSWORD')
 
   const existing = await prisma.user.findUnique({ where: { email: adminEmail } })
   if (existing) {

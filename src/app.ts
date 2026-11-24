@@ -1,4 +1,4 @@
-﻿import Fastify, { type FastifyInstance } from 'fastify'
+﻿import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify'
 import cookie from '@fastify/cookie'
 import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { ZodError } from 'zod'
 import { config } from './config.js'
-import { AppError } from './lib/errors.js'
+import { AppError, errors } from './lib/errors.js'
 import { authRoutes } from './features/auth/routes.js'
 import { organizationRoutes } from './features/organizations/routes.js'
 import { eventRoutes } from './features/events/routes.js'
@@ -39,6 +39,11 @@ import { dashboardRoutes } from './features/dashboard/routes.js'
 import { busRoutes } from './features/buses/routes.js'
 import { metaRoutes } from './features/meta/routes.js'
 import { assertRoleCatalogValid } from './lib/roleAliases.js'
+import { enterDbContext } from './lib/dbContext.js'
+import { prisma } from './lib/db.js'
+import { verifyAccessToken } from './lib/auth.js'
+
+const requestDbTransactions = new WeakMap<FastifyReply, () => void>()
 
 export async function buildApp(): Promise<FastifyInstance> {
   assertRoleCatalogValid()
@@ -49,6 +54,51 @@ export async function buildApp(): Promise<FastifyInstance> {
       : { level: 'warn', transport: undefined },
     trustProxy: true,
   })
+
+  // One transaction per request keeps RLS context on a single connection and
+  // avoids a round-trip per Prisma operation. The transaction is released in
+  // onResponse, after the handler has finished using it.
+  app.addHook('onRequest', (req, reply, done) => {
+    void (async () => {
+      const path = (req.url || '').split('?')[0] || ''
+      const publicEvent = path.match(/^\/public\/events\/([^/]+)/)
+      const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1]
+      const claims = token ? await verifyAccessToken(token) : null
+      enterDbContext({
+        userId: claims?.sub,
+        isAuth: path.startsWith('/auth'),
+        isPublic: path.startsWith('/public'),
+        publicEventId: publicEvent?.[1],
+      })
+
+      let completedTransaction: () => void
+      const completed = new Promise<void>((resolve) => { completedTransaction = resolve })
+      requestDbTransactions.set(reply, completedTransaction!)
+      let started = false
+
+      try {
+        await (prisma.$transaction as any)(async () => {
+          started = true
+          done()
+          await completed
+        }, { maxWait: 10_000, timeout: 120_000 })
+      } catch (err) {
+        if (!started) done(err as Error)
+        else req.log.error({ err }, 'request database transaction failed')
+      }
+    })().catch(done)
+  })
+
+  app.addHook('onResponse', async (_req, reply) => {
+    requestDbTransactions.get(reply)?.()
+    requestDbTransactions.delete(reply)
+  })
+
+  if (config.isTest && !config.rateLimits.enabledInTests) {
+    app.addHook('onRoute', (routeOptions) => {
+      routeOptions.config = { ...(routeOptions.config ?? {}), rateLimit: false }
+    })
+  }
 
   await app.register(cors, {
     origin: config.corsOrigin.split(','),
@@ -86,12 +136,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   })
 
   await app.register(rateLimit, {
-    global: true,
+    global: !config.isTest || config.rateLimits.enabledInTests,
     max: 300,
     timeWindow: '1 minute',
-    errorResponseBuilder: () => ({
-      error: { code: 'RATE_LIMITED', message: 'Too many requests — please slow down' },
-    }),
+    errorResponseBuilder: () =>
+      errors.rateLimited('Too many requests — please slow down'),
   })
 
   app.setErrorHandler((err, req, reply) => {
@@ -157,9 +206,8 @@ export async function buildApp(): Promise<FastifyInstance> {
         global: false,
         max: 20,
         timeWindow: '1 minute',
-        errorResponseBuilder: () => ({
-          error: { code: 'RATE_LIMITED', message: 'Too many attempts — try again in a minute' },
-        }),
+        errorResponseBuilder: () =>
+          errors.rateLimited('Too many attempts — try again in a minute'),
       })
       await auth.register(authRoutes)
     },

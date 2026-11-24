@@ -7,6 +7,7 @@ import { authenticate } from '../../middleware/auth.js'
 import { writeAudit } from '../../lib/audit.js'
 import { config } from '../../config.js'
 import { validatePasswordStrength } from '../../lib/passwordPolicy.js'
+import { updateDbContext } from '../../lib/dbContext.js'
 
 const registerSchema = z
   .object({
@@ -37,7 +38,9 @@ function setRefreshCookie(reply: any, token: string) {
 }
 
 export async function authRoutes(app: FastifyInstance) {
-  app.post('/register', async (req, reply) => {
+  app.post('/register', {
+    config: { rateLimit: { max: 3, timeWindow: '10 minutes' } },
+  }, async (req, reply) => {
     const { name, email, password } = registerSchema.parse(req.body)
     const exists = await prisma.user.findUnique({ where: { email: email.toLowerCase() } })
     if (exists) throw errors.conflict('An account with this email already exists')
@@ -49,6 +52,7 @@ export async function authRoutes(app: FastifyInstance) {
         passwordHash: await hashPassword(password),
       },
     })
+    await updateDbContext({ userId: user.id, isAuth: true })
 
     const access = await signAccessToken(user)
     const refresh = await signRefreshToken(user.id)
@@ -65,13 +69,16 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.status(201).send({ data: { token: access, user: publicUser(user) } })
   })
 
-  app.post('/login', async (req, reply) => {
+  app.post('/login', {
+    config: { rateLimit: { max: 5, timeWindow: '5 minutes' } },
+  }, async (req, reply) => {
     const { email, password } = loginSchema.parse(req.body)
     const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } })
     if (!user || !(await verifyPassword(password, user.passwordHash))) {
       throw errors.unauthorized('Invalid email or password')
     }
     if (user.status !== 'ACTIVE') throw errors.unauthorized('This account is suspended')
+    await updateDbContext({ userId: user.id, isAuth: true })
 
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } })
 
@@ -90,7 +97,9 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.send({ data: { token: access, user: publicUser(user) } })
   })
 
-  app.post('/refresh', async (req, reply) => {
+  app.post('/refresh', {
+    config: { rateLimit: { max: 12, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
     try {
       const token = (req.cookies as Record<string, string | undefined> | undefined)?.tkt_refresh
       if (!token) throw errors.unauthorized('No refresh session')

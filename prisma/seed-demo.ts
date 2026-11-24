@@ -4,12 +4,14 @@ import { PrismaClient } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
 import { hashPassword } from '../src/lib/auth.js'
 import { credentialCode, type CredentialPayload } from '../src/lib/credentials.js'
+import { required } from '../src/config.js'
 
 const prisma = new PrismaClient()
 
 async function main() {
+  await prisma.$executeRaw`SELECT set_config('app.is_internal', 'true', false)`
   // ── Users ────────────────────────────────────────────────
-  const pw = await hashPassword('Staff12345!')
+  const pw = await hashPassword(required('SEED_DEMO_PASSWORD'))
   const staff = [
     ['Ahmed Hassan', 'ahmed@tkt.local', 'event_manager'],
     ['Sara Ali', 'sara@tkt.local', 'team_lead'],
@@ -577,8 +579,8 @@ async function main() {
   console.log('  Event:      Tech Frontier 2026 (LIVE)')
   console.log('  Org:        Nova Events')
   console.log('  Staff:      ahmed@tkt.local (Event Manager), mohamed@tkt.local (Scanner, Main Gate)')
-  console.log('  Password:   Staff12345!')
-  console.log('  Admin:      admin@tkt.local / Admin12345! (platform super admin)')
+  console.log('  Password:   from SEED_DEMO_PASSWORD')
+  console.log('  Admin:      admin@tkt.local / from SEED_ADMIN_PASSWORD (platform super admin)')
   console.log('  Public:     3 upcoming events, 3 past works, 5 reviews\n')
 }
 

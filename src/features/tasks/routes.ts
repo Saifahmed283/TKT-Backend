@@ -130,7 +130,7 @@ export async function taskRoutes(app: FastifyInstance) {
 
   app.get('/:taskId', async (req) => {
     const { eventId, taskId } = req.params as { eventId: string; taskId: string }
-    await taskPermission(req, eventId, 'task.view', { teamId: undefined })
+    await taskPermission(req, eventId, 'task.view')
     const task = await prisma.task.findFirst({
       where: { id: taskId, eventId },
       include: {
@@ -140,6 +140,7 @@ export async function taskRoutes(app: FastifyInstance) {
       },
     })
     if (!task) throw errors.notFound('Task not found')
+    await taskPermission(req, eventId, 'task.view', { teamId: task.teamId, areaId: task.areaId })
     return { data: task }
   })
 
@@ -149,6 +150,18 @@ export async function taskRoutes(app: FastifyInstance) {
     const body = updateSchema.parse(req.body)
     const task = await prisma.task.findFirst({ where: { id: taskId, eventId } })
     if (!task) throw errors.notFound('Task not found')
+    await taskPermission(req, eventId, 'task.update', { teamId: task.teamId, areaId: task.areaId })
+
+    if (body.teamId) {
+      const team = await prisma.team.findFirst({ where: { id: body.teamId, eventId } })
+      if (!team) throw errors.badRequest('Team not found in this event')
+      await taskPermission(req, eventId, 'task.update', { teamId: body.teamId, areaId: task.areaId })
+    }
+    if (body.areaId) {
+      const area = await prisma.area.findFirst({ where: { id: body.areaId, eventId } })
+      if (!area) throw errors.badRequest('Area not found in this event')
+      await taskPermission(req, eventId, 'task.update', { teamId: task.teamId, areaId: body.areaId })
+    }
 
     const statusChanged = body.status && body.status !== task.status
     const assigneeChanged = body.assigneeId !== undefined && body.assigneeId !== task.assigneeId
@@ -186,6 +199,7 @@ export async function taskRoutes(app: FastifyInstance) {
     await taskPermission(req, eventId, 'task.delete')
     const task = await prisma.task.findFirst({ where: { id: taskId, eventId } })
     if (!task) throw errors.notFound('Task not found')
+    await taskPermission(req, eventId, 'task.delete', { teamId: task.teamId, areaId: task.areaId })
     await prisma.task.delete({ where: { id: taskId } })
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'task.deleted', resourceType: 'task', resourceId: taskId, sourceIp: req.ip })
     return reply.status(204).send()

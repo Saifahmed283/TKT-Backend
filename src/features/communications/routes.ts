@@ -28,6 +28,20 @@ const messageSchema = z.object({
   body: z.string().min(1),
 })
 
+async function assertEventTeam(eventId: string, teamId?: string | null): Promise<void> {
+  if (!teamId) return
+  const team = await prisma.team.findFirst({ where: { id: teamId, eventId }, select: { id: true } })
+  if (!team) throw errors.badRequest('Team not found in this event')
+}
+
+async function callerTeamId(eventId: string, userId: string): Promise<string | null> {
+  const member = await prisma.eventMember.findUnique({
+    where: { eventId_userId: { eventId, userId } },
+    select: { teamId: true },
+  })
+  return member?.teamId ?? null
+}
+
 export async function communicationRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate)
 
@@ -89,9 +103,17 @@ export async function communicationRoutes(app: FastifyInstance) {
   // â”€â”€ Team messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.get('/messages', async (req) => {
     const { eventId } = req.params as { eventId: string }
-    const ctx = await requirePermission(req, 'event.view', { eventId })
+    await requirePermission(req, 'event.view', { eventId })
+    const teamId = await callerTeamId(eventId, req.user.id)
     const messages = await prisma.message.findMany({
-      where: { eventId },
+      where: {
+        eventId,
+        OR: [
+          { target: 'ALL_STAFF' },
+          { target: 'TEAM', teamId: teamId ?? '__none__' },
+          { target: 'USER', recipientUserId: req.user.id },
+        ],
+      },
       orderBy: { createdAt: 'desc' },
       include: { sender: { select: { id: true, name: true } } },
       take: 100,
@@ -106,9 +128,17 @@ export async function communicationRoutes(app: FastifyInstance) {
     const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
     if (!event) throw errors.notFound('Event not found')
 
-    if (body.target === 'TEAM' && body.teamId) {
-      const team = await prisma.team.findFirst({ where: { id: body.teamId, eventId } })
-      if (!team) throw errors.badRequest('Team not found in this event')
+    if (body.target === 'TEAM') {
+      if (!body.teamId) throw errors.badRequest('Team is required')
+      await assertEventTeam(eventId, body.teamId)
+    }
+    if (body.target === 'USER') {
+      if (!body.recipientUserId) throw errors.badRequest('Recipient is required')
+      const member = await prisma.eventMember.findFirst({
+        where: { eventId, userId: body.recipientUserId, status: 'ACTIVE' },
+        select: { id: true },
+      })
+      if (!member) throw errors.badRequest('Recipient is not an active member of this event')
     }
 
     const message = await prisma.message.create({
@@ -164,12 +194,18 @@ export async function communicationRoutes(app: FastifyInstance) {
   app.get('/alerts', async (req) => {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'notification.read', { eventId })
-    return { data: await (prisma as any).opsAlert.findMany({ where: { eventId }, orderBy: { createdAt: 'desc' }, take: 100 }) }
+    const teamId = await callerTeamId(eventId, req.user.id)
+    return { data: await (prisma as any).opsAlert.findMany({
+      where: { eventId, OR: [{ teamId: null }, ...(teamId ? [{ teamId }] : [])] },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    }) }
   })
   app.post('/alerts', async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
-    await requirePermission(req, 'notification.read', { eventId })
+    await requirePermission(req, 'message.send', { eventId })
     const body = alertSchema.parse(req.body)
+    await assertEventTeam(eventId, body.teamId)
     const row = await (prisma as any).opsAlert.create({ data: { eventId, type: body.type, message: body.message, teamId: body.teamId || null, createdById: req.user.id, resolved: false } })
     publish(channelFor.activity(eventId), 'alert.created', { id: row.id, type: row.type })
     return reply.status(201).send({ data: row })
@@ -180,12 +216,18 @@ export async function communicationRoutes(app: FastifyInstance) {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'notification.read', { eventId })
     const { teamId } = req.query as { teamId?: string }
-    return { data: await (prisma as any).teamChatMessage.findMany({ where: { eventId, ...(teamId ? { teamId } : {}) }, orderBy: { createdAt: 'desc' }, take: 100 }) }
+    const myTeamId = await callerTeamId(eventId, req.user.id)
+    if (teamId && teamId !== myTeamId) throw errors.forbidden('You are not a member of this team')
+    const where = teamId
+      ? { eventId, teamId }
+      : { eventId, OR: [{ teamId: null }, ...(myTeamId ? [{ teamId: myTeamId }] : [])] }
+    return { data: await (prisma as any).teamChatMessage.findMany({ where, orderBy: { createdAt: 'desc' }, take: 100 }) }
   })
   app.post('/chat', async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'message.send', { eventId })
     const body = chatSchema.parse(req.body)
+    await assertEventTeam(eventId, body.teamId)
     const row = await (prisma as any).teamChatMessage.create({ data: { eventId, teamId: body.teamId || null, userId: req.user.id, text: body.text } })
     publish(channelFor.activity(eventId), 'chat.message', { id: row.id })
     return reply.status(201).send({ data: row })

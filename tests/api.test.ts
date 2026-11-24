@@ -1,6 +1,7 @@
 ﻿import { beforeAll, afterAll, describe, it, expect } from 'vitest'
 import { startTestApp, stopTestApp, app, registerUser, createOrg, createEvent, goLive, setEventStatus, createArea, createTeam, assignStaff, auth, expectStatus } from './helpers.js'
 import { prisma } from '../src/lib/db.js'
+import { runWithDbContext } from '../src/lib/dbContext.js'
 
 const cleanupIds: string[] = []
 
@@ -9,11 +10,13 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  for (const id of cleanupIds) {
-    await prisma.organization.deleteMany({ where: { id } }).catch(() => {})
-  }
-  // Best-effort user cleanup (may be blocked by remaining FK references)
-  await prisma.user.deleteMany({ where: { email: { endsWith: '@test.tkt' } } }).catch(() => {})
+  await runWithDbContext({ isInternal: true }, async () => {
+    for (const id of cleanupIds) {
+      await prisma.organization.deleteMany({ where: { id } }).catch(() => {})
+    }
+    // Best-effort user cleanup (may be blocked by remaining FK references)
+    await prisma.user.deleteMany({ where: { email: { endsWith: '@test.tkt' } } }).catch(() => {})
+  })
   await stopTestApp()
 })
 

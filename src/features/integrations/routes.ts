@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import crypto from 'node:crypto'
 import { prisma as prismaClient } from '../../lib/db.js'
 
 const prisma = prismaClient as any
@@ -8,24 +9,31 @@ import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
+import { assertSafeWebhookUrl } from '../../lib/webhookTarget.js'
 import { deliverWebhook } from './dispatch.js'
 
 const webhookSchema = z.object({
   name: z.string().min(2),
-  url: z.string().url(),
-  secret: z.string().optional(),
+  url: z.string().min(1),
   events: z.array(z.string()).default([]),
   active: z.boolean().optional().default(true),
-  headers: z.record(z.string(), z.string()).optional(),
 })
+
+const CLAIM_STATUSES = ['active', 'reported'] as const
 
 const insuranceSchema = z.object({
   provider: z.string().min(1),
   policyNumber: z.string().min(1),
   coverageDetails: z.string().optional(),
   incidentReport: z.string().optional(),
-  claimStatus: z.string().optional(),
+  claimStatus: z.enum(CLAIM_STATUSES).optional(),
 })
+
+function publicWebhook(sub: any): any {
+  if (!sub) return sub
+  const { secret: _secret, headers: _headers, ...rest } = sub
+  return rest
+}
 
 const assetUrl = z.string().trim().min(1).refine((v) => /^https?:\/\//i.test(v) || v.startsWith('/uploads/'), 'Invalid asset URL')
 const mapSchema = z.object({
@@ -41,18 +49,20 @@ export async function integrationRoutes(app: FastifyInstance) {
   app.get('/webhooks', async (req) => {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'integration.view', { eventId })
-    return { data: await prisma.webhookSubscription.findMany({ where: { eventId }, orderBy: { createdAt: 'desc' }, include: { deliveries: { orderBy: { createdAt: 'desc' }, take: 5 } } }) }
+    const rows = await prisma.webhookSubscription.findMany({ where: { eventId }, orderBy: { createdAt: 'desc' }, include: { deliveries: { orderBy: { createdAt: 'desc' }, take: 5 } } })
+    return { data: rows.map(publicWebhook) }
   })
 
   app.post('/webhooks', async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'integration.manage', { eventId })
     const body = webhookSchema.parse(req.body)
+    const url = await assertSafeWebhookUrl(body.url)
     const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
     if (!event) throw errors.notFound('Event not found')
-    const sub = await prisma.webhookSubscription.create({ data: { eventId, name: body.name, url: body.url, secret: body.secret || null, events: body.events as any, active: body.active, headers: body.headers as any, createdById: req.user.id } })
-    await writeAudit({ organizationId: event.orgId, eventId, actorUserId: req.user.id, action: AuditActions.WEBHOOK_CREATED, resourceType: 'webhook_subscription', resourceId: sub.id, newValue: body, sourceIp: req.ip })
-    return reply.status(201).send({ data: sub })
+    const sub = await prisma.webhookSubscription.create({ data: { eventId, name: body.name, url, secret: crypto.randomBytes(32).toString('base64url'), events: body.events as any, active: body.active, createdById: req.user.id } })
+    await writeAudit({ organizationId: event.orgId, eventId, actorUserId: req.user.id, action: AuditActions.WEBHOOK_CREATED, resourceType: 'webhook_subscription', resourceId: sub.id, newValue: { ...body, url, secretGenerated: true }, sourceIp: req.ip })
+    return reply.status(201).send({ data: publicWebhook(sub) })
   })
 
   app.patch('/webhooks/:id', async (req) => {
@@ -61,10 +71,11 @@ export async function integrationRoutes(app: FastifyInstance) {
     const body = webhookSchema.partial().parse(req.body)
     const existing = await prisma.webhookSubscription.findFirst({ where: { id, eventId } })
     if (!existing) throw errors.notFound('Webhook not found')
+    const url = body.url !== undefined ? await assertSafeWebhookUrl(body.url) : undefined
     const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
-    const sub = await prisma.webhookSubscription.update({ where: { id }, data: { ...(body.name !== undefined ? { name: body.name } : {}), ...(body.url !== undefined ? { url: body.url } : {}), ...(body.secret !== undefined ? { secret: body.secret || null } : {}), ...(body.events !== undefined ? { events: body.events as any } : {}), ...(body.active !== undefined ? { active: body.active } : {}), ...(body.headers !== undefined ? { headers: body.headers as any } : {}) } })
-    await writeAudit({ organizationId: event?.orgId, eventId, actorUserId: req.user.id, action: AuditActions.WEBHOOK_UPDATED, resourceType: 'webhook_subscription', resourceId: id, previousValue: existing, newValue: body, sourceIp: req.ip })
-    return { data: sub }
+    const sub = await prisma.webhookSubscription.update({ where: { id }, data: { ...(body.name !== undefined ? { name: body.name } : {}), ...(url !== undefined ? { url } : {}), ...(body.events !== undefined ? { events: body.events as any } : {}), ...(body.active !== undefined ? { active: body.active } : {}) } })
+    await writeAudit({ organizationId: event?.orgId, eventId, actorUserId: req.user.id, action: AuditActions.WEBHOOK_UPDATED, resourceType: 'webhook_subscription', resourceId: id, previousValue: publicWebhook(existing), newValue: body, sourceIp: req.ip })
+    return { data: publicWebhook(sub) }
   })
 
   app.delete('/webhooks/:id', async (req, reply) => {
@@ -74,7 +85,7 @@ export async function integrationRoutes(app: FastifyInstance) {
     if (!existing) throw errors.notFound('Webhook not found')
     const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
     await prisma.webhookSubscription.delete({ where: { id } })
-    await writeAudit({ organizationId: event?.orgId, eventId, actorUserId: req.user.id, action: AuditActions.WEBHOOK_DELETED, resourceType: 'webhook_subscription', resourceId: id, previousValue: existing, sourceIp: req.ip })
+    await writeAudit({ organizationId: event?.orgId, eventId, actorUserId: req.user.id, action: AuditActions.WEBHOOK_DELETED, resourceType: 'webhook_subscription', resourceId: id, previousValue: publicWebhook(existing), sourceIp: req.ip })
     return reply.status(204).send()
   })
 
@@ -108,7 +119,7 @@ export async function integrationRoutes(app: FastifyInstance) {
   app.patch('/insurance/:id/report', async (req) => {
     const { eventId, id } = req.params as { eventId: string; id: string }
     await requirePermission(req, 'integration.manage', { eventId })
-    const body = z.object({ incidentReport: z.string().min(1), claimStatus: z.string().optional() }).parse(req.body)
+    const body = z.object({ incidentReport: z.string().min(1), claimStatus: z.enum(CLAIM_STATUSES).optional() }).parse(req.body)
     const existing = await prisma.eventInsurancePolicy.findFirst({ where: { id, eventId } })
     if (!existing) throw errors.notFound('Insurance policy not found')
     const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })

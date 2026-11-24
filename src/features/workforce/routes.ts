@@ -10,6 +10,8 @@ import { AuditActions } from '../../lib/audit-actions.js'
 import { hashPassword } from '../../lib/auth.js'
 import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
 import { resolveLegacyRoleCode } from '../../lib/roleAliases.js'
+import { EVENT_LEVEL_SCOPES } from '../../lib/rbac.js'
+import { config } from '../../config.js'
 
 const applicationSchema = z.object({
   fullName: z.string().min(2),
@@ -168,9 +170,21 @@ export async function workforceRoutes(app: FastifyInstance) {
     if (!role || (role.orgId && role.orgId !== event.orgId)) {
       throw errors.badRequest('Role not found for conversion')
     }
+    if (!EVENT_LEVEL_SCOPES.has(role.scope)) {
+      throw errors.badRequest('Only event-level roles can be assigned at event level')
+    }
 
     const teamId = body.teamId !== undefined ? body.teamId : appRow.requestedTeamId
     const areaIds = body.areaIds ?? (Array.isArray(appRow.requestedAreaIds) ? (appRow.requestedAreaIds as string[]) : [])
+    const uniqueAreaIds = [...new Set(areaIds)]
+    if (teamId) {
+      const team = await prisma.team.findFirst({ where: { id: teamId, eventId }, select: { id: true } })
+      if (!team) throw errors.badRequest('Team not found in this event')
+    }
+    if (uniqueAreaIds.length) {
+      const count = await prisma.area.count({ where: { id: { in: uniqueAreaIds }, eventId } })
+      if (count !== uniqueAreaIds.length) throw errors.badRequest('One or more areas not found in this event')
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       await tx.organizationMember.upsert({
@@ -186,8 +200,8 @@ export async function workforceRoutes(app: FastifyInstance) {
       })
 
       await tx.memberArea.deleteMany({ where: { eventMemberId: member.id } })
-      if (areaIds.length) {
-        await tx.memberArea.createMany({ data: areaIds.map((areaId) => ({ eventMemberId: member.id, areaId })) })
+      if (uniqueAreaIds.length) {
+        await tx.memberArea.createMany({ data: uniqueAreaIds.map((areaId) => ({ eventMemberId: member.id, areaId })) })
       }
 
       await tx.staffProfile.upsert({
@@ -306,7 +320,7 @@ export async function workforceRoutes(app: FastifyInstance) {
     const ttl = body.ttlSeconds ?? 3600
     const exp = Math.floor(Date.now() / 1000) + ttl
     const payload = { sub: member.user.id, eventId, role: member.role.code, type: 'staff_id', exp }
-    const secret = process.env.JWT_SECRET || 'dev-secret'
+    const secret = config.jwt.staffSecret
     const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url')
     const sig = crypto.createHmac('sha256', secret).update(encoded).digest('base64url')
     const token = `${encoded}.${sig}`

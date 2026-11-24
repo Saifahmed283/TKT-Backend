@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp } from '../src/app.js'
 import { prisma } from '../src/lib/db.js'
+import { runWithDbContext } from '../src/lib/dbContext.js'
 
 let app: FastifyInstance
 let adminToken: string
@@ -43,11 +44,23 @@ beforeAll(async () => {
   expect(regB.statusCode).toBe(201)
   const userB = regB.json().data.user
 
-  // Admin token (super admin from seed)
+  // Admin token: create an isolated platform super admin instead of relying on seed data.
+  const adminReg = await app.inject({
+    method: 'POST', url: '/auth/register',
+    payload: { name: `PlatformAdmin-${rnd}`, email: `admin-${rnd}@test.local`, password: 'TestPass123!' },
+  })
+  expect(adminReg.statusCode).toBe(201)
+  await runWithDbContext({ isInternal: true }, async () => {
+    await prisma.user.update({
+      where: { id: adminReg.json().data.user.id },
+      data: { platformRole: 'super_admin' },
+    })
+  })
   const adminLogin = await app.inject({
     method: 'POST', url: '/auth/login',
-    payload: { email: 'admin@tkt.local', password: 'Admin12345!' },
+    payload: { email: `admin-${rnd}@test.local`, password: 'TestPass123!' },
   })
+  expect(adminLogin.statusCode).toBe(200)
   adminToken = adminLogin.json().data.token
 
   // Org A + event A
@@ -154,9 +167,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   try {
-    await prisma.event.deleteMany({ where: { id: { in: [eventId, otherEventId] } } })
-    await prisma.organization.deleteMany({ where: { id: { in: [orgId, otherOrgId] } } })
-    await prisma.user.deleteMany({ where: { email: { contains: rnd } } })
+    await runWithDbContext({ isInternal: true }, async () => {
+      await prisma.event.deleteMany({ where: { id: { in: [eventId, otherEventId] } } })
+      await prisma.organization.deleteMany({ where: { id: { in: [orgId, otherOrgId] } } })
+      await prisma.user.deleteMany({ where: { email: { contains: rnd } } })
+    })
   } finally {
     await app.close()
     await prisma.$disconnect()

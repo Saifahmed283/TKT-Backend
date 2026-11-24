@@ -4,8 +4,10 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
-    testTimeout: 30000,
-    hookTimeout: 30000,
+    // Integration tests hit a remote Neon branch; each request opens one
+    // transaction, so allow enough time for multi-request setup flows.
+    testTimeout: 120000,
+    hookTimeout: 120000,
     fileParallelism: false,
     sequence: { concurrent: false },
   },

@@ -20,12 +20,15 @@ const mocks = vi.hoisted(() => ({
     requestedAreaIds: [],
   })),
   eventFindUnique: vi.fn(async (_args?: any) => ({ id: 'evt-1', orgId: 'org-1', name: 'Event' })),
-  roleFindUnique: vi.fn(async (_args?: any) => ({ id: 'role-foreign', orgId: 'org-2' })),
-  roleFindFirst: vi.fn(async (_args?: any) => ({ id: 'role-system', orgId: null })),
+  roleFindUnique: vi.fn(async (_args?: any) => ({ id: 'role-foreign', orgId: 'org-2', scope: 'ORGANIZATION' })),
+  roleFindFirst: vi.fn(async (_args?: any) => ({ id: 'role-system', orgId: null, scope: 'EVENT' })),
+  teamFindFirst: vi.fn(async (_args?: any) => ({ id: 'team-1' })),
+  areaCount: vi.fn(async (args: any) => args.where.id.in.length),
   userFindUnique: vi.fn(async (_args?: any) => ({ id: 'user-1', email: 'jane@example.com' })),
   organizationMemberUpsert: vi.fn(async (args: any) => ({ id: 'org-member-1', ...args })),
   eventMemberUpsert: vi.fn(async (args: any) => ({ id: 'member-1', ...args })),
   memberAreaDeleteMany: vi.fn(async () => ({ count: 0 })),
+  memberAreaCreateMany: vi.fn(async (args: any) => ({ count: args.data.length })),
   staffProfileUpsert: vi.fn(async (args: any) => ({ id: 'profile-1', ...args })),
   workforceApplicationUpdate: vi.fn(async (args: any) => ({ id: 'app-1', ...args.data })),
   requirePermission: vi.fn(async (..._args: any[]) => undefined),
@@ -43,12 +46,14 @@ vi.mock('../src/lib/db.js', () => ({
     },
     event: { findUnique: mocks.eventFindUnique },
     role: { findUnique: mocks.roleFindUnique, findFirst: mocks.roleFindFirst },
+    team: { findFirst: mocks.teamFindFirst },
+    area: { count: mocks.areaCount },
     user: { findUnique: mocks.userFindUnique },
     $transaction: vi.fn(async (callback: any) =>
       callback({
         organizationMember: { upsert: mocks.organizationMemberUpsert },
         eventMember: { upsert: mocks.eventMemberUpsert },
-        memberArea: { deleteMany: mocks.memberAreaDeleteMany },
+        memberArea: { deleteMany: mocks.memberAreaDeleteMany, createMany: mocks.memberAreaCreateMany },
         staffProfile: { upsert: mocks.staffProfileUpsert },
         workforceApplication: { update: mocks.workforceApplicationUpdate },
       }),
@@ -86,8 +91,10 @@ async function buildApp() {
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.workforceApplicationFindFirst.mockResolvedValue({ ...applicationRow })
-  mocks.roleFindUnique.mockResolvedValue({ id: 'role-foreign', orgId: 'org-2' })
-  mocks.roleFindFirst.mockResolvedValue({ id: 'role-system', orgId: null })
+  mocks.roleFindUnique.mockResolvedValue({ id: 'role-foreign', orgId: 'org-2', scope: 'ORGANIZATION' })
+  mocks.roleFindFirst.mockResolvedValue({ id: 'role-system', orgId: null, scope: 'EVENT' })
+  mocks.teamFindFirst.mockResolvedValue({ id: 'team-1' })
+  mocks.areaCount.mockImplementation(async (args: any) => args.where.id.in.length)
 })
 
 describe('workforce role conversion', () => {
@@ -134,5 +141,57 @@ describe('workforce role conversion', () => {
 
     expect(res.statusCode).toBe(200)
     expect(mocks.roleFindFirst.mock.calls[0][0].where.code).toBe('org_admin')
+  })
+
+  it('rejects a platform-scoped role even when it belongs to no organization', async () => {
+    const app = await buildApp()
+    mocks.roleFindUnique.mockResolvedValueOnce({ id: 'role-platform', orgId: null, scope: 'PLATFORM' })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/events/evt-1/workforce/applications/app-1/convert',
+      payload: { userId: 'user-1', roleId: 'role-platform' },
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(mocks.eventMemberUpsert).not.toHaveBeenCalled()
+  })
+
+  it('rejects an organization-scoped role at event level', async () => {
+    const app = await buildApp()
+    mocks.roleFindUnique.mockResolvedValueOnce({ id: 'role-org', orgId: 'org-1', scope: 'ORGANIZATION' })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/events/evt-1/workforce/applications/app-1/convert',
+      payload: { userId: 'user-1', roleId: 'role-org' },
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(mocks.eventMemberUpsert).not.toHaveBeenCalled()
+  })
+
+  it('rejects a team from another event', async () => {
+    const app = await buildApp()
+    mocks.teamFindFirst.mockResolvedValueOnce(null)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/events/evt-1/workforce/applications/app-1/convert',
+      payload: { userId: 'user-1', teamId: 'team-foreign' },
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(mocks.eventMemberUpsert).not.toHaveBeenCalled()
+  })
+
+  it('rejects an area from another event', async () => {
+    const app = await buildApp()
+    mocks.areaCount.mockResolvedValueOnce(0)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/events/evt-1/workforce/applications/app-1/convert',
+      payload: { userId: 'user-1', areaIds: ['area-foreign'] },
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(mocks.eventMemberUpsert).not.toHaveBeenCalled()
   })
 })

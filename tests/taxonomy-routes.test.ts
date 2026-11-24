@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   })),
   eventUpdate: vi.fn(async (args: any) => ({ id: 'evt-1', ...args.data })),
   eventMemberCreate: vi.fn(async (args: any) => ({ id: 'member-1', ...args.data })),
+  eventMemberFindUnique: vi.fn(async (_args?: any) => null),
   roleFindUnique: vi.fn(async (_args?: any) => null),
   organizationFolderFindFirst: vi.fn(async (_args?: any) => ({ id: 'folder-1' })),
 
@@ -42,7 +43,7 @@ vi.mock('../src/lib/db.js', () => ({
       findUnique: mocks.eventFindUnique,
       update: mocks.eventUpdate,
     },
-    eventMember: { create: mocks.eventMemberCreate },
+    eventMember: { create: mocks.eventMemberCreate, findUnique: mocks.eventMemberFindUnique },
     role: { findUnique: mocks.roleFindUnique },
     organizationFolder: { findFirst: mocks.organizationFolderFindFirst },
     attendee: {
@@ -287,5 +288,41 @@ describe('ticket tier persistence', () => {
 
     expect(res.statusCode).toBe(200)
     expect(mocks.ticketTypeUpdate.mock.calls[0][0].data.tier).toBe('EARLY_BIRD')
+  })
+})
+
+describe('event role assignment', () => {
+  it('rejects a platform-scoped role at event level', async () => {
+    const app = await buildScopedApp()
+    mocks.roleFindUnique.mockResolvedValueOnce({
+      id: 'role-platform',
+      orgId: null,
+      scope: 'PLATFORM',
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/events/evt-1/members',
+      payload: { userId: 'user-1', roleId: 'role-platform' },
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(mocks.eventMemberCreate).not.toHaveBeenCalled()
+  })
+
+  it('rejects an organization-scoped role at event level', async () => {
+    const app = await buildScopedApp()
+    mocks.roleFindUnique.mockResolvedValueOnce({
+      id: 'role-org',
+      orgId: 'org-1',
+      scope: 'ORGANIZATION',
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/events/evt-1/members',
+      payload: { userId: 'user-1', roleId: 'role-org' },
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(mocks.eventMemberCreate).not.toHaveBeenCalled()
   })
 })

@@ -1,14 +1,17 @@
 import { buildApp } from './app.js'
 import { config } from './config.js'
 import { prisma } from './lib/db.js'
+import { runWithDbContext } from './lib/dbContext.js'
 
 async function releaseExpiredSeatHolds() {
-  const now = new Date()
-  const expired = await prisma.busSeat.updateMany({
-    where: { state: 'HELD', holdExpiresAt: { lt: now } },
-    data: { state: 'AVAILABLE', holderName: null, passengerName: null, passengerEmail: null, passengerPhone: null, groupId: null, ticketId: null, holdToken: null, holdExpiresAt: null, reservedAt: null },
-  }).catch(() => ({ count: 0 }))
-  return expired.count
+  return runWithDbContext({ isInternal: true }, async () => {
+    const now = new Date()
+    const expired = await prisma.busSeat.updateMany({
+      where: { state: 'HELD', holdExpiresAt: { lt: now } },
+      data: { state: 'AVAILABLE', holderName: null, passengerName: null, passengerEmail: null, passengerPhone: null, groupId: null, ticketId: null, holdToken: null, holdExpiresAt: null, reservedAt: null },
+    }).catch(() => ({ count: 0 }))
+    return expired.count
+  })
 }
 
 async function main() {

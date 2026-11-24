@@ -169,7 +169,11 @@ export async function credentialRoutes(app: FastifyInstance) {
   app.patch('/:credentialId/status', async (req) => {
     const { eventId, credentialId } = req.params as { eventId: string; credentialId: string }
     const { status } = statusSchema.parse(req.body)
-    const perm = status === 'REVOKED' ? 'credential.revoke' : status === 'SUSPENDED' ? 'credential.suspend' : 'credential.view'
+    const perm = status === 'REVOKED'
+      ? 'credential.revoke'
+      : status === 'SUSPENDED'
+        ? 'credential.suspend'
+        : 'credential.issue'
     await requirePermission(req, perm, { eventId })
     const credential = await prisma.credential.findFirst({ where: { id: credentialId, eventId } })
     if (!credential) throw errors.notFound('Credential not found')
@@ -210,7 +214,7 @@ export async function credentialRoutes(app: FastifyInstance) {
   /** Payload bundle for offline scanner devices */
   app.get('/:credentialId/offline-payload', async (req) => {
     const { eventId, credentialId } = req.params as { eventId: string; credentialId: string }
-    await requirePermission(req, 'access.scan', { eventId })
+    const ctx = await requirePermission(req, 'access.scan', { eventId })
     const credential = await prisma.credential.findFirst({
       where: { id: credentialId, eventId },
       select: {
@@ -221,6 +225,10 @@ export async function credentialRoutes(app: FastifyInstance) {
       },
     })
     if (!credential) throw errors.notFound('Credential not found')
+    const areaIds = Array.isArray(credential.areaIds) ? credential.areaIds as string[] : []
+    if (ctx.eventScope === 'AREA' && areaIds.some((areaId) => !ctx.areaIds.includes(areaId))) {
+      throw errors.forbidden()
+    }
     return { data: credential }
   })
 

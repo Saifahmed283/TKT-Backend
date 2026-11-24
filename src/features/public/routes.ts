@@ -21,6 +21,7 @@ import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { canRedeemAccessCode, normalizeAccessCode, redeemAccessCode } from '../access-codes/service.js'
 import { dispatchEventWebhooks } from '../integrations/dispatch.js'
+import { updateDbContext } from '../../lib/dbContext.js'
 
 // ─────────────────────────────────────────────────────────────
 // Prize wheel — segment order must match the frontend wheel
@@ -59,10 +60,8 @@ const contactSchema = z.object({
   message: z.string().min(10),
 })
 
-function clientIp(req: { headers: Record<string, string | string[] | undefined>; ip?: string }): string {
-  const fwd = req.headers['x-forwarded-for']
-  const first = Array.isArray(fwd) ? fwd[0] : fwd
-  return first?.split(',')[0]?.trim() || req.ip || 'unknown'
+function clientIp(req: { ip?: string }): string {
+  return req.ip || 'unknown'
 }
 
 function reservationCode(): string {
@@ -318,7 +317,9 @@ export async function publicRoutes(app: FastifyInstance) {
   })
 
   // ── Public reservation ────────────────────────────────────
-  app.post('/events/:eventId/reservations', async (req, reply) => {
+  app.post('/events/:eventId/reservations', {
+    config: { rateLimit: { max: 5, timeWindow: '10 minutes' } },
+  }, async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
     const body = reservationSchema.parse(req.body)
 
@@ -701,7 +702,9 @@ export async function publicRoutes(app: FastifyInstance) {
   })
 
   // ── Reservation status lookup (re-fetch QR after approval) ──
-  app.get('/events/:eventId/reservations/status', async (req) => {
+  app.get('/events/:eventId/reservations/status', {
+    config: { rateLimit: { max: 5, timeWindow: '10 minutes' } },
+  }, async (req) => {
     const { eventId } = req.params as { eventId: string }
     const { code } = req.query as { code?: string }
     if (!code) throw errors.badRequest('Missing reservation code')
@@ -813,10 +816,15 @@ export async function publicRoutes(app: FastifyInstance) {
   })
 
   // ── Contact ───────────────────────────────────────────────
-  app.post('/contact', async (req, reply) => {
+  app.post('/contact', {
+    config: { rateLimit: { max: 3, timeWindow: '15 minutes' } },
+  }, async (req, reply) => {
     const body = contactSchema.parse(req.body)
+    const contactId = randomUUID()
+    await updateDbContext({ contactId })
     const message = await prisma.contactMessage.create({
       data: {
+        id: contactId,
         name: body.name,
         email: body.email,
         orgName: body.orgName,
@@ -829,13 +837,17 @@ export async function publicRoutes(app: FastifyInstance) {
   })
 
   // ── Prize wheel ───────────────────────────────────────────
-  app.get('/wheel/segments', async () => {
+  app.get('/wheel/segments', {
+    config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
+  }, async () => {
     return {
       data: WHEEL_SEGMENTS.map((s) => ({ reward: s.reward, label: s.label })),
     }
   })
 
-  app.get('/wheel/status', async (req) => {
+  app.get('/wheel/status', {
+    config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
+  }, async (req) => {
     const ip = clientIp(req)
     const record = await prisma.wheelSpin.findUnique({ where: { ip } })
     if (!record) {
@@ -854,7 +866,9 @@ export async function publicRoutes(app: FastifyInstance) {
     }
   })
 
-  app.post('/wheel/spin', async (req, reply) => {
+  app.post('/wheel/spin', {
+    config: { rateLimit: { max: 5, timeWindow: '1 hour' } },
+  }, async (req, reply) => {
     const ip = clientIp(req)
     const record = await prisma.wheelSpin.upsert({ where: { ip }, update: {}, create: { ip } })
     const maxSpins = record.lastReward === 'RETRY' ? 2 : 1

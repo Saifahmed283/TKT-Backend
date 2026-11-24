@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startTestApp, stopTestApp, app, registerUser, createOrg, auth, expectStatus } from './helpers.js'
 import { prisma } from '../src/lib/db.js'
+import { runWithDbContext } from '../src/lib/dbContext.js'
 
 const cleanupOrgIds: string[] = []
 
@@ -54,10 +55,12 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  for (const id of cleanupOrgIds) {
-    await prisma.organization.deleteMany({ where: { id } }).catch(() => {})
-  }
-  await prisma.user.deleteMany({ where: { email: { endsWith: '@test.tkt' } } }).catch(() => {})
+  await runWithDbContext({ isInternal: true }, async () => {
+    for (const id of cleanupOrgIds) {
+      await prisma.organization.deleteMany({ where: { id } }).catch(() => {})
+    }
+    await prisma.user.deleteMany({ where: { email: { endsWith: '@test.tkt' } } }).catch(() => {})
+  })
   await stopTestApp()
 })
 
@@ -85,9 +88,11 @@ describe('public reservation integrity', () => {
     expect(body.error.code).toBe('RESERVATION_EXISTS')
     expect(body.data.reservationCode).toBe(firstBody.reservationCode)
 
-    const count = await prisma.ticket.count({
-      where: { eventId, reservationEmail: 'duplicate@test.tkt', status: { in: ['ISSUED', 'ACTIVE', 'CONSUMED'] } },
-    })
+    const count = await runWithDbContext({ isInternal: true }, () =>
+      prisma.ticket.count({
+        where: { eventId, reservationEmail: 'duplicate@test.tkt', status: { in: ['ISSUED', 'ACTIVE', 'CONSUMED'] } },
+      }),
+    )
     expect(count).toBe(1)
   })
 

@@ -7,6 +7,7 @@ import { requirePermission, resolveOrgContext } from '../../middleware/authorize
 import { writeAudit } from '../../lib/audit.js'
 import { publish, channelFor } from '../../lib/realtime.js'
 import { logActivity } from '../../lib/activity.js'
+import { EVENT_LEVEL_SCOPES } from '../../lib/rbac.js'
 import {
   EVENT_DOMAIN_CODES,
   EVENT_FORMAT_CODES,
@@ -96,6 +97,7 @@ async function resolveRole(roleId: string, orgId: string) {
   const role = await prisma.role.findUnique({ where: { id: roleId } })
   if (!role) throw errors.badRequest('Role not found')
   if (role.orgId && role.orgId !== orgId) throw errors.badRequest('Role belongs to another organization')
+  if (!EVENT_LEVEL_SCOPES.has(role.scope)) throw errors.badRequest('Only event-level roles can be assigned at event level')
   return role
 }
 
@@ -424,6 +426,8 @@ export async function eventRoutes(app: FastifyInstance) {
 
     const member = await prisma.eventMember.findFirst({ where: { id: memberId, eventId } })
     if (!member) throw errors.notFound('Member not found')
+    if (member.userId === req.user.id)
+      throw errors.badRequest('You cannot change your own event membership')
 
     const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
     if (!event) throw errors.notFound('Event not found')

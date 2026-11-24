@@ -32,14 +32,14 @@ export async function resolveEventContext(
     }
   }
 
-  const orgMember = await prisma.organizationMember.findUnique({
-    where: { orgId_userId: { orgId: event.orgId, userId } },
+  const orgMember = await prisma.organizationMember.findFirst({
+    where: { orgId: event.orgId, userId, status: 'ACTIVE' },
     select: { role: true },
   })
   if (!orgMember) return null
 
-  const member = await prisma.eventMember.findUnique({
-    where: { eventId_userId: { eventId, userId } },
+  const member = await prisma.eventMember.findFirst({
+    where: { eventId, userId, status: 'ACTIVE' },
     select: {
       role: { select: { scope: true, permissions: true } },
       teamId: true,
@@ -78,8 +78,8 @@ export async function getScopedContextForOrg(
   userId: string,
   organizationId: string,
 ): Promise<{ role: string; isSuperAdmin: boolean } | null> {
-  const orgMember = await prisma.organizationMember.findUnique({
-    where: { orgId_userId: { orgId: organizationId, userId } },
+  const orgMember = await prisma.organizationMember.findFirst({
+    where: { orgId: organizationId, userId, status: 'ACTIVE' },
     select: { role: true },
   })
   if (!orgMember) return null

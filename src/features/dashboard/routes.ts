@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
+import { updateDbContext } from '../../lib/dbContext.js'
 
 const ACTIVE_WINDOW_MS = 5 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -39,6 +40,12 @@ export async function dashboardRoutes(app: FastifyInstance) {
 
     const events = await prisma.event.findMany({ where: eventWhere, select: { id: true } })
     const ids = events.map((e: (typeof events)[number]) => e.id)
+    await updateDbContext({
+      userId: req.user.id,
+      orgId: adminOrgIds[0],
+      eventIds: ids,
+      isSuperAdmin: user.platformRole === 'super_admin',
+    })
 
     const empty = {
       kpis: {
