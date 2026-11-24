@@ -40,6 +40,7 @@ import { busRoutes } from './features/buses/routes.js';
 import { metaRoutes } from './features/meta/routes.js';
 import { assertRoleCatalogValid } from './lib/roleAliases.js';
 import { syncSystemRoles } from './lib/roleSync.js';
+import { purgeRejectedReservations } from './features/reservations/purge.js';
 import { enterDbContext } from './lib/dbContext.js';
 import { prisma } from './lib/db.js';
 import { verifyAccessToken } from './lib/auth.js';
@@ -47,6 +48,8 @@ const requestDbTransactions = new WeakMap();
 export async function buildApp() {
     assertRoleCatalogValid();
     await syncSystemRoles();
+    if (!config.isTest)
+        await purgeRejectedReservations();
     const app = Fastify({
         logger: config.isProd
             ? { level: 'warn' }

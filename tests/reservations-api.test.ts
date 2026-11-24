@@ -6,6 +6,20 @@ import { prisma } from '../src/lib/db.js'
 import { runWithDbContext } from '../src/lib/dbContext.js'
 
 const cleanupOrgIds: string[] = []
+const cleanupUserIds: string[] = []
+
+async function registerIsolatedUser(name: string, email: string) {
+  const password = 'TestPass123!'
+  const res = await app.inject({
+    method: 'POST',
+    url: '/auth/register',
+    payload: { name, email, password },
+  })
+  expectStatus(res, 201)
+  const data = res.json().data
+  cleanupUserIds.push(data.user.id as string)
+  return { name, email, password, token: data.token as string, userId: data.user.id as string }
+}
 
 async function createPublishedEvent(token: string, orgId: string, name: string) {
   const event = await app.inject({
@@ -88,6 +102,7 @@ afterAll(async () => {
     for (const id of cleanupOrgIds) {
       await prisma.organization.deleteMany({ where: { id } }).catch(() => {})
     }
+    await prisma.user.deleteMany({ where: { id: { in: cleanupUserIds } } }).catch(() => {})
     await prisma.user.deleteMany({ where: { email: { endsWith: '@test.tkt' } } }).catch(() => {})
   })
   await stopTestApp()
@@ -348,11 +363,11 @@ describe('public reservation integrity', () => {
   })
 
   it('lists explicit pending payments and permanently removes rejected reservations', async () => {
-    const admin = await registerUser('ResPurge')
+    const admin = await registerIsolatedUser('ResPurge', `res-purge-${Date.now()}@isolated.tkt`)
     const orgId = await createOrg(admin.token, `Org ResPurge ${Date.now()}`)
     cleanupOrgIds.push(orgId)
     const eventId = await createPublishedEvent(admin.token, orgId, `Event ResPurge ${Date.now()}`)
-    const manager = await registerUser('ResPurgeMgr')
+    const manager = await registerIsolatedUser('ResPurgeMgr', `res-purge-mgr-${Date.now()}@isolated.tkt`)
     await addOrgMember(admin.token, orgId, manager.email)
     await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
     const managerToken = await login(manager.email, manager.password)

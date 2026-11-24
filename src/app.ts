@@ -50,7 +50,7 @@ const requestDbTransactions = new WeakMap<FastifyReply, () => void>()
 export async function buildApp(): Promise<FastifyInstance> {
   assertRoleCatalogValid()
   await syncSystemRoles()
-  await purgeRejectedReservations()
+  if (!config.isTest) await purgeRejectedReservations()
 
   const app = Fastify({
     logger: config.isProd

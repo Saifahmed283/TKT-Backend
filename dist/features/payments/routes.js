@@ -83,7 +83,13 @@ export async function paymentRoutes(app) {
         const { eventId } = req.params;
         await requirePermission(req, 'payment.review', { eventId });
         const tickets = await prisma.ticket.findMany({
-            where: { eventId, metadata: { path: ['paymentStatus'], equals: 'PENDING' } },
+            where: {
+                eventId,
+                OR: [
+                    { paymentStatus: 'PENDING' },
+                    { metadata: { path: ['paymentStatus'], equals: 'PENDING' } },
+                ],
+            },
             include: { attendee: true, ticketType: { select: { id: true, name: true, category: true, price: true } } },
             orderBy: { issuedAt: 'desc' }, take: 200,
         });
@@ -250,7 +256,7 @@ export async function paymentRoutes(app) {
         await requirePermission(req, 'payment.view', { eventId });
         const [event, tickets, ticketTypes] = await Promise.all([
             prisma.event.findUnique({ where: { id: eventId }, select: { settings: true } }),
-            prisma.ticket.findMany({ where: { eventId }, select: { id: true, status: true, price: true, metadata: true, ticketTypeId: true, ticketType: { select: { id: true, name: true, category: true, price: true } } } }),
+            prisma.ticket.findMany({ where: { eventId }, select: { id: true, status: true, price: true, paymentStatus: true, metadata: true, ticketTypeId: true, ticketType: { select: { id: true, name: true, category: true, price: true } } } }),
             prisma.ticketType.findMany({ where: { eventId }, select: { id: true, name: true, category: true, price: true, quota: true, _count: { select: { tickets: true } } } }),
         ]);
         if (!event)
@@ -264,7 +270,7 @@ export async function paymentRoutes(app) {
         let refundedRevenue = 0;
         for (const t of tickets) {
             const meta = (t.metadata ?? {});
-            const ps = String(meta.paymentStatus ?? (toNumber(t.price) > 0 ? 'CONFIRMED' : 'NOT_REQUIRED'));
+            const ps = reservationPaymentOf(t);
             byStatus[ps] = (byStatus[ps] ?? 0) + 1;
             const amount = toNumber(t.price);
             if (ps === 'CONFIRMED' || ps === 'NOT_REQUIRED')
