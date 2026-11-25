@@ -115,7 +115,7 @@ export async function distributedRateLimit(
 
   try {
     // The entire sliding-window read/modify/write runs atomically in Redis.
-    const result = await client.eval<number[]>(
+    const rawResult = await client.eval(
       SLIDING_WINDOW_RATE_LIMIT_SCRIPT,
       [redisKey],
       [
@@ -127,7 +127,10 @@ export async function distributedRateLimit(
         windowSec + 1,
       ],
     )
-    const [allowedValue, , remainingValue, resetValue] = result
+    if (!Array.isArray(rawResult) || rawResult.length !== 4) {
+      throw new Error('Unexpected response from atomic Redis rate limiter')
+    }
+    const [allowedValue, , remainingValue, resetValue] = rawResult
     return {
       allowed: Number(allowedValue) === 1,
       remaining: Number(remainingValue),
