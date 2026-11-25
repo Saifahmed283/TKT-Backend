@@ -14,10 +14,32 @@ async function releaseExpiredSeatHolds() {
   })
 }
 
+// Internal endpoint for scheduled cleanup (Vercel Cron / external scheduler)
+// Protected by CRON_SECRET environment variable
+async function registerCleanupEndpoint(app: any) {
+  app.post('/internal/cleanup/expired-holds', async (req, reply) => {
+    const secret = req.headers['x-cron-secret'] || req.headers['authorization']?.replace('Bearer ', '')
+    if (secret !== config.cronSecret) {
+      return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid cron secret' } })
+    }
+    const count = await releaseExpiredSeatHolds()
+    return { data: { cleaned: count } }
+  })
+}
+
 async function main() {
   const app = await buildApp()
-  const holdTimer = setInterval(() => { void releaseExpiredSeatHolds() }, 60_000)
-  app.addHook('onClose', async () => { clearInterval(holdTimer) })
+  
+  // Register internal cleanup endpoint
+  await registerCleanupEndpoint(app)
+  
+  // Only run setInterval in non-serverless mode (local development)
+  const isServerless = Boolean(process.env.VERCEL)
+  if (!isServerless) {
+    const holdTimer = setInterval(() => { void releaseExpiredSeatHolds() }, 60_000)
+    app.addHook('onClose', async () => { clearInterval(holdTimer) })
+  }
+  
   try {
     await app.listen({ port: config.port, host: config.host })
     void releaseExpiredSeatHolds()
