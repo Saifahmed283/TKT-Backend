@@ -142,22 +142,80 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.send({ data: { token: access, user: publicUser(user) } })
   })
 
+  /**
+ * Extract refresh token from cookies with fallback parsing.
+ * Vercel's edge runtime sometimes doesn't populate req.cookies properly.
+ */
+function extractRefreshToken(req: any): string | undefined {
+  // First try Fastify's built-in cookie parser
+  const fromParser = (req.cookies as Record<string, string | undefined> | undefined)?.tkt_refresh
+  if (fromParser) return fromParser
+
+  // Fallback: manually parse Cookie header
+  const cookieHeader = req.headers?.cookie
+  if (!cookieHeader) return undefined
+
+  try {
+    const cookies = cookieHeader.split(';').reduce((acc: Record<string, string>, cookie) => {
+      const [key, ...valueParts] = cookie.trim().split('=')
+      if (key && valueParts.length > 0) {
+        acc[key.trim()] = valueParts.join('=').trim()
+      }
+      return acc
+    }, {} as Record<string, string>)
+    return cookies.tkt_refresh
+  } catch {
+    return undefined
+  }
+}
+
   app.post('/refresh', {
     config: { rateLimit: { max: 12, timeWindow: '1 minute' } },
   }, async (req, reply) => {
     try {
-      const token = (req.cookies as Record<string, string | undefined> | undefined)?.tkt_refresh
-      if (!token) throw errors.unauthorized('No refresh session')
+      const token = extractRefreshToken(req)
+      
+      // Detailed logging for debugging
+      const hasCookieHeader = !!req.headers?.cookie
+      const hasParsedCookies = !!req.cookies
+      req.log.info({
+        hasCookieHeader,
+        hasParsedCookies,
+        cookieHeaderPreview: req.headers?.cookie?.substring(0, 50),
+        tokenFound: !!token,
+      }, 'auth.refresh attempt')
+
+      if (!token) {
+        req.log.warn({ 
+          cookieHeader: req.headers?.cookie ? 'present' : 'missing',
+          parsedCookies: req.cookies ? Object.keys(req.cookies) : 'none',
+        }, 'auth.refresh: No refresh token found')
+        throw errors.unauthorized('No refresh session')
+      }
       
       const claims = await verifyRefreshToken(token)
-      if (!claims) throw errors.unauthorized('Refresh session expired')
+      if (!claims) {
+        req.log.warn({ tokenPreview: token.substring(0, 10) }, 'auth.refresh: Token verification failed')
+        throw errors.unauthorized('Refresh session expired')
+      }
       
       // Check if token is revoked
       const tokenHash = hashRefreshToken(token)
       const session = await prisma.refreshSession.findUnique({ where: { tokenHash } })
-      if (!session || session.revokedAt || session.expiresAt < new Date()) {
+      if (!session) {
+        req.log.warn({ tokenHash: tokenHash.substring(0, 10) }, 'auth.refresh: Session not found in DB')
         await clearRefreshCookieAndRevoke(reply, token)
-        throw errors.unauthorized('Refresh session invalid or expired')
+        throw errors.unauthorized('Refresh session not found')
+      }
+      if (session.revokedAt) {
+        req.log.warn({ sessionId: session.id }, 'auth.refresh: Session revoked')
+        await clearRefreshCookieAndRevoke(reply, token)
+        throw errors.unauthorized('Refresh session revoked')
+      }
+      if (session.expiresAt < new Date()) {
+        req.log.warn({ sessionId: session.id, expiresAt: session.expiresAt }, 'auth.refresh: Session expired')
+        await clearRefreshCookieAndRevoke(reply, token)
+        throw errors.unauthorized('Refresh session expired')
       }
       
       const user = await prisma.user.findUnique({ where: { id: claims.sub } })
@@ -177,6 +235,7 @@ export async function authRoutes(app: FastifyInstance) {
       await createRefreshSession(user.id, refresh, req)
       setRefreshCookie(reply, refresh)
       
+      req.log.info({ userId: user.id }, 'auth.refresh: Success')
       return reply.send({ data: { token: access, user: publicUser(user) } })
     } catch (err) {
       if (err && typeof err === 'object' && 'statusCode' in err) throw err
