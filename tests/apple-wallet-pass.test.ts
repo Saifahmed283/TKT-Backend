@@ -130,12 +130,14 @@ describe('Apple Wallet pass generation', () => {
           { key: 'pass-holder', label: 'PASS HOLDER', value: 'Abdullah Mohammed' },
           { key: 'seat', label: 'SEAT', value: 'Shuttle One · A1' },
         ],
-        backFields: [
-          expect.objectContaining({ key: 'location', value: 'Cairo Opera House · Gezira, Cairo' }),
-          expect.objectContaining({ key: 'booking-reference', value: 'TKT-26001' }),
-        ],
       },
     })
+    expect(walletMock.props?.eventTicket.backFields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'location', value: 'Cairo Opera House · Gezira, Cairo' }),
+      expect.objectContaining({ key: 'ticket-type', value: 'Program + Bus Included' }),
+      expect.objectContaining({ key: 'booking-reference', value: 'TKT-26001' }),
+      expect.objectContaining({ key: 'event-name', value: 'TKT Signature Night' }),
+    ]))
     expect(walletMock.props?.backgroundColor).toBe('rgb(255, 242, 247)')
     expect(walletMock.props?.foregroundColor).toBe('rgb(42, 16, 32)')
     expect(walletMock.props?.labelColor).toBe('rgb(242, 37, 134)')
