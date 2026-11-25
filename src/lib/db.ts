@@ -1,6 +1,10 @@
 import { PrismaClient } from '@prisma/client'
 import { contextStatement, getActiveDbTransaction, runWithDbTransaction } from './dbContext.js'
 
+// Neon round trips can exceed Prisma's 5s default under load; keep a bounded
+// ceiling so transient latency does not turn into spurious request failures.
+const transactionOptions = { maxWait: 30_000, timeout: 120_000 } as const
+
 const basePrisma = new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
 })
@@ -27,7 +31,7 @@ async function runScoped<T>(call: (client: any) => Promise<T>): Promise<T> {
   return basePrisma.$transaction(async (tx) => {
     await contextStatement(tx)
     return runWithDbTransaction(tx, () => call(tx))
-  })
+  }, transactionOptions)
 }
 
 function transaction(...args: any[]): any {
@@ -35,7 +39,7 @@ function transaction(...args: any[]): any {
 
   if (Array.isArray(args[0])) {
     const statements = args[0] as any[]
-    return (basePrisma.$transaction as any)([contextStatement(basePrisma), ...statements], args[1])
+    return (basePrisma.$transaction as any)([contextStatement(basePrisma), ...statements], { ...transactionOptions, ...args[1] })
   }
 
   const callback = args[0]
@@ -45,7 +49,7 @@ function transaction(...args: any[]): any {
   return (basePrisma.$transaction as any)(async (tx: any) => {
     await contextStatement(tx)
     return runWithDbTransaction(tx, () => callback(tx))
-  }, options)
+  }, { ...transactionOptions, ...options })
 }
 
 function wrapDelegate(model: string, delegate: any): any {

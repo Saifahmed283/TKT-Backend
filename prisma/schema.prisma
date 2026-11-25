@@ -52,6 +52,25 @@ model User {
   staffProfile        StaffProfile?
   workforceApplicationsSubmitted WorkforceApplication[] @relation("WorkforceSubmittedBy")
   workforceApplicationsReviewed  WorkforceApplication[] @relation("WorkforceReviewedBy")
+  refreshSessions     RefreshSession[]
+}
+
+model RefreshSession {
+  id            String   @id @default(cuid())
+  userId        String
+  tokenHash     String   @unique
+  userAgent     String?
+  ipAddress     String?
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  createdAt     DateTime @default(now())
+  lastUsedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([revokedAt])
 }
 
 model Organization {

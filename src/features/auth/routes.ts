@@ -1,5 +1,6 @@
 ﻿import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { createHash } from 'node:crypto'
 import { prisma } from '../../lib/db.js'
 import { hashPassword, verifyPassword, signAccessToken, signRefreshToken, verifyRefreshToken } from '../../lib/auth.js'
 import { errors } from '../../lib/errors.js'
@@ -41,11 +42,36 @@ function refreshCookieOptions() {
   }
 }
 
+function hashRefreshToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex')
+}
+
+async function createRefreshSession(userId: string, token: string, req: any) {
+  const tokenHash = hashRefreshToken(token)
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+  await prisma.refreshSession.create({
+    data: {
+      userId,
+      tokenHash,
+      userAgent: req.headers['user-agent'] ?? null,
+      ipAddress: req.ip ?? null,
+      expiresAt,
+    },
+  })
+}
+
 function setRefreshCookie(reply: any, token: string) {
   reply.setCookie('tkt_refresh', token, refreshCookieOptions())
 }
 
-function clearRefreshCookie(reply: any) {
+async function clearRefreshCookieAndRevoke(reply: any, token?: string) {
+  if (token) {
+    const tokenHash = hashRefreshToken(token)
+    await prisma.refreshSession.updateMany({
+      where: { tokenHash },
+      data: { revokedAt: new Date() },
+    })
+  }
   const crossSite = config.isProd || config.isVercel
   reply.clearCookie('tkt_refresh', {
     path: '/',
@@ -73,6 +99,7 @@ export async function authRoutes(app: FastifyInstance) {
 
     const access = await signAccessToken(user)
     const refresh = await signRefreshToken(user.id)
+    await createRefreshSession(user.id, refresh, req)
     setRefreshCookie(reply, refresh)
 
     await writeAudit({
@@ -101,6 +128,7 @@ export async function authRoutes(app: FastifyInstance) {
 
     const access = await signAccessToken(user)
     const refresh = await signRefreshToken(user.id)
+    await createRefreshSession(user.id, refresh, req)
     setRefreshCookie(reply, refresh)
 
     await writeAudit({
@@ -120,17 +148,35 @@ export async function authRoutes(app: FastifyInstance) {
     try {
       const token = (req.cookies as Record<string, string | undefined> | undefined)?.tkt_refresh
       if (!token) throw errors.unauthorized('No refresh session')
+      
       const claims = await verifyRefreshToken(token)
       if (!claims) throw errors.unauthorized('Refresh session expired')
+      
+      // Check if token is revoked
+      const tokenHash = hashRefreshToken(token)
+      const session = await prisma.refreshSession.findUnique({ where: { tokenHash } })
+      if (!session || session.revokedAt || session.expiresAt < new Date()) {
+        await clearRefreshCookieAndRevoke(reply, token)
+        throw errors.unauthorized('Refresh session invalid or expired')
+      }
+      
       const user = await prisma.user.findUnique({ where: { id: claims.sub } })
       if (!user || user.status !== 'ACTIVE') {
-        clearRefreshCookie(reply)
+        await clearRefreshCookieAndRevoke(reply, token)
         throw errors.unauthorized('Account not found')
       }
 
+      // Rotate refresh token: revoke old, create new
+      await prisma.refreshSession.update({
+        where: { id: session.id },
+        data: { revokedAt: new Date() },
+      })
+      
       const access = await signAccessToken(user)
       const refresh = await signRefreshToken(user.id)
+      await createRefreshSession(user.id, refresh, req)
       setRefreshCookie(reply, refresh)
+      
       return reply.send({ data: { token: access, user: publicUser(user) } })
     } catch (err) {
       if (err && typeof err === 'object' && 'statusCode' in err) throw err
@@ -140,7 +186,8 @@ export async function authRoutes(app: FastifyInstance) {
   })
 
   app.post('/logout', async (req, reply) => {
-    clearRefreshCookie(reply)
+    const token = (req.cookies as Record<string, string | undefined> | undefined)?.tkt_refresh
+    await clearRefreshCookieAndRevoke(reply, token)
     return reply.send({ data: { ok: true } })
   })
 
