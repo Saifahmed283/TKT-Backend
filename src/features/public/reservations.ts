@@ -16,6 +16,7 @@ import { logActivity } from '../../lib/activity.js'
 import { publish, channelFor } from '../../lib/realtime.js'
 import { addOutboxEvent, processOutboxEventIds, type OutboxEventType } from '../../lib/outbox.js'
 import { afterResponse } from '../../lib/background.js'
+import { appleWalletIsConfigured } from '../wallet/appleWallet.js'
 import { clearExpiredBusSeatHolds, lockBusForSeatMutation } from '../buses/seat-mutations.js'
 import { paidAmountMismatch, registrationWindow, reservationCode, secureAccessToken, hashAccessToken, reservationSchema, reservationStartedAt, type RegSettings } from './schemas.js'
 
@@ -410,6 +411,7 @@ export async function reservationRoutes(app: FastifyInstance) {
         // Key is preserved for contract compatibility; the QR is minted after
         // the response and becomes available via the status endpoint.
         qr: null,
+        walletPassAvailable: appleWalletIsConfigured(),
         seats: reservedSeats,
       },
     })
