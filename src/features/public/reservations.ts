@@ -101,14 +101,21 @@ export async function reservationRoutes(app: FastifyInstance) {
     const emailNorm = normalizeReservationEmail(body.email)
     const phoneNorm = normalizeReservationPhone(body.phone)
     let paymentProvider: { id: string; name: string } | null = null
-    if (paid) {
-      if (body.paymentProviderId) {
-        paymentProvider = await prisma.paymentProvider.findFirst({ where: { id: body.paymentProviderId, eventId, isActive: true }, select: { id: true, name: true } })
-        if (!paymentProvider) throw errors.badRequest('Payment provider not found')
-      }
-      if (body.paymentProofUrl && !(body.paymentProofUrl.startsWith('data:image/') || body.paymentProofUrl.startsWith('https://') || body.paymentProofUrl.startsWith('http://') || body.paymentProofUrl.startsWith('/uploads/') || body.paymentProofUrl.startsWith('/api/uploads/blob/'))) {
-        throw errors.badRequest('Payment proof must be an uploaded file URL or image URL')
-      }
+    if (body.paymentProviderId) {
+      paymentProvider = await prisma.paymentProvider.findFirst({
+        where: { id: body.paymentProviderId, eventId, isActive: true },
+        select: { id: true, name: true },
+      })
+      if (!paymentProvider) throw errors.badRequest('Payment provider not found')
+    }
+    if (body.paymentProofUrl && !(
+      body.paymentProofUrl.startsWith('data:image/')
+      || body.paymentProofUrl.startsWith('https://')
+      || body.paymentProofUrl.startsWith('http://')
+      || body.paymentProofUrl.startsWith('/uploads/')
+      || body.paymentProofUrl.startsWith('/api/uploads/blob/')
+    )) {
+      throw errors.badRequest('Payment proof must be an uploaded file URL or image URL')
     }
 
     let attendee: any
@@ -118,6 +125,25 @@ export async function reservationRoutes(app: FastifyInstance) {
     let outboxEventIds: string[] = []
     try {
       const created = await prisma.$transaction(async (tx) => {
+        // Serialize capacity checks for this ticket type so concurrent
+        // requests cannot both consume the final available ticket.
+        const lockedTicketTypes = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "TicketType"
+          WHERE "id" = ${ticketType.id} AND "eventId" = ${eventId}
+          FOR UPDATE
+        `
+        if (lockedTicketTypes.length !== 1) throw errors.badRequest('Ticket type is no longer available')
+        const soldCountInTransaction = await tx.ticket.count({
+          where: {
+            ticketTypeId: ticketType.id,
+            status: { in: ['ISSUED', 'ACTIVE', 'CONSUMED'] },
+          },
+        })
+        if (ticketType.quota != null && soldCountInTransaction >= ticketType.quota) {
+          throw errors.badRequest('This ticket type has sold out')
+        }
+
         const transactionOutboxEventIds: string[] = []
         const queueOutbox = async (eventType: OutboxEventType, payload: any) => {
           transactionOutboxEventIds.push(await addOutboxEvent(tx, eventType, payload))
