@@ -20,7 +20,8 @@ import { publish, channelFor } from '../../lib/realtime.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { dispatchEventWebhooks } from '../integrations/dispatch.js'
-import { addOutboxEvent, type OutboxEventType } from '../../lib/outbox.js'
+import { addOutboxEvent, processOutboxEventIds, type OutboxEventType } from '../../lib/outbox.js'
+import { afterResponse } from '../../lib/background.js'
 import { paidAmountMismatch, registrationWindow, reservationCode, secureAccessToken, hashAccessToken, reservationSchema, reservationStartedAt, type RegSettings } from './schemas.js'
 
 export async function reservationRoutes(app: FastifyInstance) {
@@ -118,6 +119,11 @@ export async function reservationRoutes(app: FastifyInstance) {
     let attendee: any
     let ticket: any
     let reservedSeats: { id: string; label: string; busId: string }[] = []
+    let accessTokenForClient: string | null = null
+    const outboxEventIds: string[] = []
+    const queueOutbox = async (eventType: OutboxEventType, payload: any) => {
+      outboxEventIds.push(await addOutboxEvent(prisma, eventType, payload))
+    }
     try {
       const created = await prisma.$transaction(async (tx) => {
         const existing = await tx.ticket.findFirst({
@@ -159,8 +165,10 @@ export async function reservationRoutes(app: FastifyInstance) {
           },
         })
 
-        // Store a hash now; lookup stays code+email scoped until the token flow ships.
+        // Returned to the client once as the capability for later status
+        // lookups; only its hash is persisted.
         const accessToken = secureAccessToken()
+        accessTokenForClient = accessToken
         const accessTokenHash = hashAccessToken(accessToken)
         const accessTokenExpiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // 1 year
 
@@ -235,16 +243,13 @@ export async function reservationRoutes(app: FastifyInstance) {
     } catch (err: any) {
       if (err?.message === 'DUPLICATE_RESERVATION' && err.existing) {
         const existing = err.existing
+        // Do not disclose the existing code, approval state, or credential to
+        // an unauthenticated caller who merely knows the attendee's email.
+        // Legitimate recovery uses the code+email resend flow in status.ts.
         return reply.code(409).send({
           error: {
             code: 'RESERVATION_EXISTS',
             message: 'A reservation for this email already exists for this event.',
-          },
-          data: {
-            reservationCode: reservationCodeOf(existing),
-            approval: reservationApprovalOf(existing),
-            paymentStatus: reservationPaymentOf(existing),
-            qr: existing.credential?.code ?? null,
           },
         })
       }
@@ -260,7 +265,7 @@ export async function reservationRoutes(app: FastifyInstance) {
       const submittedPayment = Boolean(body.paymentReference || body.paymentProofUrl || paymentProvider)
 
       // Add email to outbox
-      await addOutboxEvent(prisma, 'EMAIL_SEND', {
+      await queueOutbox('EMAIL_SEND', {
         to: body.email,
         subject: `Reservation received — ${event.name}`,
         html: ticketEmailShell({
@@ -282,7 +287,7 @@ export async function reservationRoutes(app: FastifyInstance) {
 
       // Add payment submitted audit to outbox
       if (submittedPayment) {
-        await addOutboxEvent(prisma, 'PAYMENT_SUBMITTED', {
+        await queueOutbox('PAYMENT_SUBMITTED', {
           eventId,
           ticketId: ticket.id,
           paymentProviderId: paymentProvider?.id ?? null,
@@ -317,7 +322,7 @@ export async function reservationRoutes(app: FastifyInstance) {
         attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
         ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
       }
-      await addOutboxEvent(prisma, 'CREDENTIAL_ISSUED', {
+      await queueOutbox('CREDENTIAL_ISSUED', {
         event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
         ticket: ticketForOutbox,
       })
@@ -336,7 +341,7 @@ export async function reservationRoutes(app: FastifyInstance) {
     logActivity(eventId, 'reservation', `${body.name} reserved ${ticketType.name} · ${code}${seatSuffix}`, body.name)
 
     // Add realtime publish and webhook dispatch to outbox
-    await addOutboxEvent(prisma, 'RESERVATION_CREATED', {
+    await queueOutbox('RESERVATION_CREATED', {
       eventId,
       ticketId: ticket.id,
       reservationCode: code,
@@ -346,7 +351,7 @@ export async function reservationRoutes(app: FastifyInstance) {
       ticketType: { id: ticketType.id, name: ticketType.name },
     })
 
-    await addOutboxEvent(prisma, 'WEBHOOK_DISPATCH', {
+    await queueOutbox('WEBHOOK_DISPATCH', {
       eventId,
       eventName: 'reservation.created',
       payload: {
@@ -368,11 +373,17 @@ export async function reservationRoutes(app: FastifyInstance) {
       publish(channelFor.reservation(eventId), 'reservation.capacity_locked', { ticketTypeId: ticketType.id })
     }
 
+    // Process only this request's events after the response is sent. The global
+    // cron still drains anything left behind if a worker dies mid-flight.
+    afterResponse(req, 'reservation outbox', { eventId }, () => processOutboxEventIds(outboxEventIds))
+
     return reply.code(201).send({
       data: {
         attendeeId: attendee.id,
         ticketId: ticket.id,
         reservationCode: code,
+        // Capability for status lookups; the display code alone is not enough.
+        accessToken: accessTokenForClient,
         price: computedTotal.toString(),
         approval: paid ? 'PENDING' : 'APPROVED',
         paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',

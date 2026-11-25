@@ -68,7 +68,10 @@ export async function distributedRateLimit(
     return { allowed, remaining, resetAt }
   } catch (err) {
     console.error('Distributed rate limit error:', err)
-    // Fail open - allow request but log error
+    // A broken limiter must not silently disable abuse protection in prod.
+    if (config.isProd) {
+      return { allowed: false, remaining: 0, resetAt: Date.now() + options.windowMs }
+    }
     return { allowed: true, remaining: options.max, resetAt: Date.now() + options.windowMs }
   }
 }

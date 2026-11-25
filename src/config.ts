@@ -12,14 +12,33 @@ function optional(name: string, fallback: string): string {
 
 // These are browser origins, not API URLs. The deployed frontend and backend
 // are on different Vercel subdomains, so both must be explicitly allowed.
-const DEFAULT_CORS_ORIGINS = ['http://localhost:5173', 'https://ticketak.vercel.app']
+const DEPLOYED_CORS_ORIGINS = ['https://ticketak.vercel.app']
+const LOCAL_CORS_ORIGINS = ['http://localhost:5173']
 
-export function parseCorsOrigins(raw = optional('CORS_ORIGIN', '')): string[] {
+export function parseCorsOrigins(
+  raw = optional('CORS_ORIGIN', ''),
+  env = optional('NODE_ENV', 'development'),
+): string[] {
+  // Localhost must never be an allowed credentialed origin in production.
+  const defaults = env === 'production'
+    ? DEPLOYED_CORS_ORIGINS
+    : [...LOCAL_CORS_ORIGINS, ...DEPLOYED_CORS_ORIGINS]
   const configured = raw
     .split(',')
     .map((origin) => origin.trim())
-    .filter(Boolean)
-  return [...new Set([...DEFAULT_CORS_ORIGINS, ...configured])]
+    .filter((origin) => {
+      if (!origin) return false
+      // A credentialed production API must never accept a loopback origin,
+      // even if one leaked into an environment variable.
+      if (env !== 'production') return true
+      try {
+        const hostname = new URL(origin).hostname.toLowerCase()
+        return hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '::1' && !hostname.endsWith('.localhost')
+      } catch {
+        return false
+      }
+    })
+  return [...new Set([...defaults, ...configured])]
 }
 
 export const config = {

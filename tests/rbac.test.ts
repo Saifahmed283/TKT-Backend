@@ -102,6 +102,13 @@ describe('Scope engine — WHERE the user can act', () => {
     expect(hasAccess(c, 'access.scan', { areaId: 'area-vip' })).toBe(false)
   })
 
+  it('narrow scopes → denied on event-wide resources with no target', () => {
+    const team = ctx({ eventScope: 'TEAM', teamId: 'team-1', areaIds: ['area-1'] })
+    const area = ctx({ eventScope: 'AREA', areaIds: ['area-main'] })
+    expect(hasAccess(team, 'attendee.view')).toBe(false)
+    expect(hasAccess(area, 'report.view')).toBe(false)
+  })
+
   it('area-scoped user → denied team targets', () => {
     const c = ctx({ eventScope: 'AREA', areaIds: ['area-main'] })
     expect(hasAccess(c, 'task.view', { teamId: 'team-1' })).toBe(false)

@@ -108,7 +108,7 @@ export async function validateAndPinWebhookUrl(raw: string): Promise<PinnedWebho
   }
 
   const validAddresses = addresses.filter(({ address }) => {
-    if (allowLocalWebhook && isLoopbackAddress(address)) return false
+    if (allowLocalWebhook && isLoopbackAddress(address)) return true
     return !isBlockedAddress(address)
   })
 
@@ -238,7 +238,7 @@ async function createTlsConnection(host: string, hostname: string, port: number)
 export async function deliverWebhook(
   target: PinnedWebhookTarget,
   payload: any,
-  options: { timeoutMs?: number; maxRetries?: number } = {}
+  options: { timeoutMs?: number; maxRetries?: number; body?: string; headers?: Record<string, string> } = {}
 ): Promise<{ success: boolean; statusCode?: number; error?: string }> {
   // Verify target integrity
   if (!verifyPinnedTarget(target)) {
@@ -254,7 +254,7 @@ export async function deliverWebhook(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const response = await fetchWithPinning(target, payload, timeoutMs)
+      const response = await fetchWithPinning(target, payload, timeoutMs, options.body, options.headers)
       return { success: true, statusCode: response.status }
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
@@ -268,7 +268,13 @@ export async function deliverWebhook(
   return { success: false, error: lastError?.message ?? 'Unknown error' }
 }
 
-async function fetchWithPinning(target: PinnedWebhookTarget, payload: any, timeoutMs: number): Promise<Response> {
+async function fetchWithPinning(
+  target: PinnedWebhookTarget,
+  payload: any,
+  timeoutMs: number,
+  body?: string,
+  headers?: Record<string, string>,
+): Promise<Response> {
   const url = new URL(target.url)
   const isHttps = url.protocol === 'https:'
   const pinnedIps = target.pinnedIps
@@ -281,8 +287,8 @@ async function fetchWithPinning(target: PinnedWebhookTarget, payload: any, timeo
 
       // We need to make a raw HTTP request to the pinned IP
       // Since fetch() doesn't support IP pinning, we use a custom approach
-      const response = await fetchPinned(targetIp, url, payload, controller.signal, isHttps)
-      
+      const response = await fetchPinned(targetIp, url, payload, controller.signal, isHttps, timeoutMs, body, headers)
+
       clearTimeout(timeoutId)
       return response
     } catch (err) {
@@ -294,9 +300,20 @@ async function fetchWithPinning(target: PinnedWebhookTarget, payload: any, timeo
   throw new Error('All pinned IPs failed')
 }
 
-async function fetchPinned(targetIp: string, url: URL, payload: any, signal: AbortSignal, isHttps: boolean, timeoutMs = 10000): Promise<Response> {
+async function fetchPinned(
+  targetIp: string,
+  url: URL,
+  payload: any,
+  signal: AbortSignal,
+  isHttps: boolean,
+  timeoutMs = 10000,
+  body?: string,
+  headers?: Record<string, string>,
+): Promise<Response> {
   const http = isHttps ? (await import('node:https')).default : (await import('node:http')).default
+  const tls = isHttps ? (await import('node:tls')).default : null
   const port = Number(url.port) || (isHttps ? 443 : 80)
+  const serialized = body ?? JSON.stringify(payload)
 
   return new Promise((resolve, reject) => {
     const options = {
@@ -307,7 +324,8 @@ async function fetchPinned(targetIp: string, url: URL, payload: any, signal: Abo
       headers: {
         'Content-Type': 'application/json',
         'Host': url.hostname, // Preserve original hostname for Host header
-        'Content-Length': Buffer.byteLength(JSON.stringify(payload)),
+        'Content-Length': Buffer.byteLength(serialized),
+        ...headers,
       },
       signal,
     }
@@ -315,7 +333,7 @@ async function fetchPinned(targetIp: string, url: URL, payload: any, signal: Abo
     // For HTTPS, we need custom TLS connection with pinned IP but original hostname for SNI
     let req: any
     if (isHttps) {
-      const tls = (await import('node:tls')).default
+      const tlsModule = tls!
       const tlsOptions = {
         host: targetIp,
         port,
@@ -330,7 +348,7 @@ async function fetchPinned(targetIp: string, url: URL, payload: any, signal: Abo
         },
       }
 
-      const tlsSocket = tls.connect(tlsOptions, () => {
+      const tlsSocket = tlsModule.connect(tlsOptions, () => {
         req = https.request({
           ...options,
           createConnection: () => tlsSocket,
@@ -347,7 +365,7 @@ async function fetchPinned(targetIp: string, url: URL, payload: any, signal: Abo
       reject(new Error('Request timeout'))
     })
     req.setTimeout(timeoutMs)
-    req.write(JSON.stringify(payload))
+    req.write(serialized)
     req.end()
 
     signal.addEventListener('abort', () => {

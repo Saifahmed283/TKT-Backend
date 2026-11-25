@@ -9,6 +9,7 @@ import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { decideReservation, reservationCodeOf, reservationPaymentOf } from '../reservations/service.js'
 import { publish, channelFor } from '../../lib/realtime.js'
+import { completeIdempotencyKey, getIdempotencyResponse } from '../../lib/idempotency.js'
 
 const providerSchema = z.object({
   name: z.string().min(2),
@@ -202,10 +203,19 @@ export async function paymentRoutes(app: FastifyInstance) {
     }
   })
 
-  app.post('/reservations/:ticketId/review', async (req) => {
+  app.post('/reservations/:ticketId/review', async (req, reply) => {
     const { eventId, ticketId } = req.params as { eventId: string; ticketId: string }
     await requirePermission(req, 'payment.review', { eventId })
     const body = reviewSchema.parse(req.body)
+
+    // Idempotency key support. Only completed responses are cached, so a
+    // failed review can be retried safely with the same key.
+    const rawKey = req.headers['idempotency-key']
+    const idempotencyKey = (Array.isArray(rawKey) ? rawKey[0] : rawKey)?.trim()
+    if (idempotencyKey && idempotencyKey.length <= 255) {
+      const cached = await getIdempotencyResponse(prisma, idempotencyKey)
+      if (cached !== null) return reply.send(cached)
+    }
 
     const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: { attendee: true, ticketType: true, event: true } })
     if (!ticket || ticket.eventId !== eventId) throw errors.notFound('Ticket not found')
@@ -256,7 +266,8 @@ export async function paymentRoutes(app: FastifyInstance) {
       newValue: { action: body.action, paymentStatus, approval: confirmedPayment ? 'APPROVED' : 'REJECTED', credentialId: decided.credential?.id ?? null },
       sourceIp: req.ip,
     })
-    return {
+
+    const response = {
       data: {
         ticket: decided.ticket,
         approval: confirmedPayment ? 'APPROVED' : 'REJECTED',
@@ -265,6 +276,13 @@ export async function paymentRoutes(app: FastifyInstance) {
         alreadyDecided: decided.alreadyDecided,
       },
     }
+
+    if (idempotencyKey && idempotencyKey.length <= 255) {
+      const replay = await completeIdempotencyKey(prisma, idempotencyKey, response)
+      if (replay !== null) return reply.send(replay)
+    }
+
+    return response
   })
 
   app.get('/summary', async (req) => {

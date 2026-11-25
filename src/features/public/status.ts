@@ -13,7 +13,7 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
     config: { rateLimit: { max: 120, timeWindow: '10 minutes' } },
   }, async (req) => {
     const { eventId } = req.params as { eventId: string }
-    const { code } = req.query as { code?: string }
+    const { code, email, token } = req.query as { code?: string; email?: string; token?: string }
     if (!code) throw errors.badRequest('Missing reservation code')
 
     const ticket = await prisma.ticket.findFirst({
@@ -24,14 +24,40 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
           { metadata: { path: ['reservationCode'], equals: code } },
         ],
       },
-      include: {
+      select: {
+        id: true,
+        status: true,
+        price: true,
+        reservationCode: true,
+        reservationEmail: true,
+        metadata: true,
+        approvalStatus: true,
+        paymentStatus: true,
+        paymentReference: true,
+        paymentReviewNote: true,
+        deliveryStatus: true,
+        paymentProvider: { select: { id: true, name: true } },
+        accessTokenHash: true,
+        accessTokenExpiresAt: true,
         attendee: { select: { id: true, name: true, email: true } },
         ticketType: { select: { name: true, price: true } },
-        paymentProvider: { select: { id: true, name: true } },
         credential: { select: { id: true, code: true, status: true } },
       },
     })
     if (!ticket) throw errors.notFound('Reservation not found')
+
+    // A display code alone is not proof of entitlement. Require either the
+    // 128-bit capability returned at creation or the matching reservation
+    // email; both together with the random code are needed for email links.
+    const tokenOk = Boolean(
+      token &&
+      ticket.accessTokenHash &&
+      hashAccessToken(token) === ticket.accessTokenHash &&
+      (!ticket.accessTokenExpiresAt || ticket.accessTokenExpiresAt > new Date()),
+    )
+    const emailNorm = normalizeReservationEmail(email)
+    const emailOk = Boolean(emailNorm && emailNorm === ticket.reservationEmail)
+    if (!tokenOk && !emailOk) throw errors.notFound('Reservation not found')
 
     return {
       data: {

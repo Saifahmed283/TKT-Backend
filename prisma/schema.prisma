@@ -1066,6 +1066,16 @@ model CredentialDeliveryAttempt {
   @@index([status])
 }
 
+model IdempotencyKey {
+  id         String   @id @default(cuid())
+  keyHash    String   @unique
+  response   Json
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
 enum OutboxEventType {
   RESERVATION_CREATED
   RESERVATION_APPROVED

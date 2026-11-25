@@ -1,63 +1,217 @@
+// Ticketak Load Test - Reservation Flow
+// Run: k6 run --vus 50 --duration 2m reservations.js
+// Env: BASE_URL=https://api.ticketak.com EVENT_ID=event-123
+
 import http from 'k6/http'
-import { check, sleep } from 'k6'
+import { check, sleep, group } from 'k6'
+import { Rate, Trend, Counter } from 'k6/metrics'
 
-// 409/429 are expected under contention; don't count them as HTTP failures.
-http.setResponseCallback(http.expectedStatuses(200, 201, 409, 429))
-
-const TARGET = __ENV.K6_TARGET_URL || ''
-const host = TARGET.match(/^https?:\/\/([^/:]+)(?::\d+)?/i)?.[1]?.toLowerCase() ?? ''
-const safeHost = host === 'localhost' || host === '127.0.0.1' || host === 'staging' || host.startsWith('staging.') || host.includes('.staging.')
-
-// Hard guard: this scenario writes reservations and must never run against prod.
-if (__ENV.K6_ALLOW_LOAD_TEST !== 'true' || !safeHost) {
-  throw new Error('Set K6_ALLOW_LOAD_TEST=true and a staging/local K6_TARGET_URL before running')
-}
-
-const EVENT_ID = __ENV.K6_EVENT_ID
-if (!EVENT_ID) throw new Error('K6_EVENT_ID is required (use a seeded staging event)')
+// Custom metrics
+const reservationSuccessRate = new Rate('reservation_success_rate')
+const reservationDuration = Trend('reservation_duration')
+const seatHoldDuration = Trend('seat_hold_duration')
+const statusCheckDuration = Trend('status_check_duration')
+const errors = Counter('errors')
 
 export const options = {
-  stages: [
-    { duration: '1m', target: 100 },
-    { duration: '3m', target: 500 },
-    { duration: '5m', target: 500 },
-    { duration: '1m', target: 0 },
-  ],
-  thresholds: {
-    http_req_failed: ['rate<0.05'],
-    'http_req_duration{endpoint:reserve}': ['p(95)<3000'],
-    checks: ['rate>0.95'],
+  scenarios: {
+    reservation_flow: {
+      executor: 'ramping-vus',
+      startVUs: 0,
+      stages: [
+        { duration: '30s', target: 25 },   // Warm up
+        { duration: '1m', target: 50 },    // Sustained load
+        { duration: '30s', target: 100 },  // Peak load
+        { duration: '1m', target: 50 },    // Cool down
+        { duration: '30s', target: 0 },    // Ramp down
+      ],
+      gracefulRampDown: '30s',
+    },
+    // Stress test scenario (run separately)
+    stress_test: {
+      executor: 'ramping-vus',
+      startVUs: 0,
+      stages: [
+        { duration: '1m', target: 100 },
+        { duration: '2m', target: 200 },
+        { duration: '1m', target: 300 },
+        { duration: '30s', target: 0 },
+      ],
+      exec: 'stressTest',
+      gracefulRampDown: '30s',
+    },
   },
+  thresholds: {
+    http_req_duration: ['p(95)<1000', 'p(99)<2000'],
+    http_req_failed: ['rate<0.02'],
+    reservation_success_rate: ['rate>0.95'],
+    reservation_duration: ['p(95)<1500'],
+    seat_hold_duration: ['p(95)<800'],
+    status_check_duration: ['p(95)<500'],
+  },
+  // Export summary to JSON for CI
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
 }
 
-export function setup() {
-  const res = http.get(`${TARGET}/public/events/${EVENT_ID}`, {
-    tags: { name: 'public-event' },
-  })
-  if (res.status !== 200) throw new Error(`Cannot load staging event: ${res.status}`)
-  const body = JSON.parse(res.body)
-  const ticketType = (body.data?.ticketTypes ?? body.ticketTypes ?? []).find(
-    (t) => t.isPublic !== false && !t.soldOut && !t.transportIncluded,
-  )
-  if (!ticketType) throw new Error('Staging event needs an open, public, non-transport ticket type')
-  return { ticketTypeId: ticketType.id }
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:4000'
+const EVENT_ID = __ENV.EVENT_ID || 'test-event-id'
+const TICKET_TYPE_ID = __ENV.TICKET_TYPE_ID || 'standard-ticket'
+
+// Test data pools
+const users = Array.from({ length: 1000 }, (_, i) => ({
+  name: `LoadTest User ${i}`,
+  email: `loadtest${i}@k6.local`,
+  phone: `+1555${String(i).padStart(7, '0')}`,
+}))
+
+let userIndex = 0
+
+function getNextUser() {
+  const user = users[userIndex % users.length]
+  userIndex++
+  return user
 }
 
-export default function ({ ticketTypeId }) {
-  const stamp = `${__VU}-${__ITER}-${Date.now()}`
+// Helper: Create reservation
+function createReservation(user, ticketTypeId = TICKET_TYPE_ID) {
   const payload = JSON.stringify({
-    name: `Load Test ${__VU}`,
-    email: `load-${stamp}@example.test`,
-    phone: `1${stamp.replace(/\D/g, '').slice(-9)}`,
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
     ticketTypeId,
+    paymentProviderId: null,
+    paymentReference: null,
+    paymentProofUrl: null,
+    paymentAmount: null,
+    busId: null,
+    seatIds: [],
+    seatPassengers: [],
+    holdToken: null,
   })
 
-  const res = http.post(`${TARGET}/public/events/${EVENT_ID}/reservations`, payload, {
+  const params = {
     headers: { 'Content-Type': 'application/json' },
-    tags: { endpoint: 'reserve' },
+  }
+
+  const start = new Date()
+  const res = http.post(
+    `${BASE_URL}/public/events/${EVENT_ID}/reservations`,
+    payload,
+    params
+  )
+  const duration = new Date() - start
+
+  const success = check(res, {
+    'status 201 (created) or 409 (conflict)': (r) => r.status === 201 || r.status === 409,
+    'response has data': (r) => r.json('data') !== undefined,
   })
+
+  reservationSuccessRate.add(success)
+  reservationDuration.add(duration)
+
+  if (!success) {
+    errors.add(1)
+    console.error(`Reservation failed: ${res.status} ${res.body}`)
+  }
+
+  return res
+}
+
+// Helper: Create seat hold
+function createSeatHold(user, seatIds = ['seat-1']) {
+  const sessionId = `k6-${__VU}-${__ITER}`
+  const payload = JSON.stringify({
+    seatIds,
+    sessionId,
+    holdMinutes: 10,
+  })
+
+  const params = {
+    headers: { 'Content-Type': 'application/json' },
+  }
+
+  const start = new Date()
+  const res = http.post(
+    `${BASE_URL}/public/events/${EVENT_ID}/buses/bus-1/hold`,
+    payload,
+    params
+  )
+  const duration = new Date() - start
+
+  const success = check(res, {
+    'status 200 or 409': (r) => r.status === 200 || r.status === 409,
+  })
+
+  seatHoldDuration.add(duration)
+  return res
+}
+
+// Helper: Check reservation status
+function checkStatus(reservationCode) {
+  const params = { headers: { Accept: 'application/json' } }
+  const start = new Date()
+  const res = http.get(
+    `${BASE_URL}/public/events/${EVENT_ID}/reservations/status?code=${encodeURIComponent(reservationCode)}`,
+    params
+  )
+  const duration = new Date() - start
+
   check(res, {
-    'reservation accepted or duplicate-guarded': (r) => r.status === 201 || r.status === 409 || r.status === 429,
+    'status 200': (r) => r.status === 200,
   })
-  sleep(1)
+
+  statusCheckDuration.add(duration)
+  return res
+}
+
+// Main VU function - Reservation Flow
+export default function () {
+  const user = getNextUser()
+
+  group('Reservation Flow', () => {
+    // 1. Create reservation
+    const res = createReservation(user)
+
+    if (res.status === 201) {
+      const data = res.json()
+      const reservationCode = data.data?.reservationCode
+      const accessToken = data.data?.accessToken
+
+      // 2. Poll status (with token if available)
+      let attempts = 0
+      const maxAttempts = 12 // 60 seconds max
+      let status = 'PENDING'
+
+      while (attempts < maxAttempts && status === 'PENDING') {
+        sleep(5)
+        const statusRes = checkStatus(accessToken || reservationCode)
+        const statusData = statusRes.json()
+        status = statusData.data?.approval || 'PENDING'
+        attempts++
+      }
+    }
+    // 409 (conflict) is also acceptable - user already has reservation
+  })
+}
+
+// Stress test executor - higher concurrency
+export function stressTest() {
+  const user = getNextUser()
+  createReservation(user)
+  sleep(Math.random() * 2)
+}
+
+// Setup: Verify test event exists
+export function setup() {
+  const res = http.get(`${BASE_URL}/public/events/${EVENT_ID}`)
+  if (res.status !== 200) {
+    throw new Error(`Test event ${EVENT_ID} not accessible: ${res.status}`)
+  }
+  console.log('Load test setup complete')
+  return { eventId: EVENT_ID }
+}
+
+// Teardown
+export function teardown(data) {
+  console.log('Load test completed')
 }

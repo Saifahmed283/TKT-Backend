@@ -15,13 +15,19 @@ afterAll(async () => {
 })
 
 describe('CORS origin parsing', () => {
-  it('always allows local development and the deployed frontend', () => {
-    expect(parseCorsOrigins()).toContain('http://localhost:5173')
-    expect(parseCorsOrigins()).toContain('https://ticketak.vercel.app')
+  it('allows local development and the deployed frontend outside production', () => {
+    expect(parseCorsOrigins(undefined, 'development')).toContain('http://localhost:5173')
+    expect(parseCorsOrigins(undefined, 'development')).toContain('https://ticketak.vercel.app')
+  })
+
+  it('never allows localhost in production', () => {
+    const prod = parseCorsOrigins(undefined, 'production')
+    expect(prod).not.toContain('http://localhost:5173')
+    expect(prod).toContain('https://ticketak.vercel.app')
   })
 
   it('adds configured origins without spaces or duplicates', () => {
-    expect(parseCorsOrigins(' https://preview.example , https://ticketak.vercel.app , ')).toEqual([
+    expect(parseCorsOrigins(' https://preview.example , https://ticketak.vercel.app , ', 'development')).toEqual([
       'http://localhost:5173',
       'https://ticketak.vercel.app',
       'https://preview.example',

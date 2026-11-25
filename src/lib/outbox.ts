@@ -31,8 +31,8 @@ export async function addOutboxEvent(
   eventType: OutboxEventType,
   payload: OutboxEventPayload,
   options: { scheduledAt?: Date; maxAttempts?: number } = {}
-): Promise<void> {
-  await tx.outboxEvent.create({
+): Promise<string> {
+  const event = await tx.outboxEvent.create({
     data: {
       eventType,
       payload,
@@ -40,7 +40,9 @@ export async function addOutboxEvent(
       scheduledAt: options.scheduledAt ?? new Date(),
       maxAttempts: options.maxAttempts ?? 5,
     },
+    select: { id: true },
   })
+  return event.id
 }
 
 /**
@@ -65,6 +67,23 @@ export async function processOutboxEvents(
     take: batchSize,
   })
 
+  return processClaimedEvents(events)
+}
+
+/**
+ * Processes only the events created by the current request. Keeping this
+ * separate from the global sweep prevents an old failing event from blocking
+ * a freshly committed reservation's credential issuance and email.
+ */
+export async function processOutboxEventIds(ids: string[]): Promise<{ processed: number; failed: number }> {
+  if (ids.length === 0) return { processed: 0, failed: 0 }
+  const events = await basePrisma.outboxEvent.findMany({ where: { id: { in: ids } } })
+  return processClaimedEvents(events)
+}
+
+async function processClaimedEvents(
+  events: Array<{ id: string; attempts: number; maxAttempts: number; eventType: OutboxEventType; payload: Prisma.JsonValue }>,
+): Promise<{ processed: number; failed: number }> {
   let processed = 0
   let failed = 0
 
@@ -139,13 +158,20 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
 
     case 'CREDENTIAL_ISSUED': {
       const { event: eventData, ticket } = event.payload as { event: any; ticket: any }
+      // JSON serialization turns Date objects into ISO strings. Rehydrate them
+      // before the mailer formats the event date or Prisma stores validity.
+      const eventWithDates = {
+        ...eventData,
+        startAt: new Date(eventData.startAt),
+        endAt: eventData.endAt ? new Date(eventData.endAt) : null,
+      }
       const issued = await issueReservationCredential({
-        event: eventData,
+        event: eventWithDates,
         ticket: ticket,
         sendEmail: false,
       })
       await deliverReservationCredentialEmail({
-        event: eventData,
+        event: eventWithDates,
         ticket: ticket,
         credential: issued.credential,
       })

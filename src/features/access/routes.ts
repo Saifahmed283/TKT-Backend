@@ -363,7 +363,7 @@ export async function accessRoutes(app: FastifyInstance) {
       networkStatus: z.enum(['ONLINE', 'OFFLINE', 'UNKNOWN']).optional(),
       appVersion: z.string().max(64).optional(),
     }).parse(req.body)
-    const device = await prisma.device.findFirst({ where: { id: body.deviceId, eventId } })
+    const device = await prisma.device.findFirst({ where: { id: body.deviceId, eventId, ownerId: req.user.id } })
     if (!device) throw errors.notFound('Device not found')
     if (device.status === 'REVOKED' || device.status === 'DISABLED') throw errors.forbidden('Device is disabled')
     const now = new Date()
@@ -393,7 +393,7 @@ export async function accessRoutes(app: FastifyInstance) {
     if (areaCount !== areaIds.length) throw errors.badRequest('One or more areas not found in this event')
 
     const device = await prisma.device.findUnique({ where: { id: body.deviceId } })
-    if (!device || device.eventId !== eventId) throw errors.badRequest('Unknown device')
+    if (!device || device.eventId !== eventId || device.ownerId !== req.user.id) throw errors.badRequest('Unknown device')
     if (device.status === 'REVOKED' || device.status === 'DISABLED') throw errors.forbidden('Device is disabled')
 
     const event = await prisma.event.findUnique({ where: { id: eventId } })

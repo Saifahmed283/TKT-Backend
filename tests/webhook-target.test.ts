@@ -6,7 +6,10 @@ const mocks = vi.hoisted(() => ({
   webhookCreate: vi.fn(async (args: any) => ({ id: 'hook-1', ...args.data })),
   requirePermission: vi.fn(async (..._args: any[]) => undefined),
   writeAudit: vi.fn(async (..._args: any[]) => undefined),
+  dnsLookup: vi.fn(async (_hostname: string, _options?: any): Promise<any> => []),
 }))
+
+vi.mock('node:dns/promises', () => ({ lookup: mocks.dnsLookup }))
 
 vi.mock('../src/lib/db.js', () => ({
   prisma: {
@@ -23,7 +26,7 @@ vi.mock('../src/middleware/authorize.js', () => ({ requirePermission: mocks.requ
 vi.mock('../src/lib/audit.js', () => ({ writeAudit: mocks.writeAudit }))
 
 import { integrationRoutes } from '../src/features/integrations/routes.js'
-import { assertSafeWebhookUrl } from '../src/lib/webhookTarget.js'
+import { assertSafeWebhookUrl, validateAndPinWebhookUrl, verifyPinnedTarget } from '../src/lib/webhookTarget.js'
 
 async function buildApp() {
   const app = Fastify()
@@ -39,6 +42,11 @@ async function buildApp() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.dnsLookup.mockImplementation(async (hostname: string) =>
+    hostname === 'localhost'
+      ? [{ address: '127.0.0.1', family: 4 }]
+      : [{ address: '93.184.216.34', family: 4 }],
+  )
 })
 
 describe('webhook target validation', () => {
@@ -87,5 +95,26 @@ describe('webhook target validation', () => {
 
     expect(res.statusCode).toBe(400)
     expect(mocks.webhookCreate).not.toHaveBeenCalled()
+  })
+
+  it('rejects a hostname that resolves to a private address at validation time', async () => {
+    mocks.dnsLookup.mockResolvedValueOnce([{ address: '10.0.0.5', family: 4 }])
+
+    await expect(validateAndPinWebhookUrl('https://hooks.example.com/deliver')).rejects.toMatchObject({
+      statusCode: 400,
+    })
+  })
+
+  it('pins resolved addresses and rejects a tampered target', async () => {
+    mocks.dnsLookup.mockResolvedValueOnce([
+      { address: '93.184.216.35', family: 4 },
+      { address: '93.184.216.34', family: 4 },
+    ])
+
+    const target = await validateAndPinWebhookUrl('https://hooks.example.com/deliver')
+    expect(target.pinnedIps).toEqual(['93.184.216.34', '93.184.216.35'])
+    expect(verifyPinnedTarget(target)).toBe(true)
+
+    expect(verifyPinnedTarget({ ...target, pinnedIps: ['169.254.169.254'] })).toBe(false)
   })
 })

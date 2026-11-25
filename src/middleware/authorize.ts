@@ -26,6 +26,8 @@ export async function requirePermission(
   opts?: {
     eventId?: string
     target?: { teamId?: string | null; areaId?: string | null }
+    /** Set only on routes that apply their own team/area filtering after this check. */
+    allowNarrowNoTarget?: boolean
   },
 ): Promise<ScopeContext> {
   const userId = req.user.id
@@ -68,7 +70,7 @@ export async function requirePermission(
       // Organization-level roles (admin/viewer) implicitly hold org permissions
       if (ctx.eventScope !== 'ORGANIZATION') throw errors.forbidden()
     }
-    if (!hasScopeAccess(ctx, permission, opts.target)) throw errors.forbidden()
+    if (!hasScopeAccess(ctx, permission, opts.target, opts.allowNarrowNoTarget)) throw errors.forbidden()
     await applyScopeToDbContext(userId, ctx)
     return ctx
   }
@@ -104,15 +106,20 @@ function hasScopeAccess(
   ctx: ScopeContext,
   permission: Permission,
   target?: { teamId?: string | null; areaId?: string | null },
+  allowNarrowNoTarget = false,
 ): boolean {
   if (ctx.eventScope === 'ORGANIZATION') return true
   if (ctx.eventScope === 'EVENT') return true
   if (ctx.eventScope === 'TEAM') {
+    // A narrow scope must not grant event-wide access on routes that forgot
+    // to pass a target (attendee lists, reports, webhooks, credentials).
+    if (!target?.teamId && !target?.areaId && !allowNarrowNoTarget) return false
     if (ctx.teamId && target?.teamId && target.teamId !== ctx.teamId) return false
     if (target?.areaId && !ctx.areaIds.includes(target.areaId)) return false
     return true
   }
   // AREA scope
+  if (!target?.areaId && !target?.teamId && !allowNarrowNoTarget) return false
   if (target?.areaId) return ctx.areaIds.includes(target.areaId)
   if (target?.teamId) return false
   return true

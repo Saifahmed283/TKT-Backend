@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { prisma as prismaClient } from '../../lib/db.js'
-import { assertSafeWebhookUrl } from '../../lib/webhookTarget.js'
+import { deliverWebhook as deliverPinnedWebhook, validateAndPinWebhookUrl } from '../../lib/webhookTarget.js'
 import { runWithIsolatedDbContext } from '../../lib/dbContext.js'
 
 const prisma = prismaClient as any
@@ -11,17 +11,25 @@ export async function deliverWebhook(sub: any, eventType: string, payload: unkno
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (signature) headers['x-tkt-signature'] = `sha256=${signature}`
   try {
-    const url = await assertSafeWebhookUrl(sub.url)
-    const res = await fetch(url, { method: 'POST', headers, body, redirect: 'error', signal: AbortSignal.timeout(8000) })
-    const text = await res.text().catch(() => '')
+    // Resolve and pin DNS at delivery time so a hostname cannot rebind to an
+    // internal address between validation and the request.
+    const target = await validateAndPinWebhookUrl(sub.url)
+    const result = await deliverPinnedWebhook(target, payload, {
+      timeoutMs: 8000,
+      maxRetries: 0,
+      body,
+      headers,
+    })
+    if (!result.success) throw new Error(result.error ?? 'Webhook delivery failed')
+    const ok = (result.statusCode ?? 0) >= 200 && (result.statusCode ?? 0) < 300
     await prisma.webhookDelivery.create({
       data: {
         subscriptionId: sub.id,
         eventType,
         payload: payload as any,
-        status: res.ok ? 'SUCCESS' : 'FAILED',
-        responseCode: res.status,
-        responseBody: text.slice(0, 2000),
+        status: ok ? 'SUCCESS' : 'FAILED',
+        responseCode: result.statusCode ?? null,
+        responseBody: null,
         attempt: 1,
       },
     })

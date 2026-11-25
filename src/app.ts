@@ -10,7 +10,7 @@ import path from 'node:path'
 import { ZodError } from 'zod'
 import { config } from './config.js'
 import { checkDatabase } from './lib/db.js'
-import { AppError, errors } from './lib/errors.js'
+import { AppError, errors, generateCorrelationId, createErrorResponse } from './lib/errors.js'
 import { distributedRateLimit, rateLimitKeys } from './lib/distributedRateLimit.js'
 import { authRoutes } from './features/auth/routes.js'
 import { organizationRoutes } from './features/organizations/routes.js'
@@ -41,6 +41,7 @@ import { dashboardRoutes } from './features/dashboard/routes.js'
 import { busRoutes } from './features/buses/routes.js'
 import { metaRoutes } from './features/meta/routes.js'
 import { siteContentRoutes } from './features/site-content/routes.js'
+import { registerCleanupEndpoint } from './features/internal/cleanup.js'
 import { assertRoleCatalogValid } from './lib/roleAliases.js'
 import { syncSystemRoles } from './lib/roleSync.js'
 import { purgeRejectedReservations } from './features/reservations/purge.js'
@@ -72,11 +73,20 @@ export async function buildApp(): Promise<FastifyInstance> {
     await purgeRejectedReservations()
   }
 
+  // Trust only the platform proxy hop, never arbitrary X-Forwarded-For values.
+  // Direct clients cannot spoof loopback as their socket address. Deployments
+  // behind another proxy can set TRUST_PROXY_IPS to its IP/CIDR.
+  const configuredProxies = (process.env.TRUST_PROXY_IPS ?? '127.0.0.1,::1,::ffff:127.0.0.1')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+  const trustProxy = config.isProd ? configuredProxies : false
+
   const app = Fastify({
     logger: config.isProd
       ? { level: 'warn' }
       : { level: 'warn', transport: undefined },
-    trustProxy: true,
+    trustProxy,
   })
 
   // Request-scoped RLS context via AsyncLocalStorage.
@@ -232,30 +242,35 @@ export async function buildApp(): Promise<FastifyInstance> {
   })
 
   app.setErrorHandler((err, req, reply) => {
+    const correlationId = generateCorrelationId()
+
+    // Add correlation ID to response headers
+    reply.header('X-Correlation-ID', correlationId)
+
     if (err instanceof AppError) {
-      return reply.status(err.statusCode).send({
-        error: { code: err.code, message: err.message, details: err.details },
-      })
+      return reply.status(err.statusCode).send(createErrorResponse(err, correlationId))
     }
     if (err instanceof ZodError) {
-      return reply.status(400).send({
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Invalid request payload',
-          details: err.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
-        },
-      })
+      const validationError = new AppError(400, 'VALIDATION_ERROR', 'Invalid request payload', err.issues.map((i) => ({ path: i.path.join('.'), message: i.message })))
+      return reply.status(400).send(createErrorResponse(validationError, correlationId))
     }
-    req.log.error(err)
-    return reply.status(500).send({
-      error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
-    })
+
+    // Log internal errors with correlation ID
+    req.log.error({ err, correlationId }, 'Internal server error')
+
+    return reply.status(500).send(createErrorResponse(
+      new AppError(500, 'INTERNAL_ERROR', 'An unexpected error occurred'),
+      correlationId
+    ))
   })
 
   app.setNotFoundHandler((req, reply) => {
-    reply.status(404).send({
-      error: { code: 'NOT_FOUND', message: `Route ${req.method} ${req.url} not found` },
-    })
+    const correlationId = generateCorrelationId()
+    reply.header('X-Correlation-ID', correlationId)
+    return reply.status(404).send(createErrorResponse(
+      new AppError(404, 'NOT_FOUND', `Route ${req.method} ${req.url} not found`),
+      correlationId
+    ))
   })
 
   app.get('/', async (_req, reply) => {
@@ -544,6 +559,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(realtimeRoutes, { prefix: '/realtime' })
   await app.register(publicRoutes, { prefix: '/public' })
   await app.register(siteContentRoutes, { prefix: '/site-content' })
+
+  // Vercel Cron reaches the serverless handler (dist/app.js), so the protected
+  // cleanup route must be part of the app rather than only src/server.ts.
+  await registerCleanupEndpoint(app)
 
   return app
 }

@@ -1,13 +1,19 @@
 import type { FastifyInstance } from 'fastify'
 import { buildApp } from '../src/app.js'
 import { prisma } from '../src/lib/db.js'
+import { syncSystemRoles } from '../src/lib/roleSync.js'
 
 export let app: FastifyInstance
 
 export const unique = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 export async function startTestApp() {
-  if (!app) app = await buildApp()
+  if (!app) {
+    // buildApp() skips maintenance jobs under NODE_ENV=test, but role-based
+    // tests must still see the current system role definitions.
+    await syncSystemRoles()
+    app = await buildApp()
+  }
   await app.ready()
   return app
 }

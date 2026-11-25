@@ -67,6 +67,15 @@ async function createTicketType(token: string, eventId: string, name: string, pr
   return res.json().data.id as string
 }
 
+async function waitForCredential(ticketId: string) {
+  await vi.waitFor(async () => {
+    const credential = await runWithDbContext({ isInternal: true }, () =>
+      prisma.credential.findUnique({ where: { ticketId }, select: { id: true } }),
+    )
+    expect(credential).toBeTruthy()
+  }, { timeout: 15_000 })
+}
+
 async function addOrgMember(token: string, orgId: string, email: string) {
   const res = await app.inject({
     method: 'POST',
@@ -132,7 +141,9 @@ describe('public reservation integrity', () => {
     expectStatus(second, 409)
     const body = second.json()
     expect(body.error.code).toBe('RESERVATION_EXISTS')
-    expect(body.data.reservationCode).toBe(firstBody.reservationCode)
+    // Anonymous duplicates must not disclose the existing code or credential.
+    expect(body.data).toBeUndefined()
+    expect(JSON.stringify(body)).not.toContain(firstBody.reservationCode)
 
     const count = await runWithDbContext({ isInternal: true }, () =>
       prisma.ticket.count({
@@ -164,8 +175,24 @@ describe('public reservation integrity', () => {
       expectStatus(reserve, 201)
       expect(reserve.json().data.qr).toBeNull()
 
-      const { reservationCode, ticketId, attendeeId } = reserve.json().data
-      const statusUrl = `/public/events/${eventId}/reservations/status?code=${reservationCode}`
+      const { reservationCode, ticketId, attendeeId, accessToken } = reserve.json().data
+      expect(accessToken).toBeTruthy()
+
+      // A display code alone is not a status capability. The emailed ticket
+      // can still be recovered by supplying the matching reservation email.
+      const codeOnly = await app.inject({
+        method: 'GET',
+        url: `/public/events/${eventId}/reservations/status?code=${reservationCode}`,
+      })
+      expectStatus(codeOnly, 404)
+      const emailStatus = await app.inject({
+        method: 'GET',
+        url: `/public/events/${eventId}/reservations/status?code=${reservationCode}&email=${encodeURIComponent(email)}`,
+      })
+      expectStatus(emailStatus, 200)
+      expect(emailStatus.json().data.ticketId).toBe(ticketId)
+
+      const statusUrl = `/public/events/${eventId}/reservations/status?code=${reservationCode}&token=${encodeURIComponent(accessToken)}`
       const status = await app.inject({ method: 'GET', url: statusUrl })
       expectStatus(status, 200)
       expect(status.json().data.ticketId).toBe(ticketId)
@@ -205,6 +232,7 @@ describe('public reservation integrity', () => {
     })
     expectStatus(reserve, 201)
     const reservationCode = reserve.json().data.reservationCode as string
+    await waitForCredential(reserve.json().data.ticketId)
 
     const wrongEmail = await app.inject({
       method: 'POST',
@@ -243,6 +271,7 @@ describe('public reservation integrity', () => {
     })
     expectStatus(reserve, 201)
     const ticketId = reserve.json().data.ticketId as string
+    await waitForCredential(ticketId)
 
     const approve = await app.inject({
       method: 'POST',

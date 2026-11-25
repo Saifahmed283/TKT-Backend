@@ -507,12 +507,15 @@ export function hasAccess(
 
   if (ctx.eventScope === 'TEAM') {
     if (!ctx.teamId) return false
+    // No target means an event-wide resource; narrow scopes must not get it.
+    if (!target?.teamId && !target?.areaId) return false
     if (target?.teamId && target.teamId !== ctx.teamId) return false
     if (target?.areaId) return ctx.areaIds.includes(target.areaId)
     return true
   }
 
   // AREA scope
+  if (!target?.areaId && !target?.teamId) return false
   if (target?.areaId) return ctx.areaIds.includes(target.areaId)
   if (target?.teamId) return false
   return true

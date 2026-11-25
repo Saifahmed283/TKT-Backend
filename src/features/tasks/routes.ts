@@ -47,7 +47,9 @@ export async function taskRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate)
 
   async function taskPermission(req: any, eventId: string, permission: any, target?: { teamId?: string | null; areaId?: string | null }) {
-    return requirePermission(req, permission, { eventId, target })
+    // Task routes apply team/area filtering themselves after this capability
+    // check, then make a second target-scoped check for specific resources.
+    return requirePermission(req, permission, { eventId, target, allowNarrowNoTarget: true })
   }
 
   app.get('/', async (req) => {

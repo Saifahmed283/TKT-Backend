@@ -1,5 +1,6 @@
 ﻿import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { randomBytes } from 'node:crypto'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
@@ -196,13 +197,23 @@ export async function organizationRoutes(app: FastifyInstance) {
 
     let user = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } })
     if (!user) {
+      // Never create accounts with a shared, guessable password. A unique
+      // random credential is delivered only to the invited mailbox; replace
+      // this with a single-use invite token when that flow is available.
+      const temporaryPassword = randomBytes(18).toString('base64url')
       user = await prisma.user.create({
         data: {
           name: body.email.split('@')[0]!,
           email: body.email.toLowerCase(),
-          passwordHash: await import('../../lib/auth.js').then((m) => m.hashPassword('tkt-change-me-2026')),
+          passwordHash: await import('../../lib/auth.js').then((m) => m.hashPassword(temporaryPassword)),
         },
       })
+      void sendMail({
+        to: body.email.toLowerCase(),
+        subject: 'You have been invited to TKT',
+        html: `<p>Your account has been created. Sign in with this temporary password and change it immediately:</p><p><strong>${temporaryPassword}</strong></p>`,
+        text: `Your TKT account was created. Temporary password: ${temporaryPassword}. Change it immediately after signing in.`,
+      }).catch((err) => console.error('Failed to send invitation email:', err))
     }
     const existing = await prisma.organizationMember.findUnique({
       where: { orgId_userId: { orgId, userId: user.id } },
