@@ -168,7 +168,8 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
   switch (event.eventType) {
     case 'EMAIL_SEND': {
       const { to, subject, html } = event.payload as { to: string; subject: string; html: string }
-      await sendMail({ to, subject, html })
+      const result = await sendMail({ to, subject, html })
+      if (!result.ok) throw new Error(result.error ?? 'Email delivery failed')
       break
     }
 
@@ -186,11 +187,12 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
         ticket: ticket,
         sendEmail: false,
       })
-      await deliverReservationCredentialEmail({
+      const delivered = await deliverReservationCredentialEmail({
         event: eventWithDates,
         ticket: ticket,
         credential: issued.credential,
       })
+      if (!delivered) throw new Error('Credential email delivery failed; see the delivery attempt for details')
       break
     }
 

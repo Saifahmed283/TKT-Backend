@@ -1,138 +1,3 @@
-import { randomUUID } from 'node:crypto'
-import { Prisma } from '@prisma/client'
-import { prisma } from '../../lib/db.js'
-import { errors } from '../../lib/errors.js'
-import { credentialCode, generateUniqueShortCode, type CredentialPayload } from '../../lib/credentials.js'
-import { getDeliveryAdapter, ticketEmailShell } from '../../lib/delivery.js'
-import { qrDataUrl } from '../../lib/qr.js'
-import { writeAudit } from '../../lib/audit.js'
-import { AuditActions } from '../../lib/audit-actions.js'
-import { dispatchEventWebhooks } from '../integrations/dispatch.js'
-import { logActivity } from '../../lib/activity.js'
-import { purgeReservationTx } from './purge.js'
-
-export type ReservationApproval = 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED'
-export type ReservationPayment = 'NOT_REQUIRED' | 'PENDING' | 'CONFIRMED' | 'FAILED' | 'REFUNDED'
-
-export type ReservationTicket = {
-  id: string
-  eventId?: string
-  metadata: unknown
-  price: unknown
-  status?: string
-  reservationCode?: string | null
-  reservationEmail?: string | null
-  reservationPhone?: string | null
-  reservationName?: string | null
-  approvalStatus?: ReservationApproval | string | null
-  paymentStatus?: ReservationPayment | string | null
-  deliveryChannel?: string | null
-  attendee: { id: string; name: string; email: string | null; phone: string | null }
-  ticketType: { id: string; name: string; price: unknown }
-}
-
-export function normalizeReservationEmail(email?: string | null): string | null {
-  const v = String(email ?? '').trim().toLowerCase()
-  return v || null
-}
-
-export function normalizeReservationPhone(phone?: string | null): string | null {
-  const v = String(phone ?? '').replace(/[^0-9]+/g, '')
-  return v || null
-}
-
-export function reservationCodeOf(ticket: { reservationCode?: string | null; metadata: unknown }): string | null {
-  if (typeof ticket.reservationCode === 'string' && ticket.reservationCode.trim()) return ticket.reservationCode
-  const meta = (ticket.metadata as Record<string, any>) ?? {}
-  return typeof meta.reservationCode === 'string' && meta.reservationCode.trim() ? meta.reservationCode : null
-}
-
-export function reservationApprovalOf(ticket: { approvalStatus?: string | null; metadata: unknown; price?: unknown }): ReservationApproval {
-  const explicit = String(ticket.approvalStatus ?? '').toUpperCase()
-  if (explicit === 'PENDING' || explicit === 'APPROVED' || explicit === 'REJECTED' || explicit === 'NONE') {
-    return explicit as ReservationApproval
-  }
-  const meta = (ticket.metadata as Record<string, any>) ?? {}
-  if (meta.channel !== 'public') return 'APPROVED'
-  const legacy = String(meta.approval ?? '').toUpperCase()
-  if (legacy === 'PENDING' || legacy === 'APPROVED' || legacy === 'REJECTED') return legacy as ReservationApproval
-  return Number(meta.price ?? ticket.price ?? 0) > 0 ? 'PENDING' : 'APPROVED'
-}
-
-export function reservationPaymentOf(ticket: { paymentStatus?: string | null; metadata: unknown; price?: unknown; approvalStatus?: string | null }): ReservationPayment {
-  const explicit = String(ticket.paymentStatus ?? '').toUpperCase()
-  if (explicit === 'NOT_REQUIRED' || explicit === 'PENDING' || explicit === 'CONFIRMED' || explicit === 'FAILED' || explicit === 'REFUNDED') {
-    return explicit as ReservationPayment
-  }
-  const meta = (ticket.metadata as Record<string, any>) ?? {}
-  const paid = Number(meta.price ?? ticket.price ?? 0) > 0
-  if (!paid) return 'NOT_REQUIRED'
-  const approval = reservationApprovalOf(ticket)
-  if (approval === 'APPROVED') return 'CONFIRMED'
-  if (approval === 'REJECTED') return 'FAILED'
-  return 'PENDING'
-}
-
-export function isPaidTicket(ticket: { price: unknown; ticketType?: { price: unknown } }): boolean {
-  const ticketPrice = Number(ticket.price)
-  const typePrice = Number(ticket.ticketType?.price ?? 0)
-  const price = Number.isFinite(ticketPrice) && ticketPrice > 0 ? ticketPrice : typePrice
-  return Number.isFinite(price) && price > 0
-}
-
-export function canIssueReservationCredential(ticket: { status?: string; approvalStatus?: string | null; paymentStatus?: string | null; metadata: unknown; price?: unknown }): boolean {
-  if (String(ticket.status ?? '').toUpperCase() === 'CANCELLED') return false
-  const approval = reservationApprovalOf(ticket)
-  if (approval !== 'APPROVED') return false
-  const payment = reservationPaymentOf(ticket)
-  if (payment === 'PENDING' || payment === 'FAILED') return false
-  return true
-}
-
-export function reservationStatePatch(params: { paid: boolean; approved: boolean; rejected?: boolean }) {
-  if (!params.paid) {
-    return {
-      approvalStatus: 'APPROVED' as const,
-      paymentStatus: 'NOT_REQUIRED' as const,
-    }
-  }
-  if (params.rejected) {
-    return {
-      approvalStatus: 'REJECTED' as const,
-      paymentStatus: 'FAILED' as const,
-    }
-  }
-  if (params.approved) {
-    return {
-      approvalStatus: 'APPROVED' as const,
-      paymentStatus: 'CONFIRMED' as const,
-    }
-  }
-  return {
-    approvalStatus: 'PENDING' as const,
-    paymentStatus: 'PENDING' as const,
-  }
-}
-
-type DeliveryRecordInput = {
-  eventId: string
-  ticketId: string
-  credentialId?: string | null
-  channel: 'EMAIL' | 'WHATSAPP' | 'BOTH'
-  status: 'PENDING' | 'SENT' | 'FAILED' | 'SKIPPED'
-  recipient?: string | null
-  provider?: string | null
-  providerMessageId?: string | null
-  error?: string | null
-  attempt: number
-  metadata?: Record<string, unknown>
-  createdById?: string | null
-}
-
-async function recordDeliveryAttempt(input: DeliveryRecordInput) {
-  return prisma.credentialDeliveryAttempt.create({ data: input as any }).catch(() => null)
-}
-
 export async function resendReservationCredential(params: {
   eventId: string
   ticketId: string
@@ -161,7 +26,7 @@ export async function resendReservationCredential(params: {
 
   const settings = ((ticket.event as any).settings ?? {}) as Record<string, any>
   const tpl = (settings.ticketEmail ?? {}) as Record<string, any>
-  const qr = await qrDataUrl(ticket.credential.code).catch(() => null)
+  const qrAttachment = await createTicketQrAttachment(ticket.credential.code)
   const codeOf = reservationCodeOf(ticket as any)
   const shortCode = (ticket.credential as any).shortCode ?? null
   const attempt = (ticket.deliveryAttempts ?? 0) + 1
@@ -171,7 +36,7 @@ export async function resendReservationCredential(params: {
     html: ticketEmailShell({
       preheader: typeof tpl.preheader === 'string' && tpl.preheader ? tpl.preheader : `Ticket for ${ticket.event.name} — present your QR at check-in`,
       title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replace('{event}', ticket.event.name) : `Your ticket for ${ticket.event.name}`,
-      body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replace('{event}', `<strong>${ticket.event.name}</strong>`) : `Here is your signed QR ticket for <strong>${ticket.event.name}</strong>. Present it at check-in.`,
+      body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replaceAll('{event}', ticket.event.name) : `Here is your signed QR ticket for ${ticket.event.name}. Present it at check-in.`,
       rows: [
         { label: 'Event', value: ticket.event.name },
         { label: 'Ticket', value: ticket.ticketType.name },
@@ -184,9 +49,13 @@ export async function resendReservationCredential(params: {
           return seats.length ? [{ label: 'Seats', value: seats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}${s.passengerName ? ` (${s.passengerName})` : ''}`).join(', ') }] : []
         })(),
       ],
-      qrDataUrl: qr,
-      footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · Control center for live events',
+      qrCid: TICKET_QR_CID,
+      titleAr: typeof tpl.titleAr === 'string' && tpl.titleAr ? tpl.titleAr.replaceAll('{event}', ticket.event.name) : 'تذكرتك جاهزة للدخول',
+      bodyAr: typeof tpl.bodyAr === 'string' && tpl.bodyAr ? tpl.bodyAr.replaceAll('{event}', ticket.event.name) : 'حجزك مؤكد. يرجى إظهار رمز QR عند بوابة الدخول.',
+      ticketUrl: codeOf ? new URL(`/reservation/${encodeURIComponent(codeOf)}`, config.publicUrl.includes('localhost') && config.env === 'production' ? 'https://ticketak.vercel.app' : config.publicUrl).toString() : undefined,
+      footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · YOUR EXPERIENCE STARTS HERE',
     }),
+    attachments: [qrAttachment],
   })
   const deliveryOk = delivery.ok
 
@@ -245,7 +114,7 @@ export async function deliverReservationCredentialEmail(params: {
   const { event, ticket, credential, issuerUserId = null } = params
   const codeOf = reservationCodeOf(ticket)
   const shortCode = credential.shortCode ?? null
-  const qr = await qrDataUrl(credential.code).catch(() => null)
+  const qrAttachment = await createTicketQrAttachment(credential.code)
   const attempt = ((ticket as any).deliveryAttempts ?? 0) + 1
   const settings = ((event as any).settings ?? {}) as Record<string, any>
   const tpl = (settings.ticketEmail ?? {}) as Record<string, any>
@@ -256,7 +125,7 @@ export async function deliverReservationCredentialEmail(params: {
     html: ticketEmailShell({
       preheader: typeof tpl.preheader === 'string' && tpl.preheader ? tpl.preheader.replaceAll('{event}', event.name) : `Ticket for ${event.name} — present your QR at check-in`,
       title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replaceAll('{event}', event.name) : `You're in, ${ticket.attendee.name.split(' ')[0]}`,
-      body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replaceAll('{event}', `<strong>${event.name}</strong>`) : `Your reservation for <strong>${event.name}</strong> is confirmed. Show this QR at the gate — it is signed, single-use and cannot be forged.`,
+      body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replaceAll('{event}', event.name) : `Your reservation for ${event.name} is confirmed. Show this QR at the gate — it is signed, single-use and cannot be forged.`,
       rows: [
         { label: 'Event', value: event.name },
         { label: 'Ticket', value: ticket.ticketType.name },
@@ -269,9 +138,13 @@ export async function deliverReservationCredentialEmail(params: {
           return seats.length ? [{ label: 'Seats', value: seats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}${s.passengerName ? ` (${s.passengerName})` : ''}`).join(', ') }] : []
         })(),
       ],
-      qrDataUrl: qr,
-      footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · Control center for live events',
+      qrCid: TICKET_QR_CID,
+      titleAr: typeof tpl.titleAr === 'string' && tpl.titleAr ? tpl.titleAr.replaceAll('{event}', event.name) : 'تم تأكيد حجزك بنجاح!',
+      bodyAr: typeof tpl.bodyAr === 'string' && tpl.bodyAr ? tpl.bodyAr.replaceAll('{event}', event.name) : `مرحباً ${ticket.attendee.name.split(' ')[0]}، يسعدنا تأكيد حجزك. تذكرتك جاهزة الآن.`,
+      ticketUrl: codeOf ? new URL(`/reservation/${encodeURIComponent(codeOf)}`, config.publicUrl.includes('localhost') && config.env === 'production' ? 'https://ticketak.vercel.app' : config.publicUrl).toString() : undefined,
+      footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · YOUR EXPERIENCE STARTS HERE',
     }),
+    attachments: [qrAttachment],
   })
 
   const deliveryOk = delivery.ok
