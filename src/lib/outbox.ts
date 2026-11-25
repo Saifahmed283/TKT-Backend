@@ -1,5 +1,5 @@
-import { PrismaClient, Prisma } from '@prisma/client'
-import { runWithIsolatedDbContext, type DbContext } from './dbContext.js'
+import { Prisma } from '@prisma/client'
+import { runWithIsolatedDbContext } from './dbContext.js'
 
 const basePrisma = new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
@@ -159,8 +159,6 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
   const { publish, channelFor } = await import('./realtime.js')
   const { writeAudit } = await import('./audit.js')
   const { AuditActions } = await import('./audit-actions.js')
-  const prisma = basePrisma
-
   switch (event.eventType) {
     case 'EMAIL_SEND': {
       const { to, subject, html } = event.payload as { to: string; subject: string; html: string }
@@ -249,20 +247,4 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
     default:
       throw new Error(`Unsupported outbox event type: ${event.eventType}`)
   }
-}
-
-/**
- * Legacy afterResponse helper - creates outbox events instead of fire-and-forget.
- * Maintains backward compatibility with existing code.
- */
-export function afterResponseOutbox(
-  tx: PrismaClient,
-  eventType: OutboxEventType,
-  payload: OutboxEventPayload,
-  options?: { scheduledAt?: Date; maxAttempts?: number }
-): void {
-  // This is called within a transaction, so we just add to outbox
-  addOutboxEvent(tx, eventType, payload, options).catch((err) => {
-    console.error('Failed to add outbox event:', err)
-  })
 }
