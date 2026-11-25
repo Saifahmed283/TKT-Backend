@@ -121,12 +121,14 @@ export async function reservationRoutes(app: FastifyInstance) {
     let ticket: any
     let reservedSeats: { id: string; label: string; busId: string }[] = []
     let accessTokenForClient: string | null = null
-    const outboxEventIds: string[] = []
-    const queueOutbox = async (eventType: OutboxEventType, payload: any) => {
-      outboxEventIds.push(await addOutboxEvent(prisma, eventType, payload))
-    }
+    let outboxEventIds: string[] = []
     try {
       const created = await prisma.$transaction(async (tx) => {
+        const transactionOutboxEventIds: string[] = []
+        const queueOutbox = async (eventType: OutboxEventType, payload: any) => {
+          transactionOutboxEventIds.push(await addOutboxEvent(tx, eventType, payload))
+        }
+
         const existing = await tx.ticket.findFirst({
           where: {
             eventId,
@@ -255,10 +257,85 @@ export async function reservationRoutes(app: FastifyInstance) {
           seatRows = await tx.busSeat.findMany({ where: { id: { in: seatIds } } })
         }
 
-        return { attendee, ticket, seatRows }
+        const ticketForOutbox = {
+          id: ticket.id,
+          eventId,
+          metadata: ticket.metadata,
+          price: ticket.price,
+          status: ticket.status,
+          reservationCode: ticket.reservationCode,
+          approvalStatus: ticket.approvalStatus,
+          paymentStatus: ticket.paymentStatus,
+          attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
+          ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
+        }
+
+        if (paid) {
+          const submittedPayment = Boolean(body.paymentReference || body.paymentProofUrl || paymentProvider)
+          await queueOutbox('EMAIL_SEND', {
+            to: body.email,
+            subject: `Reservation received — ${event.name}`,
+            html: ticketEmailShell({
+              preheader: `Your reservation for ${event.name} is ${submittedPayment ? 'awaiting payment review' : 'awaiting approval'}`,
+              title: 'Reservation received',
+              body: `Your reservation for <strong>${event.name}</strong> is in. ${submittedPayment ? 'Your payment proof was received and will be reviewed by the event team.' : 'The event team will review it shortly.'} Your QR ticket arrives by email once approved.`,
+              rows: [
+                { label: 'Event', value: event.name },
+                { label: 'Ticket', value: ticketType.name },
+                { label: 'Reservation', value: code },
+                ...(seatRows.length ? [{ label: 'Seats', value: seatRows.map((seat: any) => seat.label).join(', ') }] : []),
+                ...(paymentProvider ? [{ label: 'Payment method', value: paymentProvider.name }] : []),
+                ...(body.paymentReference?.trim() ? [{ label: 'Payment reference', value: body.paymentReference.trim() }] : []),
+                { label: 'Status', value: submittedPayment ? 'Awaiting payment review' : 'Awaiting approval' },
+              ],
+              footer: 'TKT · Control center for live events',
+            }),
+          })
+
+          if (submittedPayment) {
+            await queueOutbox('PAYMENT_SUBMITTED', {
+              eventId,
+              ticketId: ticket.id,
+              paymentProviderId: paymentProvider?.id ?? null,
+              paymentReference: body.paymentReference?.trim() || null,
+              hasProof: Boolean(body.paymentProofUrl),
+            })
+          }
+        } else {
+          await queueOutbox('CREDENTIAL_ISSUED', {
+            event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
+            ticket: ticketForOutbox,
+          })
+        }
+
+        await queueOutbox('RESERVATION_CREATED', {
+          eventId,
+          ticketId: ticket.id,
+          reservationCode: code,
+          approval: paid ? 'PENDING' : 'APPROVED',
+          paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
+          attendee: { name: body.name, email: body.email },
+          ticketType: { id: ticketType.id, name: ticketType.name },
+        })
+
+        await queueOutbox('WEBHOOK_DISPATCH', {
+          eventId,
+          eventName: 'reservation.created',
+          payload: {
+            ticketId: ticket.id,
+            reservationCode: code,
+            approval: paid ? 'PENDING' : 'APPROVED',
+            paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
+            attendee: { name: body.name, email: body.email },
+            ticketType: { id: ticketType.id, name: ticketType.name },
+          },
+        })
+
+        return { attendee, ticket, seatRows, outboxEventIds: transactionOutboxEventIds }
       })
       attendee = created.attendee
       ticket = created.ticket
+      outboxEventIds = created.outboxEventIds
       reservedSeats = (created.seatRows ?? []).map((s: any) => ({ id: s.id, label: s.label, busId: s.busId }))
     } catch (err: any) {
       if (err?.message === 'DUPLICATE_RESERVATION' && err.existing) {
@@ -279,102 +356,9 @@ export async function reservationRoutes(app: FastifyInstance) {
       throw err
     }
 
-    // Use transactional outbox for durable background processing
-    // This replaces fire-and-forget with durable, retryable events
-    if (paid) {
-      const submittedPayment = Boolean(body.paymentReference || body.paymentProofUrl || paymentProvider)
-
-      // Add email to outbox
-      await queueOutbox('EMAIL_SEND', {
-        to: body.email,
-        subject: `Reservation received — ${event.name}`,
-        html: ticketEmailShell({
-          preheader: `Your reservation for ${event.name} is ${submittedPayment ? 'awaiting payment review' : 'awaiting approval'}`,
-          title: 'Reservation received',
-          body: `Your reservation for <strong>${event.name}</strong> is in. ${submittedPayment ? 'Your payment proof was received and will be reviewed by the event team.' : 'The event team will review it shortly.'} Your QR ticket arrives by email once approved.`,
-          rows: [
-            { label: 'Event', value: event.name },
-            { label: 'Ticket', value: ticketType.name },
-            { label: 'Reservation', value: code },
-            ...(reservedSeats.length ? [{ label: 'Seats', value: reservedSeats.map(s => s.label).join(', ') }] : []),
-            ...(paymentProvider ? [{ label: 'Payment method', value: paymentProvider.name }] : []),
-            ...(body.paymentReference?.trim() ? [{ label: 'Payment reference', value: body.paymentReference.trim() }] : []),
-            { label: 'Status', value: submittedPayment ? 'Awaiting payment review' : 'Awaiting approval' },
-          ],
-          footer: 'TKT · Control center for live events',
-        }),
-      })
-
-      // Add payment submitted audit to outbox
-      if (submittedPayment) {
-        await queueOutbox('PAYMENT_SUBMITTED', {
-          eventId,
-          ticketId: ticket.id,
-          paymentProviderId: paymentProvider?.id ?? null,
-          paymentReference: body.paymentReference?.trim() || null,
-          hasProof: Boolean(body.paymentProofUrl),
-        })
-      }
-    } else {
-      const reservationTicket: ReservationTicket = {
-        id: ticket.id,
-        eventId,
-        metadata: ticket.metadata,
-        price: ticket.price,
-        status: ticket.status,
-        reservationCode: ticket.reservationCode,
-        approvalStatus: ticket.approvalStatus,
-        paymentStatus: ticket.paymentStatus,
-        attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
-        ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
-      }
-
-      // Add credential issuance + email to outbox
-      const ticketForOutbox = {
-        id: ticket.id,
-        eventId,
-        metadata: ticket.metadata,
-        price: ticket.price,
-        status: ticket.status,
-        reservationCode: ticket.reservationCode,
-        approvalStatus: ticket.approvalStatus,
-        paymentStatus: ticket.paymentStatus,
-        attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
-        ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
-      }
-      await queueOutbox('CREDENTIAL_ISSUED', {
-        event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
-        ticket: ticketForOutbox,
-      })
-    }
-
     const computedTotal = computedTotalForPricing
     const seatSuffix = reservedSeats.length ? ` · seats ${reservedSeats.map((s) => s.label).join(', ')}` : ''
     logActivity(eventId, 'reservation', `${body.name} reserved ${ticketType.name} · ${code}${seatSuffix}`, body.name)
-
-    // Add realtime publish and webhook dispatch to outbox
-    await queueOutbox('RESERVATION_CREATED', {
-      eventId,
-      ticketId: ticket.id,
-      reservationCode: code,
-      approval: paid ? 'PENDING' : 'APPROVED',
-      paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
-      attendee: { name: body.name, email: body.email },
-      ticketType: { id: ticketType.id, name: ticketType.name },
-    })
-
-    await queueOutbox('WEBHOOK_DISPATCH', {
-      eventId,
-      eventName: 'reservation.created',
-      payload: {
-        ticketId: ticket.id,
-        reservationCode: code,
-        approval: paid ? 'PENDING' : 'APPROVED',
-        paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
-        attendee: { name: body.name, email: body.email },
-        ticketType: { id: ticketType.id, name: ticketType.name },
-      },
-    })
 
     // Capacity reached → lock the reservation pipeline.
     if (ticketType.quota != null && (await soldCount()) >= ticketType.quota) {
