@@ -184,7 +184,7 @@ export function ticketEmailShell(opts: {
   const logoUrl = safeHttpUrl(design.logoUrl)
   const logoMarkup = logoUrl
     ? '<img src="' + escapeHtml(logoUrl) + '" alt="TKT" width="112" style="display:block;max-width:112px;max-height:44px;width:auto;height:auto;border:0" />'
-    : '${logoMarkup}'
+    : '<div dir="ltr" style="color:#c8a25c;font-family:Italiana,Georgia,serif;font-size:36px;font-weight:400;letter-spacing:.04em;line-height:1">TKT</div>'
   const defaultOrder = ['intro', 'details', 'qr', 'action', 'footer', 'legal']
   const requestedOrder = Array.isArray(design.layoutOrder) ? design.layoutOrder : defaultOrder
   const sectionOrder = [...new Set(requestedOrder.filter((name) => defaultOrder.includes(name)))]
@@ -237,7 +237,7 @@ export function ticketEmailShell(opts: {
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
               <tr>
                 <td width="112" valign="middle" align="left" style="width:112px;text-align:left">
-                  <div dir="ltr" style="color:#c8a25c;font-family:Italiana,Georgia,serif;font-size:36px;font-weight:400;letter-spacing:.04em;line-height:1">TKT</div>
+                  ${logoMarkup}
                 </td>
                 <td valign="middle" align="right">
                   <p dir="rtl" style="margin:0;color:#ffffff;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:12px;line-height:1.7">رحلتك تبدأ معنا</p>
