@@ -179,16 +179,27 @@ export async function buildApp(): Promise<FastifyInstance> {
     referrerPolicy: { policy: 'no-referrer' },
   })
 
-  const uploadDir = path.resolve(process.cwd(), config.uploads.dir)
-  fs.mkdirSync(uploadDir, { recursive: true })
-  await app.register(multipart, {
-    limits: { fileSize: config.uploads.maxBytes, files: 1 },
-  })
-  await app.register(fastifyStatic, {
-    root: uploadDir,
-    prefix: '/uploads/',
-    decorateReply: false,
-  })
+  // Only use local filesystem for uploads in development (not on Vercel/production)
+  // In production, we use Vercel Blob storage via uploadStore.ts
+  const isLocalStorage = !config.isProd && !config.isVercel
+
+  if (isLocalStorage) {
+    const uploadDir = path.resolve(process.cwd(), config.uploads.dir)
+    fs.mkdirSync(uploadDir, { recursive: true })
+    await app.register(multipart, {
+      limits: { fileSize: config.uploads.maxBytes, files: 1 },
+    })
+    await app.register(fastifyStatic, {
+      root: uploadDir,
+      prefix: '/uploads/',
+      decorateReply: false,
+    })
+  } else {
+    // In production/Vercel, we use Vercel Blob - only register multipart for upload handling
+    await app.register(multipart, {
+      limits: { fileSize: config.uploads.maxBytes, files: 1 },
+    })
+  }
 
   await app.register(rateLimit, {
     global: !config.isTest || config.rateLimits.enabledInTests,
