@@ -1,9 +1,6 @@
-import { PrismaClient, Prisma } from '@prisma/client'
+import { Prisma, type PrismaClient } from '@prisma/client'
+import { prisma } from './db.js'
 import { runWithIsolatedDbContext } from './dbContext.js'
-
-const basePrisma = new PrismaClient({
-  log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
-})
 
 export type OutboxEventType =
   | 'RESERVATION_CREATED'
@@ -53,25 +50,26 @@ export async function processOutboxEvents(
   batchSize = 50,
   options: { eventTypes?: OutboxEventType[] } = {}
 ): Promise<{ processed: number; failed: number }> {
-  const staleProcessingBefore = new Date(Date.now() - 5 * 60 * 1000)
-  const where: any = {
-    scheduledAt: { lte: new Date() },
-    OR: [
-      { status: { in: ['PENDING', 'FAILED'] } },
-      { status: 'PROCESSING', updatedAt: { lt: staleProcessingBefore } },
-    ],
-  }
-  if (options.eventTypes && options.eventTypes.length > 0) {
-    where.eventType = { in: options.eventTypes }
-  }
+  return runWithIsolatedDbContext({ isInternal: true }, async () => {
+    const staleProcessingBefore = new Date(Date.now() - 5 * 60 * 1000)
+    const where: Prisma.OutboxEventWhereInput = {
+      scheduledAt: { lte: new Date() },
+      OR: [
+        { status: { in: ['PENDING', 'FAILED'] } },
+        { status: 'PROCESSING', updatedAt: { lt: staleProcessingBefore } },
+      ],
+    }
+    if (options.eventTypes && options.eventTypes.length > 0) {
+      where.eventType = { in: options.eventTypes }
+    }
 
-  const events = await basePrisma.outboxEvent.findMany({
-    where,
-    orderBy: { scheduledAt: 'asc' },
-    take: batchSize,
+    const events = await prisma.outboxEvent.findMany({
+      where,
+      orderBy: { scheduledAt: 'asc' },
+      take: batchSize,
+    })
+    return processClaimedEvents(events)
   })
-
-  return processClaimedEvents(events)
 }
 
 /**
@@ -81,8 +79,10 @@ export async function processOutboxEvents(
  */
 export async function processOutboxEventIds(ids: string[]): Promise<{ processed: number; failed: number }> {
   if (ids.length === 0) return { processed: 0, failed: 0 }
-  const events = await basePrisma.outboxEvent.findMany({ where: { id: { in: ids } } })
-  return processClaimedEvents(events)
+  return runWithIsolatedDbContext({ isInternal: true }, async () => {
+    const events = await prisma.outboxEvent.findMany({ where: { id: { in: ids } } })
+    return processClaimedEvents(events)
+  })
 }
 
 async function processClaimedEvents(
@@ -95,7 +95,7 @@ async function processClaimedEvents(
     // Claim pending work, or recover a processing lease left behind by a
     // worker that crashed. The conditional update is the concurrency guard.
     const staleProcessingBefore = new Date(Date.now() - 5 * 60 * 1000)
-    const updated = await basePrisma.outboxEvent.updateMany({
+    const updated = await prisma.outboxEvent.updateMany({
       where: {
         id: event.id,
         OR: [
@@ -110,7 +110,7 @@ async function processClaimedEvents(
 
     try {
       await runWithIsolatedDbContext({ isInternal: true }, () => processEvent(event))
-      await basePrisma.outboxEvent.update({
+      await prisma.outboxEvent.update({
         where: { id: event.id },
         data: { status: 'COMPLETED', processedAt: new Date(), lastError: null },
       })
