@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { prisma } from '../../lib/db.js'
 import { runWithDbContext } from '../../lib/dbContext.js'
 import { config } from '../../config.js'
@@ -8,7 +8,7 @@ export async function releaseExpiredSeatHolds(): Promise<number> {
   return runWithDbContext({ isInternal: true }, async () => {
     const now = new Date()
     const expired = await prisma.busSeat.updateMany({
-      where: { state: 'HELD', holdExpiresAt: { lt: now } },
+      where: { state: 'HELD', holdExpiresAt: { lte: now } },
       data: {
         state: 'AVAILABLE',
         holderName: null,
@@ -21,33 +21,51 @@ export async function releaseExpiredSeatHolds(): Promise<number> {
         holdExpiresAt: null,
         reservedAt: null,
       },
-    }).catch(() => ({ count: 0 }))
+    })
+
+    // Do not convert database failures into a successful zero-count cleanup.
     return expired.count
   })
 }
 
-/**
- * Internal endpoint for scheduled cleanup (Vercel Cron / external scheduler).
- * Registered in buildApp so the serverless handler receives the same route and
- * secret checks as the long-running server.
- */
+function isAuthorizedCronRequest(req: FastifyRequest): boolean {
+  if (!config.cronSecret) return false
+  const headerSecret = req.headers['x-cron-secret']
+  const authorization = req.headers.authorization
+  const bearerSecret = typeof authorization === 'string' && authorization.startsWith('Bearer ')
+    ? authorization.slice('Bearer '.length)
+    : undefined
+  return headerSecret === config.cronSecret || bearerSecret === config.cronSecret
+}
+
 export async function registerCleanupEndpoint(app: FastifyInstance): Promise<void> {
-  app.post('/internal/cleanup/expired-holds', async (req, reply) => {
-    const secret = req.headers['x-cron-secret'] || req.headers['authorization']?.replace('Bearer ', '')
+  const handler = async (req: FastifyRequest, reply: FastifyReply) => {
     if (!config.cronSecret) {
-      return reply.status(503).send({ error: { code: 'CRON_NOT_CONFIGURED', message: 'Cron secret is not configured' } })
+      return reply.status(503).send({
+        error: { code: 'CRON_NOT_CONFIGURED', message: 'Cron secret is not configured' },
+      })
     }
-    if (secret !== config.cronSecret) {
-      return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid cron secret' } })
+
+    if (!isAuthorizedCronRequest(req)) {
+      return reply.status(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Invalid cron secret' },
+      })
     }
-    const count = await releaseExpiredSeatHolds()
+
+    const cleaned = await releaseExpiredSeatHolds()
     const outbox = await processOutboxEvents(100)
-    // Distinct IPs/clients create a counter row each; keep only the current
-    // window plus a small margin so the fallback table cannot grow forever.
-    const rateLimitsCleaned = await prisma.$executeRaw`
-      DELETE FROM "RateLimitCounter"
-      WHERE "windowStart" < ${new Date(Date.now() - 24 * 60 * 60 * 1000)}
-    `.catch(() => 0)
-    return { data: { cleaned: count, outbox, rateLimitsCleaned } }
-  })
+    const rateLimitsCleaned = await runWithDbContext({ isInternal: true }, () =>
+      prisma.$executeRaw`
+        DELETE FROM "RateLimitCounter"
+        WHERE "windowStart" < ${new Date(Date.now() - 24 * 60 * 60 * 1000)}
+      `,
+    )
+
+    return { data: { cleaned, outbox, rateLimitsCleaned } }
+  }
+
+  // Vercel Cron invokes this endpoint with GET. POST remains available for a
+  // protected manual invocation from operational tooling.
+  app.get('/internal/cleanup/expired-holds', handler)
+  app.post('/internal/cleanup/expired-holds', handler)
 }
