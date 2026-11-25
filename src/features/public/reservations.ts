@@ -136,6 +136,12 @@ export async function reservationRoutes(app: FastifyInstance) {
         let seatRows: any[] = []
         if (seatIds.length > 0) {
           if (!body.busId) throw errors.badRequest('busId is required when reserving seats')
+          const lockedBus = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+            SELECT "id" FROM "Bus"
+            WHERE "id" = ${body.busId} AND "eventId" = ${eventId} AND "isActive" = TRUE
+            FOR UPDATE
+          `)
+          if (!lockedBus.length) throw errors.badRequest('Valid active bus is required for seat reservations')
           seatRows = await tx.busSeat.findMany({ where: { id: { in: seatIds }, busId: body.busId, bus: { eventId, isActive: true } } })
           if (seatRows.length !== seatIds.length) throw errors.badRequest('One or more seats are invalid')
           const now = new Date()
@@ -198,10 +204,14 @@ export async function reservationRoutes(app: FastifyInstance) {
         if (seatIds.length > 0) {
           const groupId = randomUUID()
           const now = new Date()
+          const allowedSeatStates: Prisma.BusSeatWhereInput[] = [{ state: 'AVAILABLE' }]
+          if (body.holdToken) {
+            allowedSeatStates.push({ state: 'HELD', holdToken: body.holdToken, holdExpiresAt: { gt: now } })
+          }
           for (const id of seatIds) {
             const passenger = body.seatPassengers?.find(p => p.seatId === id)
             const updated = await tx.busSeat.updateMany({
-              where: { id, busId: body.busId!, OR: [{ state: 'AVAILABLE' }, { state: 'HELD', holdToken: body.holdToken ?? undefined, holdExpiresAt: { gt: now } }] },
+              where: { id, busId: body.busId!, OR: allowedSeatStates },
               data: {
                 state: 'RESERVED',
                 holderName: body.name.trim(),
