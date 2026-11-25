@@ -1,6 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { runWithIsolatedDbContext, type DbContext } from './dbContext.js'
-import { afterResponseOutbox } from './outbox.js'
 
 type BackgroundTask = {
   label: string
@@ -46,24 +45,4 @@ export function afterResponse(
   const queue = queues.get(req) ?? []
   queue.push({ label, context, work })
   queues.set(req, queue)
-}
-
-/**
- * Creates an outbox event within the current transaction.
- * Use this instead of afterResponse for durable, retryable background work.
- */
-import { Prisma } from '@prisma/client'
-
-export function afterResponseOutboxAlias(
-  tx: any,
-  eventType: string,
-  payload: Prisma.InputJsonValue,
-  options?: { scheduledAt?: Date; maxAttempts?: number }
-): void {
-  // Import dynamically to avoid circular dependency
-  import('./outbox.js').then(({ addOutboxEvent }) => {
-    addOutboxEvent(tx, eventType as any, payload, options).catch((err) => {
-      console.error('Failed to add outbox event:', err)
-    })
-  })
 }
