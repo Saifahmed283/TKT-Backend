@@ -1,25 +1,19 @@
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
-import { PrismaClient, Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import {
-  deliverReservationCredentialEmail,
-  issueReservationCredential,
   reservationApprovalOf,
   reservationCodeOf,
   reservationPaymentOf,
   normalizeReservationEmail,
   normalizeReservationPhone,
   reservationStatePatch,
-  type ReservationTicket,
 } from '../reservations/service.js'
-import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
+import { ticketEmailShell } from '../../lib/mailer.js'
 import { logActivity } from '../../lib/activity.js'
 import { publish, channelFor } from '../../lib/realtime.js'
-import { writeAudit } from '../../lib/audit.js'
-import { AuditActions } from '../../lib/audit-actions.js'
-import { dispatchEventWebhooks } from '../integrations/dispatch.js'
 import { addOutboxEvent, processOutboxEventIds, type OutboxEventType } from '../../lib/outbox.js'
 import { afterResponse } from '../../lib/background.js'
 import { clearExpiredBusSeatHolds, lockBusForSeatMutation } from '../buses/seat-mutations.js'
