@@ -245,7 +245,7 @@ function extractRefreshToken(req: any): string | undefined {
   })
 
   app.post('/logout', async (req, reply) => {
-    const token = (req.cookies as Record<string, string | undefined> | undefined)?.tkt_refresh
+    const token = extractRefreshToken(req)
     await clearRefreshCookieAndRevoke(reply, token)
     return reply.send({ data: { ok: true } })
   })
