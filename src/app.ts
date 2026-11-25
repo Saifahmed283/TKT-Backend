@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify'
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import cookie from '@fastify/cookie'
 import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
@@ -11,6 +11,7 @@ import { ZodError } from 'zod'
 import { config } from './config.js'
 import { checkDatabase } from './lib/db.js'
 import { AppError, errors } from './lib/errors.js'
+import { distributedRateLimit, rateLimitKeys } from './lib/distributedRateLimit.js'
 import { authRoutes } from './features/auth/routes.js'
 import { organizationRoutes } from './features/organizations/routes.js'
 import { eventRoutes } from './features/events/routes.js'
@@ -180,6 +181,54 @@ export async function buildApp(): Promise<FastifyInstance> {
     timeWindow: '1 minute',
     errorResponseBuilder: () =>
       errors.rateLimited('Too many requests — please slow down'),
+  })
+
+  // Distributed rate limiting for sensitive endpoints
+  // Runs after global rate limit, uses Redis when available
+  app.addHook('preHandler', async (req: FastifyRequest, reply: FastifyReply) => {
+    const path = (req.url || '').split('?')[0] || ''
+    const ip = req.ip
+
+    // Skip if Redis not configured (dev mode) or in tests
+    const { getRedis, distributedRateLimit, rateLimitKeys } = await import('./lib/distributedRateLimit.js')
+    const redis = getRedis()
+    if (!redis) return
+
+    // Define sensitive endpoint patterns with their limits
+    type RateLimitPattern = {
+      pattern: RegExp
+      keyFn: (ip: string, path: string) => string
+      max: number
+      windowMs: number
+    }
+
+    const sensitivePatterns: RateLimitPattern[] = [
+      { pattern: /^\/auth\/login$/, keyFn: (ip: string) => rateLimitKeys.login(ip), max: 5, windowMs: 5 * 60 * 1000 },
+      { pattern: /^\/auth\/register$/, keyFn: (ip: string) => rateLimitKeys.register(ip), max: 3, windowMs: 10 * 60 * 1000 },
+      { pattern: /^\/auth\/refresh$/, keyFn: (ip: string) => rateLimitKeys.refresh(ip), max: 12, windowMs: 60 * 1000 },
+      { pattern: /^\/auth\/logout$/, keyFn: (ip: string) => `auth:logout:ip:${ip}`, max: 20, windowMs: 60 * 1000 },
+      { pattern: /^\/public\/events\/[^/]+\/reservations$/, keyFn: (ip: string, path: string) => `reservation:${path.match(/\/public\/events\/([^/]+)/)?.[1] || 'unknown'}:ip:${ip}`, max: 5, windowMs: 10 * 60 * 1000 },
+      { pattern: /^\/public\/events\/[^/]+\/buses\/[^/]+\/hold$/, keyFn: (ip: string, path: string) => `seathold:${path.match(/\/public\/events\/([^/]+)/)?.[1] || 'unknown'}:ip:${ip}`, max: 10, windowMs: 60 * 1000 },
+      { pattern: /^\/public\/events\/[^/]+\/reservations\/status/, keyFn: (ip: string, path: string) => `status:${path.match(/\/public\/events\/([^/]+)/)?.[1] || 'unknown'}:ip:${ip}`, max: 120, windowMs: 10 * 60 * 1000 },
+    ]
+
+    for (const { pattern, keyFn, max, windowMs } of sensitivePatterns) {
+      if (pattern.test(path)) {
+        const key = keyFn(ip, path)
+        const { allowed, remaining, resetAt } = await distributedRateLimit(key, { max, windowMs })
+
+        reply.header('X-RateLimit-Limit', String(max))
+        reply.header('X-RateLimit-Remaining', String(remaining))
+        reply.header('X-RateLimit-Reset', String(Math.ceil(resetAt / 1000)))
+
+        if (!allowed) {
+          const retryAfter = Math.ceil((resetAt - Date.now()) / 1000)
+          reply.header('Retry-After', String(Math.max(1, retryAfter)))
+          throw errors.rateLimited(`Too many requests — please try again in ${Math.ceil(windowMs / 60000)} minute(s)`)
+        }
+        break // Only apply the first matching pattern
+      }
+    }
   })
 
   app.setErrorHandler((err, req, reply) => {
