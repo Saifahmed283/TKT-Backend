@@ -77,6 +77,7 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
         ticketName: ticket.ticketType.name,
         attendeeName: ticket.attendee.name,
         qr: ticket.credential?.code ?? null,
+        walletPassAvailable: appleWalletIsConfigured(),
         seats: await prisma.busSeat.findMany({ where: { ticketId: ticket.id }, select: { id: true, label: true, busId: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } }).catch(() => []),
       },
     }
