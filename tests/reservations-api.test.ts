@@ -364,6 +364,25 @@ describe('public reservation integrity', () => {
     expectStatus(twoSeats, 400)
     expect(twoSeats.json().error.message).toContain('select exactly one seat')
 
+    const wrongAmount = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Transit Guest',
+        email,
+        phone: '+20 100 123 4567',
+        ticketTypeId: transportTypeId,
+        busId: bus.id,
+        seatIds: [bus.seatIds[0]],
+        paymentAmount: 149,
+      },
+    })
+    expectStatus(wrongAmount, 400)
+    const availableAfterRejectedPayment = await runWithDbContext({ isInternal: true }, () =>
+      prisma.busSeat.findUnique({ where: { id: bus.seatIds[0] }, select: { state: true, ticketId: true } }),
+    )
+    expect(availableAfterRejectedPayment).toMatchObject({ state: 'AVAILABLE', ticketId: null })
+
     const reserved = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations`,
@@ -374,12 +393,38 @@ describe('public reservation integrity', () => {
         ticketTypeId: transportTypeId,
         busId: bus.id,
         seatIds: [bus.seatIds[0]],
+        paymentAmount: 150,
         seatPassengers: [{ seatId: bus.seatIds[0], name: 'Transit Guest' }],
       },
     })
     expectStatus(reserved, 201)
     expect(reserved.json().data.price).toBe('150')
     expect(reserved.json().data.seats).toHaveLength(1)
+
+    const ticketId = reserved.json().data.ticketId as string
+    const linkedSeat = await runWithDbContext({ isInternal: true }, () =>
+      prisma.busSeat.findUnique({ where: { id: bus.seatIds[0] }, select: { state: true, ticketId: true, passengerName: true } }),
+    )
+    expect(linkedSeat).toMatchObject({ state: 'RESERVED', ticketId, passengerName: 'Transit Guest' })
+
+    const duplicateSeatAttempt = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Second Transit Guest',
+        email: `transport-second-${Date.now()}@test.tkt`,
+        phone: '+20 100 123 4568',
+        ticketTypeId: transportTypeId,
+        busId: bus.id,
+        seatIds: [bus.seatIds[0]],
+        paymentAmount: 150,
+      },
+    })
+    expectStatus(duplicateSeatAttempt, 409)
+    const linkedSeatCount = await runWithDbContext({ isInternal: true }, () =>
+      prisma.busSeat.count({ where: { id: bus.seatIds[0], ticketId } }),
+    )
+    expect(linkedSeatCount).toBe(1)
   })
 
   it('blocks manual approval until payment proof is confirmed', async () => {

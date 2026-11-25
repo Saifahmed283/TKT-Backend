@@ -54,6 +54,37 @@ describe('ticket email QR and responsive template', () => {
     expect(html).not.toContain('<img src=x onerror=alert(1)>')
   })
 
+  it('applies safe visual theme, logo, font, and drag-and-drop section order', () => {
+    const html = ticketEmailShell({
+      preheader: 'Designer preview',
+      title: 'Intro section marker',
+      body: 'Body',
+      rows: [{ label: 'Event', value: 'Design Test Event' }],
+      qrCid: TICKET_QR_CID,
+      ticketUrl: 'https://ticketak.vercel.app/reservation/DESIGN-1',
+      footer: 'Footer section marker',
+      design: {
+        primaryColor: '#112233',
+        accentColor: '#445566',
+        backgroundColor: '#fafafa',
+        headerColor: '#101010',
+        panelColor: '#eeeeee',
+        logoUrl: 'https://assets.example.com/tkt-logo.png',
+        fontFamily: 'Tahoma',
+        layoutOrder: ['footer', 'qr', 'details', 'intro', 'action', 'legal'],
+      },
+    })
+    expect(html).toContain('src="https://assets.example.com/tkt-logo.png"')
+    expect(html).toContain('background:#fafafa')
+    expect(html).toContain('color:#112233')
+    expect(html).toContain('background:#101010')
+    expect(html).toContain('font-family:Tahoma,Tahoma,Arial,sans-serif')
+    expect(html.indexOf('Footer section marker')).toBeLessThan(html.indexOf('src="cid:tkt-ticket-qr@tkt"'))
+    expect(html.indexOf('src="cid:tkt-ticket-qr@tkt"')).toBeLessThan(html.indexOf('BOOKING DETAILS'))
+    expect(html.indexOf('BOOKING DETAILS')).toBeLessThan(html.indexOf('Intro section marker'))
+    expect(html.indexOf('Intro section marker')).toBeLessThan(html.indexOf('VIEW TICKET'))
+  })
+
   it('does not render a broken ticket link when the URL is unavailable', () => {
     const html = ticketEmailShell({preheader:'Booking confirmed',title:'Your ticket',body:'Keep this email.',rows:[],qrCid:TICKET_QR_CID})
     expect(html).toContain('KEEP THIS EMAIL FOR ENTRY')

@@ -68,4 +68,24 @@ export async function registerCleanupEndpoint(app: FastifyInstance): Promise<voi
   // protected manual invocation from operational tooling.
   app.get('/internal/cleanup/expired-holds', handler)
   app.post('/internal/cleanup/expired-holds', handler)
+
+  // Run durable delivery retries separately from the daily expiry sweep.
+  // An external scheduler can call this endpoint every few minutes.
+  const outboxHandler = async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!config.cronSecret) {
+      return reply.status(503).send({
+        error: { code: 'CRON_NOT_CONFIGURED', message: 'Cron secret is not configured' },
+      })
+    }
+    if (!isAuthorizedCronRequest(req)) {
+      return reply.status(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Invalid cron secret' },
+      })
+    }
+    const outbox = await processOutboxEvents(50)
+    return { data: { outbox } }
+  }
+
+  app.get('/internal/process-outbox', outboxHandler)
+  app.post('/internal/process-outbox', outboxHandler)
 }
