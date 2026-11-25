@@ -16,8 +16,8 @@ describe('ticket email QR and responsive template', () => {
   it('references the QR through CID and keeps the Figma visual direction', () => {
     const html = ticketEmailShell({
       preheader: 'Booking confirmed',
-      title: 'Your booking is confirmed!',
-      titleAr: 'تم تأكيد حجزك بنجاح!',
+      title: 'Booking Confirmation & Ticket Issuance',
+      titleAr: 'تأكيد الحجز وإصدار التذكرة',
       body: 'Your ticket is ready.',
       bodyAr: 'تذكرتك جاهزة الآن.',
       rows: [{label:'Event',value:'TKT Signature Night'},{label:'Ticket code',value:'TKT-ABC23'}],
@@ -27,13 +27,18 @@ describe('ticket email QR and responsive template', () => {
     expect(html).toContain('src="cid:tkt-ticket-qr@tkt"')
     expect(html).not.toContain('data:image/png;base64')
     expect(html).toContain('TKT Signature Night')
-    expect(html).toContain('تم تأكيد حجزك بنجاح!')
-    expect(html).toContain('#f1eee7')
-    expect(html).toContain('#1b1917')
+    expect(html).toContain('تأكيد الحجز وإصدار التذكرة')
+    expect(html).toContain('#f1ede4')
+    expect(html).toContain('#0b0b0c')
     expect(html).toContain('#c8a25c')
     expect(html).toContain('@media only screen and (max-width:620px)')
     expect(html).toContain('VIEW TICKET')
-    expect(html).toContain('alt="Ticket QR code — scan at the entrance"')
+    expect(html).toContain('#faf8f4')
+    expect(html).toContain('Booking Confirmation')
+    expect(html).toContain('BOOKING DETAILS')
+    expect(html).toContain('720')
+    expect(html).toContain('font-family:Italiana,Georgia,serif')
+    expect(html).toContain('alt="Ticket QR code — scan to verify your ticket"')
   })
 
   it('escapes attendee-controlled content before embedding it in HTML', () => {

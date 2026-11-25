@@ -186,7 +186,7 @@ export async function resendReservationCredential(params: {
         })(),
       ],
       qrCid: TICKET_QR_CID,
-      titleAr: typeof tpl.titleAr === 'string' && tpl.titleAr ? tpl.titleAr.replaceAll('{event}', ticket.event.name) : 'تذكرتك جاهزة للدخول',
+      titleAr: typeof tpl.titleAr === 'string' && tpl.titleAr ? tpl.titleAr.replaceAll('{event}', ticket.event.name) : 'تأكيد الحجز وإصدار التذكرة',
       bodyAr: typeof tpl.bodyAr === 'string' && tpl.bodyAr ? tpl.bodyAr.replaceAll('{event}', ticket.event.name) : 'حجزك مؤكد. يرجى إظهار رمز QR عند بوابة الدخول.',
       ticketUrl: codeOf ? new URL(`/reservation/${encodeURIComponent(codeOf)}`, config.env === 'production' && config.publicUrl.includes('localhost') ? 'https://ticketak.vercel.app' : config.publicUrl).toString() : undefined,
       footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · YOUR EXPERIENCE STARTS HERE',
