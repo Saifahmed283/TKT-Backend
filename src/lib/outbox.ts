@@ -53,9 +53,13 @@ export async function processOutboxEvents(
   batchSize = 50,
   options: { eventTypes?: OutboxEventType[] } = {}
 ): Promise<{ processed: number; failed: number }> {
+  const staleProcessingBefore = new Date(Date.now() - 5 * 60 * 1000)
   const where: any = {
-    status: { in: ['PENDING', 'FAILED'] },
     scheduledAt: { lte: new Date() },
+    OR: [
+      { status: { in: ['PENDING', 'FAILED'] } },
+      { status: 'PROCESSING', updatedAt: { lt: staleProcessingBefore } },
+    ],
   }
   if (options.eventTypes && options.eventTypes.length > 0) {
     where.eventType = { in: options.eventTypes }
@@ -88,16 +92,24 @@ async function processClaimedEvents(
   let failed = 0
 
   for (const event of events) {
-    // Mark as processing to prevent duplicate processing
+    // Claim pending work, or recover a processing lease left behind by a
+    // worker that crashed. The conditional update is the concurrency guard.
+    const staleProcessingBefore = new Date(Date.now() - 5 * 60 * 1000)
     const updated = await basePrisma.outboxEvent.updateMany({
-      where: { id: event.id, status: { in: ['PENDING', 'FAILED'] } },
+      where: {
+        id: event.id,
+        OR: [
+          { status: { in: ['PENDING', 'FAILED'] } },
+          { status: 'PROCESSING', updatedAt: { lt: staleProcessingBefore } },
+        ],
+      },
       data: { status: 'PROCESSING', attempts: { increment: 1 } },
     })
 
     if (updated.count === 0) continue // Another worker picked it up
 
     try {
-      await processEvent(event)
+      await runWithIsolatedDbContext({ isInternal: true }, () => processEvent(event))
       await basePrisma.outboxEvent.update({
         where: { id: event.id },
         data: { status: 'COMPLETED', processedAt: new Date(), lastError: null },
@@ -235,7 +247,7 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
     }
 
     default:
-      console.warn(`Unknown outbox event type: ${event.eventType}`)
+      throw new Error(`Unsupported outbox event type: ${event.eventType}`)
   }
 }
 
