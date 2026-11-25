@@ -45,10 +45,21 @@ export function clientIp(req: { ip?: string }): string {
   return req.ip || 'unknown'
 }
 
-export function reservationCode(): string {
-  return `TKT-${randomBytes(4).toString('hex').toUpperCase()}`
+// Secure access token for reservation lookup (128+ bits of entropy)
+export function secureAccessToken(): string {
+  return randomBytes(16).toString('hex')
 }
 
+// Hash access token for storage (use SHA-256 for token hashing)
+export function hashAccessToken(token: string): string {
+  const { createHash } = require('node:crypto')
+  return createHash('sha256').update(token).digest('hex')
+}
+
+// Human-readable reservation reference (32 bits, for display only)
+export function reservationCode(): string {
+  return 'TKT-' + randomBytes(4).toString('hex').toUpperCase()
+}
 export function paidAmountMismatch(clientAmount: number | null, computedTotal: number): boolean {
   if (clientAmount == null) return false
   if (!Number.isFinite(clientAmount) || !Number.isFinite(computedTotal)) return true

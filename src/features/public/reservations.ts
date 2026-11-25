@@ -21,7 +21,7 @@ import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { dispatchEventWebhooks } from '../integrations/dispatch.js'
 import { afterResponse } from '../../lib/background.js'
-import { paidAmountMismatch, registrationWindow, reservationCode, reservationSchema, reservationStartedAt, type RegSettings } from './schemas.js'
+import { paidAmountMismatch, registrationWindow, reservationCode, secureAccessToken, hashAccessToken, reservationSchema, reservationStartedAt, type RegSettings } from './schemas.js'
 
 export async function reservationRoutes(app: FastifyInstance) {
 // ── Public reservation ────────────────────────────────────
@@ -166,6 +166,11 @@ export async function reservationRoutes(app: FastifyInstance) {
           },
         })
 
+        // Store a hash now; lookup stays code+email scoped until the token flow ships.
+        const accessToken = secureAccessToken()
+        const accessTokenHash = hashAccessToken(accessToken)
+        const accessTokenExpiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // 1 year
+
         const ticket = await tx.ticket.create({
           data: {
             eventId,
@@ -184,6 +189,8 @@ export async function reservationRoutes(app: FastifyInstance) {
             paymentProofUrl: paid ? (body.paymentProofUrl || null) : null,
             paymentAmount: paid ? computedTotalForPricing : null,
             paymentSubmittedAt: paid && (body.paymentReference || body.paymentProofUrl || body.paymentProviderId) ? new Date() : null,
+            accessTokenHash,
+            accessTokenExpiresAt,
             ...state,
             metadata: {
               reservationCode: code,

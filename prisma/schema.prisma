@@ -586,6 +586,9 @@ model Ticket {
   deliveryStatus      String?                   @default("PENDING")
   lastDeliveryAt      DateTime?
   deliveryAttempts    Int                       @default(0)
+  // Secure access token (hashed) for reservation lookup — separate from public reservationCode
+  accessTokenHash     String?
+  accessTokenExpiresAt DateTime?
 
   attendee          Attendee                    @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
   ticketType        TicketType                  @relation(fields: [ticketTypeId], references: [id])
@@ -605,6 +608,7 @@ model Ticket {
   @@index([paymentProviderId])
   // Covers soldCount()'s ticketTypeId + status filter on every reservation.
   @@index([ticketTypeId, status])
+  @@index([accessTokenHash])
 }
 
 enum CredentialType {
@@ -977,6 +981,17 @@ model PublicReview {
   createdAt DateTime @default(now())
 
   @@index([visible])
+}
+
+// Global public-site copy is small and edited as one unit, so a versioned
+// JSON document avoids three near-identical CRUD surfaces for team/partners/
+// field reports. Only super admins can write it; public reads are read-only.
+model SiteContent {
+  key       String   @id
+  data      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  updatedBy String?
 }
 
 model ContactMessage {
