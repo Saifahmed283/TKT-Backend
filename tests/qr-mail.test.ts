@@ -57,8 +57,8 @@ describe('ticket email QR and responsive template', () => {
   it('applies safe visual theme, logo, font, and drag-and-drop section order', () => {
     const html = ticketEmailShell({
       preheader: 'Designer preview',
-      title: 'Intro section marker',
-      body: 'Body',
+      title: 'Designer heading',
+      body: 'Intro section marker',
       rows: [{ label: 'Event', value: 'Design Test Event' }],
       qrCid: TICKET_QR_CID,
       ticketUrl: 'https://ticketak.vercel.app/reservation/DESIGN-1',
