@@ -149,15 +149,21 @@ function ticketDesignFromMetadata(metadata: unknown): StoredTicketDesign | null 
   return value
 }
 
-function ticketDateLabel(date: Date): string {
-  return date.toLocaleString(undefined, {
+function ticketDateLabel(date: Date, timezone = 'UTC'): string {
+  const options: Intl.DateTimeFormatOptions = {
     weekday: 'short',
     day: 'numeric',
     month: 'short',
     year: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
-  })
+    timeZone: timezone || 'UTC',
+  }
+  try {
+    return new Intl.DateTimeFormat('en-GB', options).format(date)
+  } catch {
+    return new Intl.DateTimeFormat('en-GB', { ...options, timeZone: 'UTC' }).format(date)
+  }
 }
 
 export async function resendReservationCredential(params: {
@@ -173,7 +179,7 @@ export async function resendReservationCredential(params: {
       attendee: { select: { id: true, name: true, email: true, phone: true } },
       ticketType: { select: { id: true, name: true, price: true } },
       credential: true,
-      event: { select: { id: true, orgId: true, name: true, startAt: true, endAt: true, venueName: true, settings: true } },
+      event: { select: { id: true, orgId: true, name: true, startAt: true, endAt: true, timezone: true, venueName: true, settings: true } },
     },
   })
   if (!ticket) throw errors.notFound('Reservation not found')
@@ -208,7 +214,7 @@ export async function resendReservationCredential(params: {
       rows: [
         { label: 'Event', value: ticket.event.name },
         { label: 'Ticket', value: ticket.ticketType.name },
-        { label: 'Date', value: ticket.event.startAt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) },
+        { label: 'Date', value: new Intl.DateTimeFormat('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: ticket.event.timezone || 'UTC' }).format(ticket.event.startAt) },
         { label: 'Venue', value: ticket.event.venueName ?? 'TBA' },
         ...(codeOf ? [{ label: 'Reservation', value: codeOf }] : []),
         ...(shortCode ? [{ label: 'Ticket code', value: shortCode }] : []),
@@ -227,7 +233,7 @@ export async function resendReservationCredential(params: {
         attendeeName: ticket.attendee.name,
         eventName: ticket.event.name,
         ticketTypeName: ticket.ticketType.name,
-        dateTime: ticketDateLabel(ticket.event.startAt),
+        dateTime: ticketDateLabel(ticket.event.startAt, ticket.event.timezone),
         venue: ticket.event.venueName,
         seat: previewSeats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}`).join(', ') || null,
         reference: codeOf ?? shortCode ?? ticket.id.slice(0, 8),
@@ -284,7 +290,7 @@ export async function resendReservationCredential(params: {
  * fire-and-forget task. TODO: replace that pattern with a durable queue.
  */
 export async function deliverReservationCredentialEmail(params: {
-  event: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; venueName: string | null; settings?: unknown }
+  event: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; timezone?: string; venueName: string | null; settings?: unknown }
   ticket: ReservationTicket
   credential: { id: string; code: string; shortCode?: string | null }
   issuerUserId?: string | null
@@ -296,7 +302,7 @@ export async function deliverReservationCredentialEmail(params: {
   const attempt = ((ticket as any).deliveryAttempts ?? 0) + 1
   const settings = ((event as any).settings ?? {}) as Record<string, any>
   const tpl = (settings.ticketEmail ?? {}) as Record<string, any>
-  const eventDate = event.startAt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+  const eventDate = new Intl.DateTimeFormat('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: event.timezone || 'UTC' }).format(event.startAt)
   const previewSeats = await prisma.busSeat.findMany({
     where: { ticketId: ticket.id },
     select: { label: true, bus: { select: { name: true } } },
@@ -332,7 +338,7 @@ export async function deliverReservationCredentialEmail(params: {
         attendeeName: ticket.attendee.name,
         eventName: event.name,
         ticketTypeName: ticket.ticketType.name,
-        dateTime: ticketDateLabel(event.startAt),
+        dateTime: ticketDateLabel(event.startAt, event.timezone),
         venue: event.venueName,
         seat: previewSeats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}`).join(', ') || null,
         reference: codeOf ?? shortCode ?? ticket.id.slice(0, 8),
@@ -548,7 +554,7 @@ export async function decideReservation(params: {
   }
 
 
-  const eventForCred = { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName }
+  const eventForCred = { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, timezone: event.timezone, venueName: event.venueName }
   let credential = decided.credential
 
   if (approved) {
