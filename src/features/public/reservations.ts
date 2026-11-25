@@ -22,6 +22,7 @@ import { AuditActions } from '../../lib/audit-actions.js'
 import { dispatchEventWebhooks } from '../integrations/dispatch.js'
 import { addOutboxEvent, processOutboxEventIds, type OutboxEventType } from '../../lib/outbox.js'
 import { afterResponse } from '../../lib/background.js'
+import { clearExpiredBusSeatHolds, lockBusForSeatMutation } from '../buses/seat-mutations.js'
 import { paidAmountMismatch, registrationWindow, reservationCode, secureAccessToken, hashAccessToken, reservationSchema, reservationStartedAt, type RegSettings } from './schemas.js'
 
 export async function reservationRoutes(app: FastifyInstance) {
@@ -96,13 +97,13 @@ export async function reservationRoutes(app: FastifyInstance) {
       throw errors.badRequest('Valid bus is required for seat reservations')
     }
     const busSeatUnitPriceForPricing = seatIds.length ? Number(bus?.seatPrice ?? 0) : 0
-    const computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0) + (seatIds.length * (Number.isFinite(busSeatUnitPriceForPricing) ? busSeatUnitPriceForPricing : 0))
+    let computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0) + (seatIds.length * (Number.isFinite(busSeatUnitPriceForPricing) ? busSeatUnitPriceForPricing : 0))
     const clientPaymentAmount = body.paymentAmount == null ? null : Number(body.paymentAmount)
     if (paidAmountMismatch(clientPaymentAmount, computedTotalForPricing)) {
       throw errors.badRequest('Payment amount does not match ticket and seat total')
     }
-    const paid = computedTotalForPricing > 0
-    const state = reservationStatePatch({ paid, approved: !paid })
+    let paid = computedTotalForPricing > 0
+    let state = reservationStatePatch({ paid, approved: !paid })
     const emailNorm = normalizeReservationEmail(body.email)
     const phoneNorm = normalizeReservationPhone(body.phone)
     let paymentProvider: { id: string; name: string } | null = null
@@ -142,9 +143,28 @@ export async function reservationRoutes(app: FastifyInstance) {
         let seatRows: any[] = []
         if (seatIds.length > 0) {
           if (!body.busId) throw errors.badRequest('busId is required when reserving seats')
+          // The bus-row lock serializes final reservations with holds, admin
+          // seat edits, layout changes, deletes, and price changes.
+          await lockBusForSeatMutation(tx, eventId, body.busId, true)
+          const now = new Date()
+          await clearExpiredBusSeatHolds(tx, body.busId, now)
+          const lockedBus = await tx.bus.findFirst({
+            where: { id: body.busId, eventId, isActive: true },
+            select: { id: true, seatPrice: true },
+          })
+          if (!lockedBus) throw errors.badRequest('Valid bus is required for seat reservations')
+
+          const lockedSeatPrice = Number(lockedBus.seatPrice ?? 0)
+          computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0)
+            + (Number.isFinite(lockedSeatPrice) ? lockedSeatPrice : 0)
+          if (paidAmountMismatch(clientPaymentAmount, computedTotalForPricing)) {
+            throw errors.badRequest('Payment amount does not match ticket and seat total')
+          }
+          paid = computedTotalForPricing > 0
+          state = reservationStatePatch({ paid, approved: !paid })
+
           seatRows = await tx.busSeat.findMany({ where: { id: { in: seatIds }, busId: body.busId, bus: { eventId, isActive: true } } })
           if (seatRows.length !== seatIds.length) throw errors.badRequest('One or more seats are invalid')
-          const now = new Date()
           const blocked = seatRows.filter((s: any) => {
             if (s.state === 'AVAILABLE') return false
             if (s.state === 'HELD' && body.holdToken && s.holdToken === body.holdToken && s.holdExpiresAt && s.holdExpiresAt > now) return false
@@ -328,15 +348,7 @@ export async function reservationRoutes(app: FastifyInstance) {
       })
     }
 
-    const busSeatUnitPrice = reservedSeats.length ? Number(bus?.seatPrice ?? 0) : 0
-    const computedTotal = (Number(ticketType.price ?? 0) || 0) + (reservedSeats.length * (Number.isFinite(busSeatUnitPrice) ? busSeatUnitPrice : 0))
-    if (reservedSeats.length && Math.abs(computedTotal - computedTotalForPricing) > 0.01) {
-      await prisma.busSeat.updateMany({
-        where: { id: { in: reservedSeats.map((s) => s.id) }, holdToken: body.holdToken ?? undefined },
-        data: { state: 'AVAILABLE', holderName: null, groupId: null, ticketId: null, passengerName: null, passengerEmail: null, passengerPhone: null, holdToken: null, holdExpiresAt: null },
-      }).catch(() => null)
-      throw errors.conflict('Seat pricing changed; please retry')
-    }
+    const computedTotal = computedTotalForPricing
     const seatSuffix = reservedSeats.length ? ` · seats ${reservedSeats.map((s) => s.label).join(', ')}` : ''
     logActivity(eventId, 'reservation', `${body.name} reserved ${ticketType.name} · ${code}${seatSuffix}`, body.name)
 
