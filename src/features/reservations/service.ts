@@ -134,6 +134,32 @@ async function recordDeliveryAttempt(input: DeliveryRecordInput) {
   return prisma.credentialDeliveryAttempt.create({ data: input as any }).catch(() => null)
 }
 
+type StoredTicketDesign = {
+  templateId?: string
+  paletteId?: string
+  panelColor?: string
+  accentColor?: string
+  backgroundColor?: string
+  textColor?: string
+}
+
+function ticketDesignFromMetadata(metadata: unknown): StoredTicketDesign | null {
+  const value = (metadata && typeof metadata === 'object' ? (metadata as Record<string, unknown>).ticketDesign : null) as StoredTicketDesign | null
+  if (!value || typeof value !== 'object') return null
+  return value
+}
+
+function ticketDateLabel(date: Date): string {
+  return date.toLocaleString(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
 export async function resendReservationCredential(params: {
   eventId: string
   ticketId: string
@@ -166,6 +192,12 @@ export async function resendReservationCredential(params: {
   const codeOf = reservationCodeOf(ticket as any)
   const shortCode = (ticket.credential as any).shortCode ?? null
   const attempt = (ticket.deliveryAttempts ?? 0) + 1
+  const previewSeats = await prisma.busSeat.findMany({
+    where: { ticketId: ticket.id },
+    select: { label: true, bus: { select: { name: true } } },
+    orderBy: { label: 'asc' },
+  }).catch(() => [] as any[])
+  const ticketDesign = ticketDesignFromMetadata(ticket.metadata)
   const delivery = await getDeliveryAdapter('EMAIL').send({
     to,
     subject: typeof tpl.subject === 'string' && tpl.subject ? tpl.subject.replace('{event}', ticket.event.name) : `Your ticket — ${ticket.event.name}`,
@@ -190,6 +222,16 @@ export async function resendReservationCredential(params: {
       bodyAr: typeof tpl.bodyAr === 'string' && tpl.bodyAr ? tpl.bodyAr.replaceAll('{event}', ticket.event.name) : 'حجزك مؤكد. يرجى إظهار رمز QR عند بوابة الدخول.',
       ticketUrl: codeOf ? new URL(`/reservation/${encodeURIComponent(codeOf)}`, config.env === 'production' && config.publicUrl.includes('localhost') ? 'https://ticketak.vercel.app' : config.publicUrl).toString() : undefined,
       footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · YOUR EXPERIENCE STARTS HERE',
+      ticketDesign,
+      ticketPreview: {
+        attendeeName: ticket.attendee.name,
+        eventName: ticket.event.name,
+        ticketTypeName: ticket.ticketType.name,
+        dateTime: ticketDateLabel(ticket.event.startAt),
+        venue: ticket.event.venueName,
+        seat: previewSeats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}`).join(', ') || null,
+        reference: codeOf ?? shortCode ?? ticket.id.slice(0, 8),
+      },
     }),
     attachments: [qrAttachment],
   })
@@ -255,6 +297,12 @@ export async function deliverReservationCredentialEmail(params: {
   const settings = ((event as any).settings ?? {}) as Record<string, any>
   const tpl = (settings.ticketEmail ?? {}) as Record<string, any>
   const eventDate = event.startAt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+  const previewSeats = await prisma.busSeat.findMany({
+    where: { ticketId: ticket.id },
+    select: { label: true, bus: { select: { name: true } } },
+    orderBy: { label: 'asc' },
+  }).catch(() => [] as any[])
+  const ticketDesign = ticketDesignFromMetadata(ticket.metadata)
   const delivery = await getDeliveryAdapter('EMAIL').send({
     to: ticket.attendee.email ?? '',
     subject: typeof tpl.subject === 'string' && tpl.subject ? tpl.subject.replaceAll('{event}', event.name) : `Your ticket — ${event.name}`,
@@ -279,6 +327,16 @@ export async function deliverReservationCredentialEmail(params: {
       bodyAr: typeof tpl.bodyAr === 'string' && tpl.bodyAr ? tpl.bodyAr.replaceAll('{event}', event.name) : `مرحباً ${ticket.attendee.name.split(' ')[0]}، يسعدنا تأكيد حجزك. تذكرتك جاهزة الآن.`,
       ticketUrl: codeOf ? new URL(`/reservation/${encodeURIComponent(codeOf)}`, config.env === 'production' && config.publicUrl.includes('localhost') ? 'https://ticketak.vercel.app' : config.publicUrl).toString() : undefined,
       footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · YOUR EXPERIENCE STARTS HERE',
+      ticketDesign,
+      ticketPreview: {
+        attendeeName: ticket.attendee.name,
+        eventName: event.name,
+        ticketTypeName: ticket.ticketType.name,
+        dateTime: ticketDateLabel(event.startAt),
+        venue: event.venueName,
+        seat: previewSeats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}`).join(', ') || null,
+        reference: codeOf ?? shortCode ?? ticket.id.slice(0, 8),
+      },
     }),
     attachments: [qrAttachment],
   })
