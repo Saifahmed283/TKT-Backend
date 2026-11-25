@@ -84,8 +84,8 @@ export async function sendMail(payload: MailPayload): Promise<MailSendResult> {
 }
 
 /**
- * Responsive bilingual confirmation email based on the TKT Figma design.
- * A table-based layout is used for compatibility with Gmail, Outlook and mobile clients.
+ * Figma-aligned, responsive bilingual ticket email.
+ * Uses presentation tables and inline styles for Gmail, Outlook and mobile clients.
  */
 export function ticketEmailShell(opts: {
   preheader: string
@@ -103,122 +103,156 @@ export function ticketEmailShell(opts: {
     Ticket: 'نوع التذكرة',
     Date: 'التاريخ والوقت',
     Venue: 'المكان',
-    Reservation: 'رقم الحجز',
-    'Ticket code': 'رمز التذكرة',
+    Reservation: 'الرقم المرجعي',
+    'Ticket code': 'رقم التذكرة',
     Seats: 'المقاعد',
     Status: 'الحالة',
+    'Payment method': 'طريقة الدفع',
+    'Payment reference': 'مرجع الدفع',
   }
 
-  const rows = opts.rows.map((row) => {
+  const rows = opts.rows.map((row, index) => {
     const ar = escapeHtml(row.labelAr ?? arabicLabels[row.label] ?? row.label)
     const en = escapeHtml(row.label.toUpperCase())
     const value = escapeHtml(row.value)
+    const border = index === opts.rows.length - 1 ? '' : 'border-bottom:1px solid #e3ddd2;'
     return `
       <tr>
-        <td class="detail-cell detail-ar" width="27%" style="padding:14px 10px;color:#77736c;font-family:Arial,sans-serif;font-size:12px;line-height:1.5;text-align:left;vertical-align:middle"><span dir="rtl">${ar}</span></td>
-        <td class="detail-cell detail-en" width="28%" style="padding:14px 10px;color:#171615;font-family:Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:.04em;line-height:1.5;text-align:left;vertical-align:middle">${en}</td>
-        <td class="detail-cell detail-value" width="45%" style="padding:14px 10px;color:#24221f;font-family:Arial,sans-serif;font-size:13px;font-weight:600;line-height:1.5;text-align:right;vertical-align:middle;overflow-wrap:anywhere">${value}</td>
+        <td class="detail-cell detail-ar" width="30%" dir="rtl" style="padding:12px 10px;color:#6d6a64;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:13px;line-height:1.6;text-align:right;vertical-align:top;${border}">${ar}</td>
+        <td class="detail-cell detail-en" width="25%" style="padding:12px 10px;color:#172033;font-family:Poppins,Arial,sans-serif;font-size:10px;font-weight:700;letter-spacing:.04em;line-height:1.6;text-align:left;vertical-align:top;${border}">${en}</td>
+        <td class="detail-cell detail-value" width="45%" style="padding:12px 10px;color:#172033;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:13px;font-weight:600;line-height:1.6;text-align:right;vertical-align:top;overflow-wrap:anywhere;word-break:break-word;${border}">${value}</td>
       </tr>`
   }).join('')
 
   const qrBlock = opts.qrCid
     ? `
-      <tr><td align="center" style="padding:26px 20px 8px">
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:340px;background:#ffffff;border:1px solid #e8e2d7;border-radius:14px">
-          <tr><td align="center" style="padding:20px 18px 8px">
-            <img src="cid:${escapeHtml(opts.qrCid)}" alt="Ticket QR code — scan at the entrance" width="190" height="190" style="display:block;width:190px;max-width:100%;height:auto;border:0;background:#ffffff" />
-          </td></tr>
-          <tr><td align="center" style="padding:8px 18px 18px;color:#8e6d36;font-family:Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;line-height:1.5">
-            <span dir="rtl" style="display:block;font-size:14px;letter-spacing:0">امسح الرمز عند الدخول</span>
-            <span style="display:block;margin-top:4px">SCAN THIS CODE AT THE ENTRANCE</span>
-          </td></tr>
-        </table>
+      <tr>
+        <td class="qr-pad" style="padding:18px;background:#faf8f4;border-radius:16px">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background:#faf8f4">
+            <tr>
+              <td class="qr-image-cell" width="148" align="center" valign="middle" style="width:148px;padding:4px 14px 4px 4px">
+                <img src="cid:${escapeHtml(opts.qrCid)}" alt="Ticket QR code — scan to verify your ticket" width="120" height="120" style="display:block;width:120px;height:120px;max-width:100%;border:0;outline:none;text-decoration:none;background:#ffffff" />
+              </td>
+              <td class="qr-copy-cell" valign="middle" style="padding:8px 12px;text-align:right">
+                <p dir="rtl" style="margin:0;color:#0b1f44;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:16px;font-weight:700;line-height:1.7">امسح الرمز للتحقق من صلاحية التذكرة</p>
+                <p style="margin:6px 0 0;color:#565e6b;font-family:Poppins,Arial,sans-serif;font-size:12px;line-height:1.6">Scan this code to verify your ticket</p>
+                <p dir="rtl" style="margin:8px 0 0;color:#8a6a35;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:11px;line-height:1.6">يرجى إظهار الرمز عند بوابة الدخول</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>`
+    : `
+      <tr><td style="padding:18px;background:#faf8f4;border-radius:16px">
+        <p dir="rtl" style="margin:0;color:#0b1f44;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:14px;line-height:1.8">سيكون رمز التذكرة متاحاً بعد إتمام إصدارها.</p>
+        <p style="margin:4px 0 0;color:#565e6b;font-family:Poppins,Arial,sans-serif;font-size:12px;line-height:1.6">Your QR ticket will appear here once it has been issued.</p>
       </td></tr>`
-    : ''
 
   const ticketUrl = safeHttpUrl(opts.ticketUrl)
   const action = ticketUrl
-    ? `<a href="${escapeHtml(ticketUrl)}" target="_blank" style="display:inline-block;padding:13px 25px;background:#c8a25c;color:#171615;text-decoration:none;font-family:Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:.04em;border-radius:10px">VIEW TICKET</a>`
-    : `<span style="display:inline-block;padding:13px 18px;color:#e8d08b;font-family:Arial,sans-serif;font-size:11px;letter-spacing:.08em">KEEP THIS EMAIL FOR ENTRY</span>`
+    ? `<a href="${escapeHtml(ticketUrl)}" target="_blank" style="display:block;padding:15px 24px;background:#c8a25c;color:#ffffff;text-decoration:none;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:16px;font-weight:700;line-height:1.5;text-align:center;border-radius:28px">عرض التذكرة&nbsp; / &nbsp;VIEW TICKET</a>`
+    : `<div style="padding:14px 20px;background:#f1ede4;color:#0b1f44;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:13px;font-weight:700;line-height:1.6;text-align:center;border-radius:28px">احتفظ بهذا البريد لإبرازه عند الدخول&nbsp; / &nbsp;KEEP THIS EMAIL FOR ENTRY</div>`
+
+  const titleAr = escapeHtml(opts.titleAr ?? 'تأكيد الحجز وإصدار التذكرة')
+  const title = escapeHtml(opts.title)
+  const bodyAr = escapeHtml(opts.bodyAr ?? 'مرحباً، شكراً لحجزك معنا. يسعدنا تأكيد مشاركتك في الحدث التالي.')
+  const body = escapeHtml(opts.body)
+  const preheader = escapeHtml(opts.preheader)
+  const footer = escapeHtml(opts.footer ?? 'Your Partner in Travel, Events & Special Occasions')
 
   return `
 <!doctype html>
-<html lang="ar">
+<html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="x-apple-disable-message-reformatting" />
   <meta name="color-scheme" content="light" />
-  <title>${escapeHtml(opts.title)}</title>
+  <title>${title}</title>
   <style>
-    body{margin:0!important;padding:0!important;background:#f1eee7;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%}
+    body{margin:0!important;padding:0!important;background:#fdfbf7;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%}
     table{border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt}
     img{border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic}
     @media only screen and (max-width:620px){
       .outer-pad{padding:12px 8px!important}
-      .email-shell{width:100%!important;max-width:100%!important;border-radius:16px!important}
-      .email-pad{padding-left:20px!important;padding-right:20px!important}
-      .detail-cell{padding:11px 5px!important;font-size:11px!important}
-      .detail-en{font-size:9px!important;letter-spacing:0!important}
+      .email-shell{width:100%!important;max-width:100%!important;border-radius:14px!important}
+      .email-pad{padding-left:18px!important;padding-right:18px!important}
+      .header-pad{padding:24px 20px!important}
+      .detail-cell{padding:10px 5px!important;font-size:11px!important}
+      .detail-en{font-size:8px!important;letter-spacing:0!important}
       .detail-value{font-size:12px!important}
-      .qr-pad{padding-left:14px!important;padding-right:14px!important}
-      .footer-pad{padding-left:20px!important;padding-right:20px!important}
+      .qr-pad{padding:12px!important}
+      .qr-image-cell{width:112px!important;padding-right:4px!important}
+      .qr-image-cell img{width:96px!important;height:96px!important}
+      .qr-copy-cell{padding:4px!important}
+      .footer-pad{padding-left:18px!important;padding-right:18px!important}
     }
     @media only screen and (max-width:380px){
-      .detail-cell{padding:9px 3px!important}
+      .detail-cell{padding:8px 3px!important}
       .detail-ar{font-size:10px!important}
-      .detail-en{font-size:8px!important}
+      .detail-en{font-size:7px!important}
       .detail-value{font-size:11px!important}
+      .qr-image-cell{width:96px!important}
+      .qr-image-cell img{width:82px!important;height:82px!important}
     }
   </style>
 </head>
-<body style="margin:0;padding:0;background:#f1eee7">
-  <div style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;mso-hide:all">${escapeHtml(opts.preheader)}</div>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f1eee7" style="width:100%;background:#f1eee7">
-    <tr><td class="outer-pad" align="center" style="padding:28px 14px">
-      <table class="email-shell" role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:#faf8f4;border:1px solid #e7e0d5;border-radius:20px;overflow:hidden">
-        <tr><td bgcolor="#1b1917" style="padding:30px 34px 27px;background:#1b1917">
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
-            <td valign="middle" style="text-align:left">
-              <div style="color:#faf8f4;font-family:Arial,sans-serif;font-size:34px;font-weight:800;letter-spacing:.08em;line-height:1">TKT</div>
-              <div dir="rtl" style="margin-top:12px;color:#e8d08b;font-family:Arial,sans-serif;font-size:15px;line-height:1.4">تجربة تستحق التذكر</div>
-              <div style="margin-top:4px;color:#e7e1d7;font-family:Arial,sans-serif;font-size:10px;letter-spacing:.08em;line-height:1.4">AN EXPERIENCE WORTH REMEMBERING</div>
-            </td>
-            <td width="100" align="right" valign="middle"><div style="display:inline-block;width:66px;height:66px;border:1px solid #c8a25c;border-radius:50%;box-sizing:border-box;text-align:center;line-height:64px;color:#c8a25c;font-family:Arial,sans-serif;font-size:25px">✦</div></td>
-          </tr></table>
+<body style="margin:0;padding:0;background:#fdfbf7">
+  <div style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;mso-hide:all">${preheader}</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#fdfbf7" style="width:100%;background:#fdfbf7">
+    <tr><td class="outer-pad" align="center" style="padding:30px 14px">
+      <table class="email-shell" role="presentation" width="720" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:720px;background:#fdfbf7;border:1px solid #e8e3d9;border-radius:16px;overflow:hidden">
+        <tr>
+          <td class="header-pad" bgcolor="#0b0b0c" style="padding:28px 36px;background:#0b0b0c;border-radius:16px 16px 0 0">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td width="112" valign="middle" align="left" style="width:112px;text-align:left">
+                  <div dir="ltr" style="color:#c8a25c;font-family:Italiana,Georgia,serif;font-size:36px;font-weight:400;letter-spacing:.04em;line-height:1">TKT</div>
+                </td>
+                <td valign="middle" align="right">
+                  <p dir="rtl" style="margin:0;color:#ffffff;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:12px;line-height:1.7">رحلتك تبدأ معنا</p>
+                  <p dir="ltr" style="margin:2px 0 0;color:#ffffff;font-family:Poppins,Arial,sans-serif;font-size:10px;letter-spacing:.08em;line-height:1.5">YOUR EXPERIENCE STARTS HERE</p>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <tr><td class="email-pad" style="padding:30px 36px 22px;background:#fdfbf7">
+          <h1 dir="rtl" style="margin:0;color:#0b1f44;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:27px;font-weight:700;line-height:1.5">${titleAr}</h1>
+          <p dir="ltr" style="margin:2px 0 0;color:#c8a25c;font-family:Poppins,Arial,sans-serif;font-size:17px;font-weight:700;line-height:1.5">${title}</p>
+          <p dir="rtl" style="margin:22px 0 0;color:#172033;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:16px;line-height:1.9">${bodyAr}</p>
+          <p dir="ltr" style="margin:8px 0 0;color:#172033;font-family:Poppins,Arial,sans-serif;font-size:13px;line-height:1.8">${body}</p>
         </td></tr>
-        <tr><td class="email-pad" style="padding:34px 36px 8px;background:#faf8f4">
-          <h1 dir="rtl" style="margin:0;color:#171615;font-family:Arial,sans-serif;font-size:26px;font-weight:800;line-height:1.35">${escapeHtml(opts.titleAr ?? 'تم تأكيد حجزك بنجاح!')}</h1>
-          <p style="margin:2px 0 0;color:#a27b3f;font-family:Arial,sans-serif;font-size:18px;font-weight:700;line-height:1.45">${escapeHtml(opts.title)}</p>
-          <p dir="rtl" style="margin:28px 0 0;color:#5f5a53;font-family:Arial,sans-serif;font-size:14px;line-height:1.9">${escapeHtml(opts.bodyAr ?? 'يسعدنا تأكيد حجزك. تذكرتك جاهزة الآن.')}</p>
-          <p style="margin:2px 0 0;color:#777169;font-family:Arial,sans-serif;font-size:13px;line-height:1.7">${escapeHtml(opts.body)}</p>
-        </td></tr>
-        <tr><td class="email-pad" style="padding:28px 36px 0;background:#faf8f4">
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f0ece3" style="width:100%;background:#f0ece3;border-radius:16px">
-            <tr><td style="padding:22px 20px 4px">
-              <div dir="rtl" style="color:#171615;font-family:Arial,sans-serif;font-size:18px;font-weight:800;line-height:1.4">تفاصيل الحجز</div>
-              <div style="margin-top:3px;color:#a27b3f;font-family:Arial,sans-serif;font-size:10px;font-weight:700;letter-spacing:.1em">BOOKING DETAILS</div>
+
+        <tr><td class="email-pad" style="padding:8px 36px 20px;background:#fdfbf7">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f1ede4" style="width:100%;background:#f1ede4;border-radius:16px">
+            <tr><td style="padding:20px 20px 8px">
+              <h2 dir="rtl" style="margin:0;color:#0b1f44;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:17px;font-weight:700;line-height:1.6">تفاصيل الحجز</h2>
+              <p dir="ltr" style="margin:0;color:#0b1f44;font-family:Poppins,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:.06em;line-height:1.6">BOOKING DETAILS</p>
             </td></tr>
-            <tr><td style="padding:8px 14px 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${rows}</table></td></tr>
+            <tr><td style="padding:4px 14px 14px">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%">${rows}</table>
+            </td></tr>
           </table>
         </td></tr>
-        <tr><td class="qr-pad" style="padding:0 36px;background:#faf8f4">${qrBlock}</td></tr>
-        <tr><td class="email-pad" style="padding:24px 36px 0;background:#faf8f4">
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#11100f" style="width:100%;background:#11100f;border-radius:15px"><tr>
-            <td style="padding:20px 18px" valign="middle">
-              <div dir="rtl" style="color:#e8d08b;font-family:Arial,sans-serif;font-size:15px;font-weight:700;line-height:1.5">تذكرتك جاهزة — احتفظ بهذا البريد</div>
-              <div style="margin-top:5px;color:#f1eee7;font-family:Arial,sans-serif;font-size:12px;line-height:1.5">Your ticket is ready. Keep this email for entry.</div>
-            </td>
-            <td width="145" align="center" valign="middle" style="padding:10px 12px">${action}</td>
-          </tr></table>
+
+        <tr><td class="email-pad" style="padding:0 36px 18px;background:#fdfbf7">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%">${qrBlock}</table>
         </td></tr>
-        <tr><td class="email-pad" style="padding:30px 36px 24px;background:#faf8f4">
-          <p dir="rtl" style="margin:0;color:#777169;font-family:Arial,sans-serif;font-size:13px;line-height:1.8">شكرًا لاختيارك TKT. نتمنى لك تجربة رائعة.</p>
-          <p style="margin:3px 0 0;color:#777169;font-family:Arial,sans-serif;font-size:12px;line-height:1.7">Thank you for choosing TKT. Enjoy your experience.</p>
+
+        <tr><td class="email-pad" style="padding:0 36px 26px;background:#fdfbf7">
+          ${action}
         </td></tr>
-        <tr><td class="footer-pad" style="padding:0 36px 27px;background:#faf8f4">
-          <div style="height:1px;background:#e7e0d5;line-height:1px;font-size:1px">&nbsp;</div>
-          <p style="margin:18px 0 0;color:#a27b3f;font-family:Arial,sans-serif;font-size:10px;letter-spacing:.08em;line-height:1.5">${escapeHtml(opts.footer ?? 'TKT · YOUR EXPERIENCE STARTS HERE')}</p>
+
+        <tr><td class="email-pad" style="padding:0 36px 18px;background:#fdfbf7">
+          <p dir="rtl" style="margin:0;color:#0b1f44;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:14px;font-weight:700;line-height:1.8">TKT لتنظيم الرحلات والفعاليات والمناسبات</p>
+          <p dir="ltr" style="margin:3px 0 0;color:#687080;font-family:Poppins,Arial,sans-serif;font-size:12px;line-height:1.7">${footer}</p>
+        </td></tr>
+
+        <tr><td class="footer-pad" style="padding:0 36px 26px;background:#fdfbf7">
+          <div style="height:1px;background:#e8e3d9;line-height:1px;font-size:1px">&nbsp;</div>
+          <p dir="rtl" style="margin:14px 0 0;color:#8b8e96;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:10px;line-height:1.6">تم إرسال هذا البريد لتأكيد تفاصيل حجزك مع TKT.</p>
         </td></tr>
       </table>
     </td></tr>
