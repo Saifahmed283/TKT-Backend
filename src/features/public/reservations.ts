@@ -90,8 +90,11 @@ export async function reservationRoutes(app: FastifyInstance) {
     if (seatIds.length && (!body.busId || !bus || bus.eventId !== eventId || !bus.isActive)) {
       throw errors.badRequest('Valid bus is required for seat reservations')
     }
-    const busSeatUnitPriceForPricing = seatIds.length ? Number(bus?.seatPrice ?? 0) : 0
-    let computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0) + (seatIds.length * (Number.isFinite(busSeatUnitPriceForPricing) ? busSeatUnitPriceForPricing : 0))
+    // A transport-included ticket is a fixed package price. Seat selection
+    // chooses the passenger's seat; it must not add a second bus-seat charge.
+    const busSeatUnitPriceForPricing = seatIds.length && !transportIncluded ? Number(bus?.seatPrice ?? 0) : 0
+    let computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0)
+      + (seatIds.length * (Number.isFinite(busSeatUnitPriceForPricing) ? busSeatUnitPriceForPricing : 0))
     const clientPaymentAmount = body.paymentAmount == null ? null : Number(body.paymentAmount)
     if (paidAmountMismatch(clientPaymentAmount, computedTotalForPricing)) {
       throw errors.badRequest('Payment amount does not match ticket and seat total')
@@ -176,7 +179,7 @@ export async function reservationRoutes(app: FastifyInstance) {
           })
           if (!lockedBus) throw errors.badRequest('Valid bus is required for seat reservations')
 
-          const lockedSeatPrice = Number(lockedBus.seatPrice ?? 0)
+          const lockedSeatPrice = transportIncluded ? 0 : Number(lockedBus.seatPrice ?? 0)
           computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0)
             + (Number.isFinite(lockedSeatPrice) ? lockedSeatPrice : 0)
           if (paidAmountMismatch(clientPaymentAmount, computedTotalForPricing)) {
@@ -248,6 +251,7 @@ export async function reservationRoutes(app: FastifyInstance) {
               seatIds,
               notes: body.notes?.trim() || null,
               transportIncluded,
+              ...(body.ticketDesign ? { ticketDesign: body.ticketDesign } : {}),
             },
           },
         })
