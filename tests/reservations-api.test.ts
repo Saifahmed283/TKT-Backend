@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { startTestApp, stopTestApp, app, registerUser, createOrg, auth, expectStatus, assignStaff, login } from './helpers.js'
+import { getDeliveryAdapter } from '../src/lib/delivery.js'
 import { prisma } from '../src/lib/db.js'
 import { runWithDbContext } from '../src/lib/dbContext.js'
 
@@ -139,6 +140,90 @@ describe('public reservation integrity', () => {
       }),
     )
     expect(count).toBe(1)
+  })
+
+  it('returns the QR without waiting for SMTP, then exposes a real status lookup', async () => {
+    const admin = await registerUser('ResLatency')
+    const orgId = await createOrg(admin.token, `Org ResLatency ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event ResLatency ${Date.now()}`)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Free Fast', 0)
+    const email = `latency-${Date.now()}@test.tkt`
+    // Block SMTP indefinitely: a response that waits for email can never pass.
+    let releaseSend!: (result: { ok: boolean; provider: string; providerMessageId: string | null; error: string | null }) => void
+    const sendSpy = vi.spyOn(getDeliveryAdapter('EMAIL'), 'send').mockImplementation(
+      () => new Promise((resolve) => { releaseSend = resolve }),
+    )
+
+    try {
+      const reserve = await app.inject({
+        method: 'POST',
+        url: `/public/events/${eventId}/reservations`,
+        payload: { name: 'Fast Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+      })
+      expectStatus(reserve, 201)
+      expect(reserve.json().data.qr).toBeTruthy()
+
+      const { reservationCode, ticketId, attendeeId } = reserve.json().data
+      const status = await app.inject({
+        method: 'GET',
+        url: `/public/events/${eventId}/reservations/status?code=${reservationCode}`,
+      })
+      expectStatus(status, 200)
+      expect(status.json().data.ticketId).toBe(ticketId)
+      expect(status.json().data.attendeeId).toBe(attendeeId)
+      expect(status.json().data.qr).toBeTruthy()
+
+      await vi.waitFor(() => expect(sendSpy).toHaveBeenCalled(), { timeout: 10_000 })
+      releaseSend({ ok: true, provider: 'smtp', providerMessageId: null, error: null })
+      await vi.waitFor(async () => {
+        const attempts = await runWithDbContext({ isInternal: true }, () =>
+          prisma.credentialDeliveryAttempt.count({ where: { eventId, ticketId } }),
+        )
+        expect(attempts).toBeGreaterThan(0)
+      }, { timeout: 20_000 })
+    } finally {
+      sendSpy.mockRestore()
+    }
+  })
+
+  it('resends a ticket publicly only for a matching reservation code and email', async () => {
+    const admin = await registerUser('ResPublicResend')
+    const orgId = await createOrg(admin.token, `Org ResPublicResend ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event ResPublicResend ${Date.now()}`)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Free Resend', 0)
+    const email = `resend-${Date.now()}@test.tkt`
+
+    const reserve = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: { name: 'Resend Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+    })
+    expectStatus(reserve, 201)
+    const reservationCode = reserve.json().data.reservationCode as string
+
+    const wrongEmail = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations/resend`,
+      payload: { reservationCode, email: `someone-else-${Date.now()}@test.tkt` },
+    })
+    expectStatus(wrongEmail, 404)
+
+    const wrongCode = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations/resend`,
+      payload: { reservationCode: 'TKT-NOT-REAL', email },
+    })
+    expectStatus(wrongCode, 404)
+
+    const resend = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations/resend`,
+      payload: { reservationCode, email },
+    })
+    expectStatus(resend, 200)
+    expect(resend.json().data).toHaveProperty('deliveryStatus')
   })
 
   it('decision endpoint is idempotent and resend returns delivery history', async () => {

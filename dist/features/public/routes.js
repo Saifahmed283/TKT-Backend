@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/db.js';
 import { errors } from '../../lib/errors.js';
-import { issueReservationCredential, reservationApprovalOf, reservationCodeOf, reservationPaymentOf, normalizeReservationEmail, normalizeReservationPhone, reservationStatePatch, } from '../reservations/service.js';
+import { deliverReservationCredentialEmail, issueReservationCredential, resendReservationCredential, reservationApprovalOf, reservationCodeOf, reservationPaymentOf, normalizeReservationEmail, normalizeReservationPhone, reservationStatePatch, } from '../reservations/service.js';
 import { sendMail, ticketEmailShell } from '../../lib/mailer.js';
 import { logActivity } from '../../lib/activity.js';
 import { publish, channelFor } from '../../lib/realtime.js';
@@ -11,11 +11,25 @@ import { writeAudit } from '../../lib/audit.js';
 import { AuditActions } from '../../lib/audit-actions.js';
 import { canRedeemAccessCode, normalizeAccessCode, redeemAccessCode } from '../access-codes/service.js';
 import { dispatchEventWebhooks } from '../integrations/dispatch.js';
-import { updateDbContext } from '../../lib/dbContext.js';
+import { runWithIsolatedDbContext, updateDbContext } from '../../lib/dbContext.js';
 // ─────────────────────────────────────────────────────────────
 // Prize wheel — segment order must match the frontend wheel
 // render order (index is used to land the animation).
 // ─────────────────────────────────────────────────────────────
+// Request-scoped state for the reservation latency log and post-response work.
+// WeakMaps keep this off the request object while letting route hooks share it.
+const reservationStartedAt = new WeakMap();
+const reservationBackground = new WeakMap();
+/**
+ * Queue work for the route's onResponse hook. Running it there (instead of
+ * inline) keeps it off the HTTP response path *and* outside the request's
+ * database transaction, which is already committed by that point.
+ */
+function afterResponse(req, label, context, work) {
+    const queue = reservationBackground.get(req) ?? [];
+    queue.push({ label, context, work });
+    reservationBackground.set(req, queue);
+}
 const WHEEL_SEGMENTS = [
     { reward: 'FIFTEEN_OFF', label: '15% off your ticket', weight: 30 },
     { reward: 'TWENTY_FIVE_OFF', label: '25% off your ticket', weight: 25 },
@@ -290,6 +304,19 @@ export async function publicRoutes(app) {
     // ── Public reservation ────────────────────────────────────
     app.post('/events/:eventId/reservations', {
         config: { rateLimit: { max: 5, timeWindow: '10 minutes' } },
+        onRequest: async (req) => { reservationStartedAt.set(req, Date.now()); },
+        onResponse: async (req, reply) => {
+            const started = reservationStartedAt.get(req);
+            const { eventId } = req.params;
+            reservationStartedAt.delete(req);
+            req.log.info({ eventId, status: reply.statusCode, duration_ms: started == null ? null : Date.now() - started }, 'public.reservation completed');
+            const tasks = reservationBackground.get(req) ?? [];
+            reservationBackground.delete(req);
+            for (const task of tasks) {
+                void runWithIsolatedDbContext({ isInternal: true, ...task.context }, task.work)
+                    .catch((err) => req.log.error({ err }, `public.reservation ${task.label} failed`));
+            }
+        },
     }, async (req, reply) => {
         const { eventId } = req.params;
         const body = reservationSchema.parse(req.body);
@@ -501,55 +528,61 @@ export async function publicRoutes(app) {
             }
             throw err;
         }
-        // Free tickets → instant QR credential + email. Paid → pending approval/payment review.
+        // Free tickets → instant QR credential. Paid → pending approval/payment review.
+        // Email delivery, delivery-attempt logging and audit writes are deliberately
+        // off the HTTP response path: SMTP latency must not block "Confirm reservation".
+        // TODO: move these to a durable queue (BullMQ etc.) — the fire-and-forget
+        // helpers below are intentionally simple and each owns its error boundary.
         let qr = null;
         if (paid) {
             const submittedPayment = Boolean(body.paymentReference || body.paymentProofUrl || paymentProvider);
-            const sent = await sendMail({
-                to: body.email,
-                subject: `Reservation received — ${event.name}`,
-                html: ticketEmailShell({
-                    preheader: `Your reservation for ${event.name} is ${submittedPayment ? 'awaiting payment review' : 'awaiting approval'}`,
-                    title: 'Reservation received',
-                    body: `Your reservation for <strong>${event.name}</strong> is in. ${submittedPayment ? 'Your payment proof was received and will be reviewed by the event team.' : 'The event team will review it shortly.'} Your QR ticket arrives by email once approved.`,
-                    rows: [
-                        { label: 'Event', value: event.name },
-                        { label: 'Ticket', value: ticketType.name },
-                        { label: 'Reservation', value: code },
-                        ...(reservedSeats.length ? [{ label: 'Seats', value: reservedSeats.map(s => s.label).join(', ') }] : []),
-                        ...(paymentProvider ? [{ label: 'Payment method', value: paymentProvider.name }] : []),
-                        ...(body.paymentReference?.trim() ? [{ label: 'Payment reference', value: body.paymentReference.trim() }] : []),
-                        { label: 'Status', value: submittedPayment ? 'Awaiting payment review' : 'Awaiting approval' },
-                    ],
-                    footer: 'TKT · Control center for live events',
-                }),
-            });
-            await prisma.ticket.update({
-                where: { id: ticket.id },
-                data: { deliveryStatus: sent.ok ? 'SENT' : 'FAILED', lastDeliveryAt: sent.ok ? new Date() : undefined, deliveryAttempts: { increment: 1 } },
-            }).catch(() => { });
-            await prisma.credentialDeliveryAttempt.create({
-                data: {
-                    eventId,
-                    ticketId: ticket.id,
-                    channel: 'EMAIL',
-                    status: sent.ok ? 'SENT' : 'FAILED',
-                    recipient: body.email,
-                    provider: 'smtp',
-                    providerMessageId: sent.messageId ?? null,
-                    error: sent.error ?? null,
-                    attempt: 1,
-                    metadata: { source: 'public_reservation_pending', submittedPayment },
-                },
-            }).catch(() => { });
-            if (submittedPayment) {
-                await writeAudit({
-                    organizationId: event.orgId, eventId, actorUserId: null,
-                    action: AuditActions.PAYMENT_SUBMITTED, resourceType: 'ticket', resourceId: ticket.id,
-                    newValue: { paymentProviderId: paymentProvider?.id ?? null, paymentReference: body.paymentReference?.trim() || null, hasProof: Boolean(body.paymentProofUrl) },
-                    sourceIp: req.ip,
+            afterResponse(req, 'pending email', { eventId, orgId: event.orgId ?? undefined }, async () => {
+                const sent = await sendMail({
+                    to: body.email,
+                    subject: `Reservation received — ${event.name}`,
+                    html: ticketEmailShell({
+                        preheader: `Your reservation for ${event.name} is ${submittedPayment ? 'awaiting payment review' : 'awaiting approval'}`,
+                        title: 'Reservation received',
+                        body: `Your reservation for <strong>${event.name}</strong> is in. ${submittedPayment ? 'Your payment proof was received and will be reviewed by the event team.' : 'The event team will review it shortly.'} Your QR ticket arrives by email once approved.`,
+                        rows: [
+                            { label: 'Event', value: event.name },
+                            { label: 'Ticket', value: ticketType.name },
+                            { label: 'Reservation', value: code },
+                            ...(reservedSeats.length ? [{ label: 'Seats', value: reservedSeats.map(s => s.label).join(', ') }] : []),
+                            ...(paymentProvider ? [{ label: 'Payment method', value: paymentProvider.name }] : []),
+                            ...(body.paymentReference?.trim() ? [{ label: 'Payment reference', value: body.paymentReference.trim() }] : []),
+                            { label: 'Status', value: submittedPayment ? 'Awaiting payment review' : 'Awaiting approval' },
+                        ],
+                        footer: 'TKT · Control center for live events',
+                    }),
+                });
+                await prisma.ticket.update({
+                    where: { id: ticket.id },
+                    data: { deliveryStatus: sent.ok ? 'SENT' : 'FAILED', lastDeliveryAt: sent.ok ? new Date() : undefined, deliveryAttempts: { increment: 1 } },
                 }).catch(() => { });
-            }
+                await prisma.credentialDeliveryAttempt.create({
+                    data: {
+                        eventId,
+                        ticketId: ticket.id,
+                        channel: 'EMAIL',
+                        status: sent.ok ? 'SENT' : 'FAILED',
+                        recipient: body.email,
+                        provider: 'smtp',
+                        providerMessageId: sent.messageId ?? null,
+                        error: sent.error ?? null,
+                        attempt: 1,
+                        metadata: { source: 'public_reservation_pending', submittedPayment },
+                    },
+                }).catch(() => { });
+                if (submittedPayment) {
+                    await writeAudit({
+                        organizationId: event.orgId, eventId, actorUserId: null,
+                        action: AuditActions.PAYMENT_SUBMITTED, resourceType: 'ticket', resourceId: ticket.id,
+                        newValue: { paymentProviderId: paymentProvider?.id ?? null, paymentReference: body.paymentReference?.trim() || null, hasProof: Boolean(body.paymentProofUrl) },
+                        sourceIp: req.ip,
+                    }).catch(() => { });
+                }
+            });
         }
         else {
             const reservationTicket = {
@@ -565,10 +598,18 @@ export async function publicRoutes(app) {
                 ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
             };
             const issued = await issueReservationCredential({
-                event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName },
+                event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
                 ticket: reservationTicket,
+                sendEmail: false,
             });
             qr = issued.qrCode;
+            afterResponse(req, 'credential email', { eventId, orgId: event.orgId ?? undefined }, async () => {
+                await deliverReservationCredentialEmail({
+                    event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
+                    ticket: reservationTicket,
+                    credential: issued.credential,
+                });
+            });
         }
         const busSeatUnitPrice = reservedSeats.length ? Number(bus?.seatPrice ?? 0) : 0;
         const computedTotal = (Number(ticketType.price ?? 0) || 0) + (reservedSeats.length * (Number.isFinite(busSeatUnitPrice) ? busSeatUnitPrice : 0));
@@ -681,7 +722,9 @@ export async function publicRoutes(app) {
     });
     // ── Reservation status lookup (re-fetch QR after approval) ──
     app.get('/events/:eventId/reservations/status', {
-        config: { rateLimit: { max: 5, timeWindow: '10 minutes' } },
+        // The modal auto-polls every 5s while pending (~120 calls / 10 min), then
+        // stops at a decision or when the modal closes.
+        config: { rateLimit: { max: 120, timeWindow: '10 minutes' } },
     }, async (req) => {
         const { eventId } = req.params;
         const { code } = req.query;
@@ -696,7 +739,7 @@ export async function publicRoutes(app) {
                 ],
             },
             include: {
-                attendee: { select: { name: true, email: true } },
+                attendee: { select: { id: true, name: true, email: true } },
                 ticketType: { select: { name: true, price: true } },
                 paymentProvider: { select: { id: true, name: true } },
                 credential: { select: { id: true, code: true, status: true } },
@@ -707,6 +750,8 @@ export async function publicRoutes(app) {
         return {
             data: {
                 reservationCode: reservationCodeOf(ticket) ?? code,
+                ticketId: ticket.id,
+                attendeeId: ticket.attendee.id,
                 approval: reservationApprovalOf(ticket),
                 paymentStatus: reservationPaymentOf(ticket),
                 paymentProvider: ticket.paymentProvider ?? null,
@@ -719,6 +764,47 @@ export async function publicRoutes(app) {
                 attendeeName: ticket.attendee.name,
                 qr: ticket.credential?.code ?? null,
                 seats: await prisma.busSeat.findMany({ where: { ticketId: ticket.id }, select: { id: true, label: true, busId: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } }).catch(() => []),
+            },
+        };
+    });
+    // ── Public ticket resend (duplicate-reservation recovery) ───
+    // Deliberately keyed by reservation code + email, not a ticket id: a public
+    // caller has neither a session nor a ticket id, and must not be able to
+    // enumerate other attendees' reservations.
+    app.post('/events/:eventId/reservations/resend', {
+        config: { rateLimit: { max: 3, timeWindow: '15 minutes' } },
+    }, async (req) => {
+        const { eventId } = req.params;
+        const body = z.object({ reservationCode: z.string().min(3), email: z.string().email() }).parse(req.body);
+        const code = body.reservationCode.trim();
+        const emailNorm = normalizeReservationEmail(body.email);
+        if (!emailNorm)
+            throw errors.badRequest('Email is required');
+        const ticket = await prisma.ticket.findFirst({
+            where: {
+                eventId,
+                reservationEmail: emailNorm,
+                OR: [
+                    { reservationCode: code },
+                    { metadata: { path: ['reservationCode'], equals: code } },
+                ],
+            },
+            select: { id: true },
+        });
+        // Same response for unknown code and unknown email — no existence leak.
+        if (!ticket)
+            throw errors.notFound('Reservation not found');
+        const result = await resendReservationCredential({
+            eventId,
+            ticketId: ticket.id,
+            actorUserId: null,
+            actorName: 'Public reservation',
+            toEmail: emailNorm,
+        });
+        return {
+            data: {
+                ok: result.deliveryOk,
+                deliveryStatus: result.ticket.deliveryStatus,
             },
         };
     });

@@ -136,7 +136,7 @@ async function recordDeliveryAttempt(input: DeliveryRecordInput) {
 export async function resendReservationCredential(params: {
   eventId: string
   ticketId: string
-  actorUserId: string
+  actorUserId: string | null
   actorName: string
   toEmail?: string
 }): Promise<{ ticket: any; credential: any; deliveryOk: boolean }> {
@@ -231,8 +231,103 @@ export async function resendReservationCredential(params: {
 }
 
 /**
+ * Email an already-minted credential and record the delivery attempt.
+ * Split out of issueReservationCredential so the public reservation endpoint
+ * can mint the QR synchronously and hand the SMTP round-trip to a
+ * fire-and-forget task. TODO: replace that pattern with a durable queue.
+ */
+export async function deliverReservationCredentialEmail(params: {
+  event: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; venueName: string | null; settings?: unknown }
+  ticket: ReservationTicket
+  credential: { id: string; code: string; shortCode?: string | null }
+  issuerUserId?: string | null
+}): Promise<boolean> {
+  const { event, ticket, credential, issuerUserId = null } = params
+  const codeOf = reservationCodeOf(ticket)
+  const shortCode = credential.shortCode ?? null
+  const qr = await qrDataUrl(credential.code).catch(() => null)
+  const attempt = ((ticket as any).deliveryAttempts ?? 0) + 1
+  const settings = ((event as any).settings ?? {}) as Record<string, any>
+  const tpl = (settings.ticketEmail ?? {}) as Record<string, any>
+  const eventDate = event.startAt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+  const delivery = await getDeliveryAdapter('EMAIL').send({
+    to: ticket.attendee.email ?? '',
+    subject: typeof tpl.subject === 'string' && tpl.subject ? tpl.subject.replaceAll('{event}', event.name) : `Your ticket — ${event.name}`,
+    html: ticketEmailShell({
+      preheader: typeof tpl.preheader === 'string' && tpl.preheader ? tpl.preheader.replaceAll('{event}', event.name) : `Ticket for ${event.name} — present your QR at check-in`,
+      title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replaceAll('{event}', event.name) : `You're in, ${ticket.attendee.name.split(' ')[0]}`,
+      body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replaceAll('{event}', `<strong>${event.name}</strong>`) : `Your reservation for <strong>${event.name}</strong> is confirmed. Show this QR at the gate — it is signed, single-use and cannot be forged.`,
+      rows: [
+        { label: 'Event', value: event.name },
+        { label: 'Ticket', value: ticket.ticketType.name },
+        { label: 'Date', value: eventDate },
+        { label: 'Venue', value: event.venueName ?? 'TBA' },
+        ...(codeOf ? [{ label: 'Reservation', value: codeOf }] : []),
+        ...(shortCode ? [{ label: 'Ticket code', value: shortCode }] : []),
+        ...await (async () => {
+          const seats = await prisma.busSeat.findMany({ where: { ticketId: ticket.id }, select: { label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } }).catch(() => [] as any[])
+          return seats.length ? [{ label: 'Seats', value: seats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}${s.passengerName ? ` (${s.passengerName})` : ''}`).join(', ') }] : []
+        })(),
+      ],
+      qrDataUrl: qr,
+      footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · Control center for live events',
+    }),
+  })
+
+  const deliveryOk = delivery.ok
+  await prisma.ticket.update({
+    where: { id: ticket.id },
+    data: {
+      deliveryStatus: deliveryOk ? 'SENT' : 'FAILED',
+      lastDeliveryAt: deliveryOk ? new Date() : undefined,
+      deliveryAttempts: { increment: 1 },
+      deliveryChannel: 'EMAIL',
+    },
+  }).catch(() => {})
+
+  await recordDeliveryAttempt({
+    eventId: event.id,
+    ticketId: ticket.id,
+    credentialId: credential.id,
+    channel: 'EMAIL',
+    status: deliveryOk ? 'SENT' : 'FAILED',
+    recipient: ticket.attendee.email ?? null,
+    provider: delivery.provider,
+    providerMessageId: delivery.providerMessageId ?? null,
+    error: delivery.error ?? null,
+    attempt,
+    metadata: { source: 'reservation_issue' },
+    createdById: issuerUserId,
+  })
+
+  await writeAudit({
+    organizationId: event.orgId,
+    eventId: event.id,
+    actorUserId: issuerUserId,
+    action: deliveryOk ? AuditActions.CREDENTIAL_DELIVERY_SENT : AuditActions.CREDENTIAL_DELIVERY_FAILED,
+    resourceType: 'ticket',
+    resourceId: ticket.id,
+    newValue: { channel: 'EMAIL', credentialId: credential.id },
+  })
+
+  // Issuance audit + webhook live here too: the public reservation path calls
+  // this helper after the HTTP response, so neither write blocks the attendee.
+  await writeAudit({
+    organizationId: event.orgId,
+    eventId: event.id,
+    actorUserId: issuerUserId,
+    action: AuditActions.CREDENTIAL_ISSUED_RESERVATION,
+    resourceType: 'credential',
+    resourceId: credential.id,
+    newValue: { attendeeId: ticket.attendee.id, ticketId: ticket.id, channel: 'public', deliveryOk },
+  })
+  void dispatchEventWebhooks(event.id, 'credential.issued', { ticketId: ticket.id, credentialId: credential.id, attendeeId: ticket.attendee.id, deliveryOk })
+  return deliveryOk
+}
+
+/**
  * Mint a signed TKT1 credential for a reservation ticket and email the
- * QR ticket to the attendee. Idempotent per ticket.
+ * QR ticket to the attendee when sendEmail is true. Idempotent per ticket.
  */
 export async function issueReservationCredential(params: {
   event: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; venueName: string | null; settings?: unknown }
@@ -286,86 +381,15 @@ export async function issueReservationCredential(params: {
   const code = credentialCode.encode(payload)
   const final = await prisma.credential.update({ where: { id: credential.id }, data: { code } })
 
-  let deliveryOk = false
   if (sendEmail) {
-    const codeOf = reservationCodeOf(ticket)
-    const qr = await qrDataUrl(code).catch(() => null)
-    const attempt = ((ticket as any).deliveryAttempts ?? 0) + 1
-    const settings = ((event as any).settings ?? {}) as Record<string, any>
-    const tpl = (settings.ticketEmail ?? {}) as Record<string, any>
-    const eventDate = event.startAt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-    const delivery = await getDeliveryAdapter('EMAIL').send({
-      to: ticket.attendee.email ?? '',
-      subject: typeof tpl.subject === 'string' && tpl.subject ? tpl.subject.replaceAll('{event}', event.name) : `Your ticket — ${event.name}`,
-      html: ticketEmailShell({
-        preheader: typeof tpl.preheader === 'string' && tpl.preheader ? tpl.preheader.replaceAll('{event}', event.name) : `Ticket for ${event.name} — present your QR at check-in`,
-        title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replaceAll('{event}', event.name) : `You're in, ${ticket.attendee.name.split(' ')[0]}`,
-        body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replaceAll('{event}', `<strong>${event.name}</strong>`) : `Your reservation for <strong>${event.name}</strong> is confirmed. Show this QR at the gate — it is signed, single-use and cannot be forged.`,
-        rows: [
-          { label: 'Event', value: event.name },
-          { label: 'Ticket', value: ticket.ticketType.name },
-          { label: 'Date', value: eventDate },
-          { label: 'Venue', value: event.venueName ?? 'TBA' },
-          ...(codeOf ? [{ label: 'Reservation', value: codeOf }] : []),
-          ...(shortCode ? [{ label: 'Ticket code', value: shortCode }] : []),
-          ...await (async () => {
-            const seats = await prisma.busSeat.findMany({ where: { ticketId: ticket.id }, select: { label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } }).catch(() => [] as any[])
-            return seats.length ? [{ label: 'Seats', value: seats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}${s.passengerName ? ` (${s.passengerName})` : ''}`).join(', ') }] : []
-          })(),
-        ],
-        qrDataUrl: qr,
-        footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · Control center for live events',
-      }),
-    })
-    deliveryOk = delivery.ok
-
-    await prisma.ticket.update({
-      where: { id: ticket.id },
-      data: {
-        deliveryStatus: deliveryOk ? 'SENT' : 'FAILED',
-        lastDeliveryAt: deliveryOk ? new Date() : undefined,
-        deliveryAttempts: { increment: 1 },
-        deliveryChannel: 'EMAIL',
-      },
-    }).catch(() => {})
-
-    await recordDeliveryAttempt({
-      eventId: event.id,
-      ticketId: ticket.id,
-      credentialId: credential.id,
-      channel: 'EMAIL',
-      status: deliveryOk ? 'SENT' : 'FAILED',
-      recipient: ticket.attendee.email ?? null,
-      provider: delivery.provider,
-      providerMessageId: delivery.providerMessageId ?? null,
-      error: delivery.error ?? null,
-      attempt,
-      metadata: { source: 'reservation_issue' },
-      createdById: issuerUserId ?? null,
+    await deliverReservationCredentialEmail({
+      event,
+      ticket,
+      credential: { id: credential.id, code, shortCode },
+      issuerUserId: issuerUserId ?? null,
     })
   }
 
-  await writeAudit({
-    organizationId: event.orgId,
-    eventId: event.id,
-    actorUserId: issuerUserId,
-    action: AuditActions.CREDENTIAL_ISSUED_RESERVATION,
-    resourceType: 'credential',
-    resourceId: credential.id,
-    newValue: { attendeeId: ticket.attendee.id, ticketId: ticket.id, channel: 'public', deliveryOk },
-  })
-  void dispatchEventWebhooks(event.id, 'credential.issued', { ticketId: ticket.id, credentialId: credential.id, attendeeId: ticket.attendee.id, deliveryOk })
-  if (sendEmail) {
-    await writeAudit({
-      organizationId: event.orgId,
-      eventId: event.id,
-      actorUserId: issuerUserId,
-      action: deliveryOk ? AuditActions.CREDENTIAL_DELIVERY_SENT : AuditActions.CREDENTIAL_DELIVERY_FAILED,
-      resourceType: 'ticket',
-      resourceId: ticket.id,
-      newValue: { channel: 'EMAIL', credentialId: credential.id },
-    })
-  }
   return { credential: final, qrCode: code }
 }
 
