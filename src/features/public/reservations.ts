@@ -327,7 +327,7 @@ export async function reservationRoutes(app: FastifyInstance) {
           }
         } else {
           await queueOutbox('CREDENTIAL_ISSUED', {
-            event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
+            event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, timezone: event.timezone, venueName: event.venueName, settings: event.settings },
             ticket: ticketForOutbox,
           })
         }
