@@ -2,6 +2,7 @@ import { buildApp } from './app.js'
 import { config } from './config.js'
 import { prisma } from './lib/db.js'
 import { runWithDbContext } from './lib/dbContext.js'
+import type { FastifyInstance } from 'fastify'
 
 async function releaseExpiredSeatHolds() {
   return runWithDbContext({ isInternal: true }, async () => {
@@ -16,7 +17,7 @@ async function releaseExpiredSeatHolds() {
 
 // Internal endpoint for scheduled cleanup (Vercel Cron / external scheduler)
 // Protected by CRON_SECRET environment variable
-async function registerCleanupEndpoint(app: any) {
+async function registerCleanupEndpoint(app: FastifyInstance) {
   app.post('/internal/cleanup/expired-holds', async (req, reply) => {
     const secret = req.headers['x-cron-secret'] || req.headers['authorization']?.replace('Bearer ', '')
     if (secret !== config.cronSecret) {
