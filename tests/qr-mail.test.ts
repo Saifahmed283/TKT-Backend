@@ -41,6 +41,46 @@ describe('ticket email QR and responsive template', () => {
     expect(html).toContain('alt="Ticket QR code — scan to verify your ticket"')
   })
 
+  it('renders the attendee-selected ticket design with the saved booking details', () => {
+    const html = ticketEmailShell({
+      preheader: 'Booking confirmed',
+      title: 'Your ticket is ready',
+      titleAr: 'تذكرتك جاهزة الآن',
+      body: 'Your booking is confirmed.',
+      bodyAr: 'تم تأكيد حجزك.',
+      rows: [{ label: 'Reservation', value: 'TKT-26001' }],
+      qrCid: TICKET_QR_CID,
+      ticketDesign: {
+        templateId: 'signature-split',
+        paletteId: 'rose-noir',
+        panelColor: '#350D24',
+        accentColor: '#F22586',
+        backgroundColor: '#FFF2F7',
+        textColor: '#2A1020',
+      },
+      ticketPreview: {
+        attendeeName: 'Abdullah Mohammed',
+        eventName: 'TKT Signature Night',
+        ticketTypeName: 'Program + Bus Included',
+        dateTime: '24 Nov 2026 · 7:30 PM',
+        venue: 'Cairo Opera House',
+        seat: 'Shuttle One · A1',
+        reference: 'TKT-26001',
+      },
+    })
+
+    expect(html).toContain('#350D24')
+    expect(html).toContain('#F22586')
+    expect(html).toContain('#FFF2F7')
+    expect(html).toContain('#2A1020')
+    expect(html).toContain('Abdullah Mohammed')
+    expect(html).toContain('TKT Signature Night')
+    expect(html).toContain('Program + Bus Included')
+    expect(html).toContain('Shuttle One · A1')
+    expect(html).toContain('TKT-26001')
+    expect(html).toContain('src="cid:tkt-ticket-qr@tkt"')
+  })
+
   it('escapes attendee-controlled content before embedding it in HTML', () => {
     const html = ticketEmailShell({
       preheader: 'Safe preview',
