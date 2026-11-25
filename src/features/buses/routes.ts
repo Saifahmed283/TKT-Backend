@@ -54,13 +54,16 @@ const reserveSchema = z.object({
 function templateSeats(template: string): { label: string; row: number; col: number; state: 'AVAILABLE' | 'UNAVAILABLE' }[] {
   if (template === 'mect49') {
     const seats: { label: string; row: number; col: number; state: 'AVAILABLE' | 'UNAVAILABLE' }[] = []
-    let n = 1
-    seats.push({ label: String(n++), row: 1, col: 3, state: 'AVAILABLE' })
-    seats.push({ label: String(n++), row: 1, col: 4, state: 'AVAILABLE' })
-    seats.push({ label: String(n++), row: 2, col: 3, state: 'AVAILABLE' })
-    seats.push({ label: String(n++), row: 2, col: 4, state: 'AVAILABLE' })
-    for (let r = 3; r <= 12; r++) for (const c of [1, 2, 3, 4]) seats.push({ label: String(n++), row: r, col: c, state: 'AVAILABLE' })
-    for (let c = 1; c <= 5; c++) seats.push({ label: String(n++), row: 13, col: c, state: 'AVAILABLE' })
+    const addRow = (row: number, cols: number[]) => {
+      for (const col of cols) seats.push({ label: String(seats.length + 1), row, col, state: 'AVAILABLE' })
+    }
+
+    for (let row = 1; row <= 5; row += 1) addRow(row, [1, 2, 3, 4])
+    addRow(6, [1, 2])
+    addRow(7, [1, 2])
+    addRow(8, [1, 2, 3, 4])
+    for (let row = 9; row <= 12; row += 1) addRow(row, [1, 2, 3, 4])
+    addRow(13, [1, 2, 3, 4, 5])
     return seats
   }
   if (template === 'coaster21') {
@@ -76,7 +79,6 @@ function templateSeats(template: string): { label: string; row: number; col: num
   }
   return []
 }
-
 function buildSeats(layout: z.infer<typeof layoutSchema>) {
   if (Array.isArray(layout.seats) && layout.seats.length) {
     return layout.seats.map(s => ({ label: String(s.label), row: Number(s.row), col: Number(s.col), state: (s.state === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'AVAILABLE') as 'AVAILABLE' | 'UNAVAILABLE' }))
