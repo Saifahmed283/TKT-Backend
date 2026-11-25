@@ -58,6 +58,24 @@ export const config = {
     privateKeyB64: optional('CREDENTIAL_PRIVATE_KEY_B64', ''),
     publicKeyB64: optional('CREDENTIAL_PUBLIC_KEY_B64', ''),
   },
+  appleWallet: {
+    passTypeIdentifier: optional('APPLE_WALLET_PASS_TYPE_IDENTIFIER', ''),
+    teamIdentifier: optional('APPLE_WALLET_TEAM_IDENTIFIER', ''),
+    organizationName: optional('APPLE_WALLET_ORGANIZATION_NAME', 'TKT'),
+    signerCertificateB64: optional('APPLE_WALLET_SIGNER_CERTIFICATE_B64', ''),
+    signerKeyB64: optional('APPLE_WALLET_SIGNER_KEY_B64', ''),
+    signerKeyPassphrase: optional('APPLE_WALLET_SIGNER_KEY_PASSPHRASE', ''),
+    wwdrCertificateB64: optional('APPLE_WALLET_WWDR_CERTIFICATE_B64', ''),
+    get enabled() {
+      return Boolean(
+        this.passTypeIdentifier
+        && this.teamIdentifier
+        && this.signerCertificateB64
+        && this.signerKeyB64
+        && this.wwdrCertificateB64,
+      )
+    },
+  },
   mailer: {
     // Explicit SMTP_ENABLED wins; otherwise auto-enable when host/user/pass are all set.
     enabled: process.env.SMTP_ENABLED
