@@ -52,6 +52,16 @@ jobs:
         run: npm ci
       - name: Generate Prisma client
         run: npm run generate
+      - name: Generate ephemeral Ed25519 credential keys
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs'
+          import { generateKeyPairSync } from 'node:crypto'
+          const pair = generateKeyPairSync('ed25519')
+          const privateKey = pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString('base64url')
+          const publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString('base64url')
+          appendFileSync(process.env.GITHUB_ENV, `CREDENTIAL_PRIVATE_KEY_B64=${privateKey}\\nCREDENTIAL_PUBLIC_KEY_B64=${publicKey}\\n`)
+          NODE
       - name: Type check
         run: npm run typecheck
       - name: Apply migrations to disposable PostgreSQL
