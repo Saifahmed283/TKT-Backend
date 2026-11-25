@@ -1,4 +1,4 @@
-﻿-- DropIndex
+-- DropIndex
 DROP INDEX IF EXISTS "BusSeat_ticketId_key";
 
 -- CreateIndex

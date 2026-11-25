@@ -603,6 +603,8 @@ model Ticket {
   @@index([eventId, approvalStatus])
   @@index([eventId, paymentStatus])
   @@index([paymentProviderId])
+  // Covers soldCount()'s ticketTypeId + status filter on every reservation.
+  @@index([ticketTypeId, status])
 }
 
 enum CredentialType {

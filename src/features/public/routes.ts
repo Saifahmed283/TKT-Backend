@@ -23,33 +23,15 @@ import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { canRedeemAccessCode, normalizeAccessCode, redeemAccessCode } from '../access-codes/service.js'
 import { dispatchEventWebhooks } from '../integrations/dispatch.js'
-import { runWithIsolatedDbContext, updateDbContext } from '../../lib/dbContext.js'
+import { afterResponse } from '../../lib/background.js'
+import { updateDbContext } from '../../lib/dbContext.js'
 
 // ─────────────────────────────────────────────────────────────
 // Prize wheel — segment order must match the frontend wheel
 // render order (index is used to land the animation).
 // ─────────────────────────────────────────────────────────────
-// Request-scoped state for the reservation latency log and post-response work.
-// WeakMaps keep this off the request object while letting route hooks share it.
+// Request-scoped start time for the reservation-only latency log.
 const reservationStartedAt = new WeakMap<object, number>()
-type BackgroundTask = { label: string; context: { eventId: string; orgId?: string }; work: () => Promise<unknown> }
-const reservationBackground = new WeakMap<object, BackgroundTask[]>()
-
-/**
- * Queue work for the route's onResponse hook. Running it there (instead of
- * inline) keeps it off the HTTP response path *and* outside the request's
- * database transaction, which is already committed by that point.
- */
-function afterResponse(
-  req: object,
-  label: string,
-  context: BackgroundTask['context'],
-  work: () => Promise<unknown>,
-): void {
-  const queue = reservationBackground.get(req) ?? []
-  queue.push({ label, context, work })
-  reservationBackground.set(req, queue)
-}
 
 const WHEEL_SEGMENTS = [
   { reward: 'FIFTEEN_OFF', label: '15% off your ticket', weight: 30 },
@@ -354,12 +336,6 @@ export async function publicRoutes(app: FastifyInstance) {
         { eventId, status: reply.statusCode, duration_ms: started == null ? null : Date.now() - started },
         'public.reservation completed',
       )
-      const tasks = reservationBackground.get(req) ?? []
-      reservationBackground.delete(req)
-      for (const task of tasks) {
-        void runWithIsolatedDbContext({ isInternal: true, ...task.context }, task.work)
-          .catch((err) => req.log.error({ err }, `public.reservation ${task.label} failed`))
-      }
     },
   }, async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
@@ -571,12 +547,13 @@ export async function publicRoutes(app: FastifyInstance) {
       throw err
     }
 
-    // Free tickets → instant QR credential. Paid → pending approval/payment review.
-    // Email delivery, delivery-attempt logging and audit writes are deliberately
-    // off the HTTP response path: SMTP latency must not block "Confirm reservation".
-    // TODO: move these to a durable queue (BullMQ etc.) — the fire-and-forget
-    // helpers below are intentionally simple and each owns its error boundary.
-    let qr: string | null = null
+    // Free tickets → QR minted after the response. Paid → pending approval/payment review.
+    // Credential minting, SMTP, delivery logging and audit writes are deliberately
+    // off the HTTP response path: neither SMTP nor QR work may hold a pooled DB
+    // connection open while 500 attendees confirm at the same time.
+    // TODO: move these to a durable queue (BullMQ / a Vercel-compatible runner) —
+    // the fire-and-forget helpers below are intentionally simple and each owns
+    // its own error boundary.
     if (paid) {
       const submittedPayment = Boolean(body.paymentReference || body.paymentProofUrl || paymentProvider)
       afterResponse(req, 'pending email', { eventId, orgId: event.orgId ?? undefined }, async () => {
@@ -639,13 +616,12 @@ export async function publicRoutes(app: FastifyInstance) {
         attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
         ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
       }
-      const issued = await issueReservationCredential({
-        event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
-        ticket: reservationTicket,
-        sendEmail: false,
-      })
-      qr = issued.qrCode
-      afterResponse(req, 'credential email', { eventId, orgId: event.orgId ?? undefined }, async () => {
+      afterResponse(req, 'credential issue + email', { eventId, orgId: event.orgId ?? undefined }, async () => {
+        const issued = await issueReservationCredential({
+          event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
+          ticket: reservationTicket,
+          sendEmail: false,
+        })
         await deliverReservationCredentialEmail({
           event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
           ticket: reservationTicket,
@@ -697,7 +673,9 @@ export async function publicRoutes(app: FastifyInstance) {
         price: computedTotal.toString(),
         approval: paid ? 'PENDING' : 'APPROVED',
         paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
-        qr,
+        // Key is preserved for contract compatibility; the QR is minted after
+        // the response and becomes available via the status endpoint.
+        qr: null,
         seats: reservedSeats,
       },
     })

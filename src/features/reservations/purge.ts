@@ -1,8 +1,6 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import type { Prisma } from '@prisma/client'
-import { config } from '../../config.js'
 import { prisma } from '../../lib/db.js'
+import { deleteUploadedFile } from '../../lib/uploadStore.js'
 
 type PurgeableTicket = {
   id: string
@@ -10,13 +8,6 @@ type PurgeableTicket = {
   attendeeId: string
   paymentProofUrl?: string | null
   metadata?: unknown
-}
-
-export async function deleteUploadedFile(url?: string | null) {
-  if (!url || typeof url !== 'string' || !url.startsWith('/uploads/')) return
-  const name = path.basename(url.split('?')[0] ?? '')
-  if (!name || name.includes('..')) return
-  await fs.unlink(path.resolve(process.cwd(), config.uploads.dir, name)).catch(() => {})
 }
 
 export async function purgeReservationTx(tx: Prisma.TransactionClient, ticket: PurgeableTicket) {

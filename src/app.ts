@@ -43,10 +43,13 @@ import { assertRoleCatalogValid } from './lib/roleAliases.js'
 import { syncSystemRoles } from './lib/roleSync.js'
 import { purgeRejectedReservations } from './features/reservations/purge.js'
 import { enterDbContext } from './lib/dbContext.js'
+import { registerBackgroundTasks } from './lib/background.js'
 import { prisma } from './lib/db.js'
 import { verifyAccessToken } from './lib/auth.js'
 
 const requestDbTransactions = new WeakMap<FastifyReply, () => void>()
+const requestStartedAt = new WeakMap<FastifyReply, number>()
+const transactionStartedAt = new WeakMap<FastifyReply, number>()
 
 // These routes never touch the request-scoped Prisma transaction. Health probes
 // are called constantly by the status page and monitoring, static upload files
@@ -80,6 +83,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   // avoids a round-trip per Prisma operation. The transaction is released in
   // onResponse, after the handler has finished using it.
   app.addHook('onRequest', (req, reply, done) => {
+    requestStartedAt.set(reply, Date.now())
     void (async () => {
       const path = (req.url || '').split('?')[0] || ''
       const publicEvent = path.match(/^\/public\/events\/([^/]+)/)
@@ -112,6 +116,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       let completedTransaction: () => void
       const completed = new Promise<void>((resolve) => { completedTransaction = resolve })
       requestDbTransactions.set(reply, completedTransaction!)
+      transactionStartedAt.set(reply, Date.now())
       let started = false
 
       try {
@@ -127,10 +132,33 @@ export async function buildApp(): Promise<FastifyInstance> {
     })().catch(done)
   })
 
-  app.addHook('onResponse', async (_req, reply) => {
+  app.addHook('onResponse', async (req, reply) => {
+    const hadTransaction = requestDbTransactions.has(reply)
     requestDbTransactions.get(reply)?.()
     requestDbTransactions.delete(reply)
+
+    const started = requestStartedAt.get(reply)
+    const txStarted = transactionStartedAt.get(reply)
+    requestStartedAt.delete(reply)
+    transactionStartedAt.delete(reply)
+    const durationMs = started == null ? null : Date.now() - started
+    const transactionHoldMs = txStarted == null ? null : Date.now() - txStarted
+    const fields = {
+      method: req.method,
+      url: req.url,
+      status: reply.statusCode,
+      duration_ms: durationMs,
+      transaction_hold_ms: hadTransaction ? transactionHoldMs : null,
+    }
+    // Production logs are warn-level; surface slow connection holds there while
+    // keeping normal timing available in development/test logs.
+    if (durationMs != null && durationMs > 1000) req.log.warn(fields, 'request.slow')
+    else req.log.info(fields, 'request.completed')
   })
+
+  // Must be registered after the transaction-release hook so queued work runs
+  // outside the request transaction, immediately after the response is sent.
+  registerBackgroundTasks(app)
 
   if (config.isTest && !config.rateLimits.enabledInTests) {
     app.addHook('onRoute', (routeOptions) => {

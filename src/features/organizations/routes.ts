@@ -422,6 +422,9 @@ export async function organizationRoutes(app: FastifyInstance) {
     const ctx = await resolveOrgContext(req, orgId)
     if (!ctx.isAdmin) throw errors.forbidden()
     const body = z.object({ to: z.string().email() }).parse(req.body)
+    // Deliberately synchronous: this is an admin SMTP diagnostic whose entire
+    // purpose is to report the provider result. It is not on the public burst
+    // path, so the short connection hold is an accepted tradeoff.
     const sent = await sendMail({
       to: body.to,
       subject: 'TKT SMTP test',

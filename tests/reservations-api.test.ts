@@ -142,7 +142,7 @@ describe('public reservation integrity', () => {
     expect(count).toBe(1)
   })
 
-  it('returns the QR without waiting for SMTP, then exposes a real status lookup', async () => {
+  it('returns a code without waiting for QR generation or SMTP, then exposes both via status', async () => {
     const admin = await registerUser('ResLatency')
     const orgId = await createOrg(admin.token, `Org ResLatency ${Date.now()}`)
     cleanupOrgIds.push(orgId)
@@ -162,19 +162,22 @@ describe('public reservation integrity', () => {
         payload: { name: 'Fast Guest', email, phone: '+20 100 123 4567', ticketTypeId },
       })
       expectStatus(reserve, 201)
-      expect(reserve.json().data.qr).toBeTruthy()
+      expect(reserve.json().data.qr).toBeNull()
 
       const { reservationCode, ticketId, attendeeId } = reserve.json().data
-      const status = await app.inject({
-        method: 'GET',
-        url: `/public/events/${eventId}/reservations/status?code=${reservationCode}`,
-      })
+      const statusUrl = `/public/events/${eventId}/reservations/status?code=${reservationCode}`
+      const status = await app.inject({ method: 'GET', url: statusUrl })
       expectStatus(status, 200)
       expect(status.json().data.ticketId).toBe(ticketId)
       expect(status.json().data.attendeeId).toBe(attendeeId)
-      expect(status.json().data.qr).toBeTruthy()
 
+      // Credential minting happens after the response; status is the handoff.
       await vi.waitFor(() => expect(sendSpy).toHaveBeenCalled(), { timeout: 10_000 })
+      await vi.waitFor(async () => {
+        const ready = await app.inject({ method: 'GET', url: statusUrl })
+        expectStatus(ready, 200)
+        expect(ready.json().data.qr).toBeTruthy()
+      }, { timeout: 10_000 })
       releaseSend({ ok: true, provider: 'smtp', providerMessageId: null, error: null })
       await vi.waitFor(async () => {
         const attempts = await runWithDbContext({ isInternal: true }, () =>
@@ -499,15 +502,18 @@ describe('public reservation integrity', () => {
 
   it('allows unauthenticated payment proof uploads', async () => {
     const boundary = 'tkt-proof-boundary'
-    const body = [
+    const png = Buffer.concat([
+      Buffer.from('89504e470d0a1a0a', 'hex'),
+      Buffer.from('fake PNG payload for content sniffing'),
+    ])
+    const head = Buffer.from([
       `--${boundary}`,
       'Content-Disposition: form-data; name="file"; filename="proof.png"',
       'Content-Type: image/png',
       '',
-      'proof-bytes',
-      `--${boundary}--`,
       '',
-    ].join('\r\n')
+    ].join('\r\n'))
+    const body = Buffer.concat([head, png, Buffer.from(`\r\n--${boundary}--\r\n`)])
 
     const upload = await app.inject({
       method: 'POST',
@@ -519,5 +525,25 @@ describe('public reservation integrity', () => {
     const url = upload.json().data.url as string
     expect(url).toContain('/uploads/')
     await fs.unlink(path.resolve(process.cwd(), 'uploads', path.basename(new URL(url).pathname))).catch(() => {})
+  })
+
+  it('rejects payment proofs whose bytes do not match the declared type', async () => {
+    const boundary = 'tkt-proof-mismatch'
+    const head = Buffer.from([
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="file"; filename="proof.png"',
+      'Content-Type: image/png',
+      '',
+      '',
+    ].join('\r\n'))
+    const body = Buffer.concat([head, Buffer.from('not a png'), Buffer.from(`\r\n--${boundary}--\r\n`)])
+
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/uploads/proof',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: body,
+    })
+    expectStatus(upload, 400)
   })
 })

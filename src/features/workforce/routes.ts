@@ -12,6 +12,7 @@ import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
 import { resolveLegacyRoleCode } from '../../lib/roleAliases.js'
 import { EVENT_LEVEL_SCOPES } from '../../lib/rbac.js'
 import { config } from '../../config.js'
+import { afterResponse } from '../../lib/background.js'
 
 const applicationSchema = z.object({
   fullName: z.string().min(2),
@@ -224,33 +225,37 @@ export async function workforceRoutes(app: FastifyInstance) {
       newValue: { userId, roleId: role.id, teamId, areaIds }, sourceIp: req.ip,
     })
 
-    let onboardingEmailOk = false
-    let onboardingEmailError: string | null = null
+    // Onboarding email is not part of the conversion transaction: a slow SMTP
+    // server must not hold this admin request's pooled connection open.
+    // The boolean now means "accepted for delivery", not "SMTP confirmed".
+    // The actual send result is written to the audit log by the queued task.
+    const onboardingEmailOk = Boolean(tempPassword && createdUserEmail)
+    const onboardingEmailError: string | null = null
     if (tempPassword && createdUserEmail) {
       const loginUrl = `${process.env.PUBLIC_URL ?? 'http://localhost:5173'}/login`
-      const sent = await sendMail({
-        to: createdUserEmail,
-        subject: `Your TKT staff account — ${event.name}`,
-        html: ticketEmailShell({
-          preheader: `Staff account created for ${event.name}`,
-          title: 'Welcome to the team',
-          body: `Your staff account for <strong>${event.name}</strong> is ready. Sign in with the temporary password below and change it after first login.`,
-          rows: [
-            { label: 'Email', value: createdUserEmail },
-            { label: 'Temporary password', value: tempPassword },
-            { label: 'Login', value: loginUrl },
-            { label: 'Role', value: role.name },
-          ],
-          footer: 'TKT · Do not share this password. Change it after signing in.',
-        }),
-      })
-      onboardingEmailOk = sent.ok
-      onboardingEmailError = sent.error ?? null
-      await writeAudit({
-        organizationId: event.orgId, eventId, actorUserId: req.user.id,
-        action: sent.ok ? 'workforce.onboarding_email.sent' : 'workforce.onboarding_email.failed',
-        resourceType: 'user', resourceId: userId,
-        newValue: { email: createdUserEmail, error: onboardingEmailError }, sourceIp: req.ip,
+      afterResponse(req, 'workforce onboarding email', { eventId, orgId: event.orgId ?? undefined }, async () => {
+        const sent = await sendMail({
+          to: createdUserEmail,
+          subject: `Your TKT staff account — ${event.name}`,
+          html: ticketEmailShell({
+            preheader: `Staff account created for ${event.name}`,
+            title: 'Welcome to the team',
+            body: `Your staff account for <strong>${event.name}</strong> is ready. Sign in with the temporary password below and change it after first login.`,
+            rows: [
+              { label: 'Email', value: createdUserEmail },
+              { label: 'Temporary password', value: tempPassword },
+              { label: 'Login', value: loginUrl },
+              { label: 'Role', value: role.name },
+            ],
+            footer: 'TKT · Do not share this password. Change it after signing in.',
+          }),
+        })
+        await writeAudit({
+          organizationId: event.orgId, eventId, actorUserId: req.user.id,
+          action: sent.ok ? 'workforce.onboarding_email.sent' : 'workforce.onboarding_email.failed',
+          resourceType: 'user', resourceId: userId,
+          newValue: { email: createdUserEmail, error: sent.error ?? null }, sourceIp: req.ip,
+        })
       })
     }
 

@@ -11,6 +11,7 @@ import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { assertSafeWebhookUrl } from '../../lib/webhookTarget.js'
 import { deliverWebhook } from './dispatch.js'
+import { afterResponse } from '../../lib/background.js'
 
 const webhookSchema = z.object({
   name: z.string().min(2),
@@ -94,8 +95,12 @@ export async function integrationRoutes(app: FastifyInstance) {
     await requirePermission(req, 'integration.manage', { eventId })
     const sub = await prisma.webhookSubscription.findFirst({ where: { id, eventId } })
     if (!sub) throw errors.notFound('Webhook not found')
-    await deliverWebhook(sub, 'test.ping', { eventId, by: req.user.id })
-    await writeAudit({ eventId, actorUserId: req.user.id, action: AuditActions.WEBHOOK_DELIVERED, resourceType: 'webhook_subscription', resourceId: id, newValue: { eventType: 'test.ping' }, sourceIp: req.ip })
+    // A webhook test is an outbound request: queue it after the response so a
+    // slow or unreachable target cannot hold the request's DB connection.
+    afterResponse(req, 'webhook test ping', { eventId }, async () => {
+      await deliverWebhook(sub, 'test.ping', { eventId, by: req.user.id })
+      await writeAudit({ eventId, actorUserId: req.user.id, action: AuditActions.WEBHOOK_DELIVERED, resourceType: 'webhook_subscription', resourceId: id, newValue: { eventType: 'test.ping' }, sourceIp: req.ip })
+    })
     return { ok: true }
   })
 

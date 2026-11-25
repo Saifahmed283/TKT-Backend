@@ -142,6 +142,9 @@ export async function paymentRoutes(app: FastifyInstance) {
     let external: { attempted: boolean; ok: boolean; status?: number; body?: unknown; error?: string; url?: string } = { attempted: false, ok: false }
 
     if (fetchUrlTemplate) {
+      // Deliberately synchronous: an admin opens this review action explicitly
+      // to see the provider's response. It is not on the public burst path, so
+      // the bounded 8s connection hold is an accepted tradeoff.
       const url = fetchUrlTemplate.replace('{reference}', encodeURIComponent(ref)).replace('{eventId}', encodeURIComponent(eventId))
       external.attempted = true
       external.url = url
