@@ -98,6 +98,7 @@ describe('Apple Wallet pass generation', () => {
         name: 'TKT Signature Night',
         startAt: new Date('2026-11-24T17:30:00.000Z'),
         endAt: new Date('2026-11-24T22:00:00.000Z'),
+        timezone: 'Africa/Cairo',
         venueName: 'Cairo Opera House',
         venueAddress: 'Gezira, Cairo',
       },
@@ -153,6 +154,7 @@ describe('Apple Wallet pass generation', () => {
       label: 'DATE & TIME',
     })
     expect(String(walletMock.secondaryFields[0]?.value)).toContain('24 Nov 2026')
+    expect(String(walletMock.secondaryFields[0]?.value)).toContain('7:30 pm')
     expect(walletMock.auxiliaryFields).toEqual(expect.arrayContaining([
       { key: 'pass-holder', label: 'PASS HOLDER', value: 'Abdullah Mohammed' },
       { key: 'seat', label: 'SEAT', value: 'Shuttle One · A1' },
