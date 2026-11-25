@@ -417,15 +417,25 @@ describe('public reservation integrity', () => {
     expect(blocked.json().error.code).toBe('CONFLICT')
     expect(blocked.json().error.message).toContain('Confirm payment proof')
 
+    const idempotencyKey = `payment-review-${Date.now()}`
     const review = await app.inject({
       method: 'POST',
       url: `/events/${eventId}/payments/reservations/${ticketId}/review`,
-      headers: auth(managerToken),
+      headers: { ...auth(managerToken), 'Idempotency-Key': idempotencyKey },
       payload: { action: 'CONFIRM' },
     })
     expectStatus(review, 200)
     expect(review.json().data.approval).toBe('APPROVED')
     expect(review.json().data.paymentStatus).toBe('CONFIRMED')
+
+    const replay = await app.inject({
+      method: 'POST',
+      url: `/events/${eventId}/payments/reservations/${ticketId}/review`,
+      headers: { ...auth(managerToken), 'Idempotency-Key': idempotencyKey },
+      payload: { action: 'CONFIRM' },
+    })
+    expectStatus(replay, 200)
+    expect(replay.json().data.ticket.id).toBe(review.json().data.ticket.id)
 
     const alreadyDecided = await app.inject({
       method: 'POST',
