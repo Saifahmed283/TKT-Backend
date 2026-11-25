@@ -246,7 +246,7 @@ export async function createAppleWalletPass(input: AppleWalletPassInput): Promis
     { key: 'location', label: 'LOCATION', value: venue },
     { key: 'ticket-type', label: 'TICKET TYPE', value: input.ticketTypeName },
     { key: 'booking-reference', label: 'BOOKING REFERENCE', value: input.reservationCode },
-    { key: 'event-name', label: 'EVENT', value: input.event.name },
+    { key: 'event-name-back', label: 'EVENT', value: input.event.name },
   )
   pass.setBarcodes({
     format: 'PKBarcodeFormatQR',
