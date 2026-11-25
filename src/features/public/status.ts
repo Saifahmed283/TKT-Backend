@@ -112,7 +112,7 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
         attendee: { select: { name: true } },
         ticketType: { select: { name: true } },
         credential: { select: { code: true, status: true } },
-        event: { select: { id: true, name: true, startAt: true, endAt: true, venueName: true, venueAddress: true } },
+        event: { select: { id: true, name: true, startAt: true, endAt: true, timezone: true, venueName: true, venueAddress: true } },
         busSeats: {
           select: { label: true, bus: { select: { name: true } } },
           orderBy: { label: 'asc' },
