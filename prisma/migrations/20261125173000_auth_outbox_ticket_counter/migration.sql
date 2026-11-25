@@ -101,3 +101,18 @@ SET "soldCount" = (
     AND t."status" IN ('ISSUED', 'ACTIVE', 'CONSUMED')
 )
 WHERE tt."soldCount" = 0;
+
+-- Both tables contain credentials or operational messages. Restrict them
+-- to the internal worker context; auth routes use app_is_auth() for refresh
+-- session rotation and lookup.
+ALTER TABLE "RefreshSession" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "RefreshSession" FORCE ROW LEVEL SECURITY;
+CREATE POLICY rls_refresh_session_auth ON "RefreshSession" FOR ALL
+  USING (app_is_internal() OR app_is_auth())
+  WITH CHECK (app_is_internal() OR app_is_auth());
+
+ALTER TABLE "OutboxEvent" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "OutboxEvent" FORCE ROW LEVEL SECURITY;
+CREATE POLICY rls_outbox_internal ON "OutboxEvent" FOR ALL
+  USING (app_is_internal())
+  WITH CHECK (app_is_internal());
