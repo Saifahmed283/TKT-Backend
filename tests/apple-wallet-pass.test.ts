@@ -148,11 +148,11 @@ describe('Apple Wallet pass generation', () => {
     expect(walletMock.type).toBe('eventTicket')
     expect(walletMock.headerFields).toContainEqual({ key: 'pass-kind', label: 'TKT EVENT PASS', value: 'Program + Bus Included' })
     expect(walletMock.primaryFields).toContainEqual({ key: 'event-name', label: 'EVENT', value: 'TKT Signature Night' })
-    expect(walletMock.secondaryFields).toContainEqual(expect.objectContaining({
+    expect(walletMock.secondaryFields[0]).toMatchObject({
       key: 'date-time',
       label: 'DATE & TIME',
-      value: '2026-11-24T17:30:00.000Z',
-    }))
+    })
+    expect(String(walletMock.secondaryFields[0]?.value)).toContain('24 Nov 2026')
     expect(walletMock.auxiliaryFields).toEqual(expect.arrayContaining([
       { key: 'pass-holder', label: 'PASS HOLDER', value: 'Abdullah Mohammed' },
       { key: 'seat', label: 'SEAT', value: 'Shuttle One · A1' },
