@@ -23,6 +23,7 @@ export type AppleWalletPassInput = {
     name: string
     startAt: Date
     endAt: Date | null
+    timezone?: string
     venueName: string | null
     venueAddress: string | null
   }
@@ -188,6 +189,22 @@ export async function createAppleWalletPass(input: AppleWalletPassInput): Promis
   const textColor = safeColor(design.textColor, DEFAULT_DESIGN.textColor)
   const venue = [input.event.venueName, input.event.venueAddress].filter(Boolean).join(' · ') || 'To be announced'
   const seatLabels = input.seats.map((seat) => `${seat.busName ? seat.busName + ' · ' : ''}${seat.label}`)
+  const dateTime = (() => {
+    const options: Intl.DateTimeFormatOptions = {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone: input.event.timezone || 'UTC',
+    }
+    try {
+      return new Intl.DateTimeFormat('en-GB', options).format(input.event.startAt)
+    } catch {
+      return new Intl.DateTimeFormat('en-GB', { ...options, timeZone: 'UTC' }).format(input.event.startAt)
+    }
+  })()
   const passProps = {
     formatVersion: 1 as const,
     passTypeIdentifier: config.appleWallet.passTypeIdentifier,
