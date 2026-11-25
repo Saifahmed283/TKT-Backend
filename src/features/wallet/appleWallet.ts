@@ -203,27 +203,7 @@ export async function createAppleWalletPass(input: AppleWalletPassInput): Promis
     labelColor: `rgb(${rgb(accentColor).join(', ')})`,
     relevantDates: [{ relevantDate: input.event.startAt.toISOString() }],
     ...(input.event.endAt ? { expirationDate: input.event.endAt.toISOString() } : {}),
-    eventTicket: {
-      headerFields: [
-        { key: 'pass-kind', label: 'TKT EVENT PASS', value: input.ticketTypeName },
-      ],
-      primaryFields: [
-        { key: 'event-name', label: 'EVENT', value: input.event.name },
-      ],
-      secondaryFields: [
-        { key: 'date-time', label: 'DATE & TIME', value: input.event.startAt.toISOString(), dateStyle: 'PKDateStyleLong', timeStyle: 'PKDateStyleShort' },
-      ],
-      auxiliaryFields: [
-        { key: 'pass-holder', label: 'PASS HOLDER', value: input.attendeeName },
-        ...(seatLabels.length ? [{ key: 'seat', label: 'SEAT', value: seatLabels.join(', ') }] : []),
-      ],
-      backFields: [
-        { key: 'location', label: 'LOCATION', value: venue },
-        { key: 'ticket-type', label: 'TICKET TYPE', value: input.ticketTypeName },
-        { key: 'booking-reference', label: 'BOOKING REFERENCE', value: input.reservationCode },
-        { key: 'event-name', label: 'EVENT', value: input.event.name },
-      ],
-    },
+
   }
 
   const certificates = {
@@ -237,6 +217,36 @@ export async function createAppleWalletPass(input: AppleWalletPassInput): Promis
     walletArtwork(panelColor, accentColor),
     certificates,
     passProps,
+  )
+  // passkit-generator v3 requires an explicit PassType. Event ticket fields
+  // belong to that typed object rather than a free-form pass.json property.
+  pass.type = 'eventTicket'
+  pass.headerFields.push({
+    key: 'pass-kind',
+    label: 'TKT EVENT PASS',
+    value: input.ticketTypeName,
+  })
+  pass.primaryFields.push({
+    key: 'event-name',
+    label: 'EVENT',
+    value: input.event.name,
+  })
+  pass.secondaryFields.push({
+    key: 'date-time',
+    label: 'DATE & TIME',
+    value: input.event.startAt.toISOString(),
+    dateStyle: 'PKDateStyleLong',
+    timeStyle: 'PKDateStyleShort',
+  })
+  pass.auxiliaryFields.push(
+    { key: 'pass-holder', label: 'PASS HOLDER', value: input.attendeeName },
+    ...(seatLabels.length ? [{ key: 'seat', label: 'SEAT', value: seatLabels.join(', ') }] : []),
+  )
+  pass.backFields.push(
+    { key: 'location', label: 'LOCATION', value: venue },
+    { key: 'ticket-type', label: 'TICKET TYPE', value: input.ticketTypeName },
+    { key: 'booking-reference', label: 'BOOKING REFERENCE', value: input.reservationCode },
+    { key: 'event-name', label: 'EVENT', value: input.event.name },
   )
   pass.setBarcodes({
     format: 'PKBarcodeFormatQR',
