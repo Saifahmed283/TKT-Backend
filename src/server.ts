@@ -20,6 +20,9 @@ async function releaseExpiredSeatHolds() {
 async function registerCleanupEndpoint(app: FastifyInstance) {
   app.post('/internal/cleanup/expired-holds', async (req, reply) => {
     const secret = req.headers['x-cron-secret'] || req.headers['authorization']?.replace('Bearer ', '')
+    if (!config.cronSecret) {
+      return reply.status(503).send({ error: { code: 'CRON_NOT_CONFIGURED', message: 'Cron secret is not configured' } })
+    }
     if (secret !== config.cronSecret) {
       return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid cron secret' } })
     }

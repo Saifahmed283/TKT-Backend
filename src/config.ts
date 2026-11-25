@@ -66,5 +66,7 @@ export const config = {
     // Integration tests need many registrations; a dedicated test opts back in.
     enabledInTests: process.env.TKT_RATE_LIMIT_TEST === 'true',
   },
-  cronSecret: required('CRON_SECRET'),
+  // Missing cron config must not crash the public API; the cleanup endpoint
+  // fails closed instead when this is empty.
+  cronSecret: optional('CRON_SECRET', ''),
 }
