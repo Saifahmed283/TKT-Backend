@@ -70,5 +70,21 @@ jobs:
         run: npm test
       - name: Production build
         run: npm run build
+      - name: Sign and verify an Apple Wallet pass with temporary CI certificates
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout "$tmpdir/wwdr.key" -out "$tmpdir/wwdr.pem" -days 30 -subj "/CN=TKT Temporary CI WWDR" >/dev/null 2>&1
+          openssl genrsa -out "$tmpdir/signer.key" 2048 >/dev/null 2>&1
+          openssl req -new -key "$tmpdir/signer.key" -out "$tmpdir/signer.csr" -subj "/CN=TKT Temporary CI Pass Signer" >/dev/null 2>&1
+          openssl x509 -req -in "$tmpdir/signer.csr" -CA "$tmpdir/wwdr.pem" -CAkey "$tmpdir/wwdr.key" -CAcreateserial -out "$tmpdir/signer.pem" -days 30 -sha256 >/dev/null 2>&1
+          export APPLE_WALLET_PASS_TYPE_IDENTIFIER="pass.com.example.tkt"
+          export APPLE_WALLET_TEAM_IDENTIFIER="TEAM123456"
+          export APPLE_WALLET_ORGANIZATION_NAME="TKT CI"
+          export APPLE_WALLET_SIGNER_CERTIFICATE_B64="$(base64 -w0 "$tmpdir/signer.pem")"
+          export APPLE_WALLET_SIGNER_KEY_B64="$(base64 -w0 "$tmpdir/signer.key")"
+          export APPLE_WALLET_WWDR_CERTIFICATE_B64="$(base64 -w0 "$tmpdir/wwdr.pem")"
+          node scripts/wallet-pass-smoke.mjs
       - name: Validate staged load-test script syntax
         run: node --check tests/load/reservations.js
