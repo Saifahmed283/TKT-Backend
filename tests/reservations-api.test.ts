@@ -549,6 +549,108 @@ describe('public reservation integrity', () => {
     expect(after.json().data.some((p: any) => p.id === ticketId)).toBe(false)
   })
 
+  it('serializes concurrent public holds so only one visitor can hold a seat', async () => {
+    const admin = await registerUser('HoldRace')
+    const orgId = await createOrg(admin.token, `Org HoldRace ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event HoldRace ${Date.now()}`)
+    const manager = await registerUser('HoldRaceMgr')
+    await addOrgMember(admin.token, orgId, manager.email)
+    await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
+    const managerToken = await login(manager.email, manager.password)
+    const bus = await createBus(managerToken, eventId)
+    const seatId = bus.seatIds[0]
+    const sessionA = `hold-race-a-${Date.now()}`
+    const sessionB = `hold-race-b-${Date.now()}`
+
+    const [a, b] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/public/events/${eventId}/buses/${bus.id}/hold`,
+        payload: { seatIds: [seatId], sessionId: sessionA, holdMinutes: 10 },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/public/events/${eventId}/buses/${bus.id}/hold`,
+        payload: { seatIds: [seatId], sessionId: sessionB, holdMinutes: 10 },
+      }),
+    ])
+
+    const results = [a, b]
+    const winners = results.filter((result) => result.statusCode === 200)
+    const conflicts = results.filter((result) => result.statusCode === 409)
+    expect(winners).toHaveLength(1)
+    expect(conflicts).toHaveLength(1)
+
+    const winnerToken = winners[0].json().data.holdToken as string
+    expect([sessionA, sessionB]).toContain(winnerToken)
+
+    const stored = await runWithDbContext({ isInternal: true }, () =>
+      prisma.busSeat.findUnique({ where: { id: seatId }, select: { state: true, holdToken: true } }),
+    )
+    expect(stored).toMatchObject({ state: 'HELD', holdToken: winnerToken })
+
+    const released = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/buses/${bus.id}/release-hold`,
+      payload: { seatIds: [seatId], sessionId: winnerToken },
+    })
+    expectStatus(released, 200)
+    expect(released.json().data.released).toBe(1)
+  })
+
+  it('reclaims an expired hold inside the next hold transaction', async () => {
+    const admin = await registerUser('HoldExpiry')
+    const orgId = await createOrg(admin.token, `Org HoldExpiry ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event HoldExpiry ${Date.now()}`)
+    const manager = await registerUser('HoldExpiryMgr')
+    await addOrgMember(admin.token, orgId, manager.email)
+    await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
+    const managerToken = await login(manager.email, manager.password)
+    const bus = await createBus(managerToken, eventId)
+    const seatId = bus.seatIds[0]
+    const expiredSession = `hold-expired-${Date.now()}`
+
+    const first = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/buses/${bus.id}/hold`,
+      payload: { seatIds: [seatId], sessionId: expiredSession, holdMinutes: 10 },
+    })
+    expectStatus(first, 200)
+
+    await runWithDbContext({ isInternal: true }, () =>
+      prisma.busSeat.update({
+        where: { id: seatId },
+        data: { holdExpiresAt: new Date(Date.now() - 1_000) },
+      }),
+    )
+
+    const nextSession = `hold-next-${Date.now()}`
+    const second = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/buses/${bus.id}/hold`,
+      payload: { seatIds: [seatId], sessionId: nextSession, holdMinutes: 10 },
+    })
+    expectStatus(second, 200)
+    expect(second.json().data.holdToken).toBe(nextSession)
+
+    const stored = await runWithDbContext({ isInternal: true }, () =>
+      prisma.busSeat.findUnique({ where: { id: seatId }, select: { state: true, holdToken: true, holdExpiresAt: true } }),
+    )
+    expect(stored?.state).toBe('HELD')
+    expect(stored?.holdToken).toBe(nextSession)
+    expect(stored?.holdExpiresAt?.getTime()).toBeGreaterThan(Date.now())
+
+    const released = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/buses/${bus.id}/release-hold`,
+      payload: { seatIds: [seatId], sessionId: nextSession },
+    })
+    expectStatus(released, 200)
+    expect(released.json().data.released).toBe(1)
+  })
+
   it('allows unauthenticated payment proof uploads', async () => {
     const boundary = 'tkt-proof-boundary'
     const png = Buffer.concat([
