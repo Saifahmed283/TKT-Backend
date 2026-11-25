@@ -128,7 +128,7 @@ function createPng(width: number, height: number, background: string, accent: st
 
   for (let index = 0; index < word.length; index += 1) {
     const letter = word.charAt(index)
-    const glyph = GLYPHS[letter] ?? GLYPHS.T
+    const glyph = GLYPHS[letter] ?? ['11111', '00100', '00100', '00100', '00100', '00100', '00100']
     for (let gy = 0; gy < glyphHeight; gy += 1) {
       const row = glyph[gy] ?? ''
       for (let gx = 0; gx < glyphWidth; gx += 1) {
