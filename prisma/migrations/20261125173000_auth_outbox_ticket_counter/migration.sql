@@ -113,6 +113,26 @@ CREATE POLICY rls_refresh_session_auth ON "RefreshSession" FOR ALL
 
 ALTER TABLE "OutboxEvent" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "OutboxEvent" FORCE ROW LEVEL SECURITY;
-CREATE POLICY rls_outbox_internal ON "OutboxEvent" FOR ALL
+DROP POLICY IF EXISTS rls_outbox_internal ON "OutboxEvent";
+DROP POLICY IF EXISTS rls_outbox_select ON "OutboxEvent";
+DROP POLICY IF EXISTS rls_outbox_insert ON "OutboxEvent";
+DROP POLICY IF EXISTS rls_outbox_update ON "OutboxEvent";
+DROP POLICY IF EXISTS rls_outbox_delete ON "OutboxEvent";
+
+CREATE POLICY rls_outbox_select ON "OutboxEvent" FOR SELECT
+  USING (app_is_internal());
+CREATE POLICY rls_outbox_insert ON "OutboxEvent" FOR INSERT
+  WITH CHECK (app_is_internal() OR app_is_public());
+CREATE POLICY rls_outbox_update ON "OutboxEvent" FOR UPDATE
   USING (app_is_internal())
   WITH CHECK (app_is_internal());
+CREATE POLICY rls_outbox_delete ON "OutboxEvent" FOR DELETE
+  USING (app_is_internal());
+
+-- PostgreSQL also applies SELECT policies to INSERT ... RETURNING. A public
+-- reservation can read back only the exact event ID it has just inserted.
+CREATE POLICY rls_outbox_insert_returning ON "OutboxEvent" FOR SELECT
+  USING (
+    app_is_internal()
+    OR (app_is_public() AND "id" = current_setting('app.outbox_event_id', true))
+  );
