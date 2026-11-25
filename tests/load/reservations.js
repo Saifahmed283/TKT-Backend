@@ -147,11 +147,13 @@ function createSeatHold(user, seatIds = ['seat-1']) {
 }
 
 // Helper: Check reservation status
-function checkStatus(reservationCode) {
+function checkStatus(reservationCode, accessToken) {
   const params = { headers: { Accept: 'application/json' } }
   const start = new Date()
+  const query = new URLSearchParams({ code: reservationCode })
+  if (accessToken) query.set('token', accessToken)
   const res = http.get(
-    `${BASE_URL}/public/events/${EVENT_ID}/reservations/status?code=${encodeURIComponent(reservationCode)}`,
+    `${BASE_URL}/public/events/${EVENT_ID}/reservations/status?${query.toString()}`,
     params
   )
   const duration = new Date() - start
@@ -184,7 +186,7 @@ export default function () {
 
       while (attempts < maxAttempts && status === 'PENDING') {
         sleep(5)
-        const statusRes = checkStatus(accessToken || reservationCode)
+        const statusRes = checkStatus(reservationCode, accessToken)
         const statusData = statusRes.json()
         status = statusData.data?.approval || 'PENDING'
         attempts++

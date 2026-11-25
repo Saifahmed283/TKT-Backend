@@ -239,14 +239,24 @@ describe('public reservation integrity', () => {
       url: `/public/events/${eventId}/reservations/resend`,
       payload: { reservationCode, email: `someone-else-${Date.now()}@test.tkt` },
     })
-    expectStatus(wrongEmail, 404)
+    expectStatus(wrongEmail, 200)
+    expect(wrongEmail.json().data).toEqual({ ok: true, deliveryStatus: null })
 
     const wrongCode = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations/resend`,
       payload: { reservationCode: 'TKT-NOT-REAL', email },
     })
-    expectStatus(wrongCode, 404)
+    expectStatus(wrongCode, 200)
+    expect(wrongCode.json().data).toEqual({ ok: true, deliveryStatus: null })
+
+    const emailOnly = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations/resend`,
+      payload: { email },
+    })
+    expectStatus(emailOnly, 200)
+    expect(emailOnly.json().data).toHaveProperty('deliveryStatus')
 
     const resend = await app.inject({
       method: 'POST',

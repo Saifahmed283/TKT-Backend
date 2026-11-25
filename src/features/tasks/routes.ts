@@ -88,8 +88,14 @@ export async function taskRoutes(app: FastifyInstance) {
 
   app.post('/', async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
-    const ctx = await taskPermission(req, eventId, 'task.create')
+    await taskPermission(req, eventId, 'task.create')
     const body = createSchema.parse(req.body)
+    // The preHandler check is targetless so list routes can filter. Mutations
+    // must re-check the actual team/area from the body before writing.
+    await taskPermission(req, eventId, 'task.create', {
+      teamId: body.teamId ?? null,
+      areaId: body.areaId ?? null,
+    })
     const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
     if (!event) throw errors.notFound('Event not found')
 

@@ -10,6 +10,7 @@ import { BASE_ROLES, roleHasPermission, type BaseRoleDefinition } from '../../li
 import { ALL_PERMISSIONS, PERMISSIONS } from '../../lib/rbac.js'
 import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
 import { runWithDbContext } from '../../lib/dbContext.js'
+import { config } from '../../config.js'
 
 const slugify = (s: string) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
@@ -208,12 +209,16 @@ export async function organizationRoutes(app: FastifyInstance) {
           passwordHash: await import('../../lib/auth.js').then((m) => m.hashPassword(temporaryPassword)),
         },
       })
-      void sendMail({
+      const mail = await sendMail({
         to: body.email.toLowerCase(),
         subject: 'You have been invited to TKT',
         html: `<p>Your account has been created. Sign in with this temporary password and change it immediately:</p><p><strong>${temporaryPassword}</strong></p>`,
         text: `Your TKT account was created. Temporary password: ${temporaryPassword}. Change it immediately after signing in.`,
-      }).catch((err) => console.error('Failed to send invitation email:', err))
+      })
+      if (config.isProd && !mail.ok) {
+        await prisma.user.delete({ where: { id: user.id } }).catch(() => undefined)
+        throw errors.internal('Invitation email could not be delivered; no account was created')
+      }
     }
     const existing = await prisma.organizationMember.findUnique({
       where: { orgId_userId: { orgId, userId: user.id } },

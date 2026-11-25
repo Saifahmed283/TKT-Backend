@@ -81,15 +81,18 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
   })
 
   // ── Public ticket resend (duplicate-reservation recovery) ───
-  // Deliberately keyed by reservation code + email, not a ticket id: a public
-  // caller has neither a session nor a ticket id, and must not be able to
-  // enumerate other attendees' reservations.
+  // Email-only recovery is supported for duplicate submissions where the
+  // original code was never shown. Responses stay generic so the endpoint
+  // cannot be used to enumerate attendees.
   app.post('/events/:eventId/reservations/resend', {
     config: { rateLimit: { max: 3, timeWindow: '15 minutes' } },
   }, async (req) => {
     const { eventId } = req.params as { eventId: string }
-    const body = z.object({ reservationCode: z.string().min(3), email: z.string().email() }).parse(req.body)
-    const code = body.reservationCode.trim()
+    const body = z.object({
+      reservationCode: z.string().min(3).optional(),
+      email: z.string().email(),
+    }).parse(req.body)
+    const code = body.reservationCode?.trim()
     const emailNorm = normalizeReservationEmail(body.email)
     if (!emailNorm) throw errors.badRequest('Email is required')
 
@@ -97,15 +100,20 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
       where: {
         eventId,
         reservationEmail: emailNorm,
-        OR: [
-          { reservationCode: code },
-          { metadata: { path: ['reservationCode'], equals: code } },
-        ],
+        ...(code
+          ? {
+              OR: [
+                { reservationCode: code },
+                { metadata: { path: ['reservationCode'], equals: code } },
+              ],
+            }
+          : {}),
       },
       select: { id: true },
+      orderBy: { issuedAt: 'desc' },
     })
-    // Same response for unknown code and unknown email — no existence leak.
-    if (!ticket) throw errors.notFound('Reservation not found')
+    // Same generic response for unknown email/code — no existence leak.
+    if (!ticket) return { data: { ok: true, deliveryStatus: null } }
 
     const result = await resendReservationCredential({
       eventId,

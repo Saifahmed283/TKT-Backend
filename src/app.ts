@@ -59,6 +59,11 @@ const requestStartedAt = new WeakMap<FastifyReply, number>()
 const NO_DB_CONTEXT_PATHS = new Set(['/health', '/health/ready', '/', '/status.js', '/realtime'])
 const NO_AUTH_PATHS = new Set(['/health', '/health/ready', '/', '/status.js'])
 
+// Status capabilities and attendee email must not land in request logs.
+function safeUrlForLog(url: string): string {
+  return url.replace(/([?&](?:token|email|accessToken)=)[^&]*/gi, '$1[redacted]')
+}
+
 export async function buildApp(): Promise<FastifyInstance> {
   assertRoleCatalogValid()
 
@@ -131,7 +136,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     const durationMs = started == null ? null : Date.now() - started
     const fields = {
       method: req.method,
-      url: req.url,
+      url: safeUrlForLog(req.url),
       status: reply.statusCode,
       duration_ms: durationMs,
     }
@@ -218,6 +223,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       { pattern: /^\/public\/events\/[^/]+\/reservations$/, keyFn: (ip: string, path: string) => `reservation:${path.match(/\/public\/events\/([^/]+)/)?.[1] || 'unknown'}:ip:${ip}`, max: 5, windowMs: 10 * 60 * 1000 },
       { pattern: /^\/public\/events\/[^/]+\/buses\/[^/]+\/hold$/, keyFn: (ip: string, path: string) => `seathold:${path.match(/\/public\/events\/([^/]+)/)?.[1] || 'unknown'}:ip:${ip}`, max: 10, windowMs: 60 * 1000 },
       { pattern: /^\/public\/events\/[^/]+\/reservations\/status/, keyFn: (ip: string, path: string) => `status:${path.match(/\/public\/events\/([^/]+)/)?.[1] || 'unknown'}:ip:${ip}`, max: 120, windowMs: 10 * 60 * 1000 },
+      { pattern: /^\/public\/events\/[^/]+\/reservations\/resend$/, keyFn: (ip: string, path: string) => `resend:${path.match(/\/public\/events\/([^/]+)/)?.[1] || 'unknown'}:ip:${ip}`, max: 3, windowMs: 15 * 60 * 1000 },
     ]
 
     for (const { pattern, keyFn, max, windowMs } of sensitivePatterns) {

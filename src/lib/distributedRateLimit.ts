@@ -1,5 +1,6 @@
 import { Redis } from '@upstash/redis'
 import { config } from '../config.js'
+import { prisma } from './db.js'
 
 let redis: Redis | null = null
 
@@ -11,7 +12,7 @@ export function getRedis(): Redis | null {
 
   if (!url || !token) {
     if (config.isProd) {
-      console.error('UPSTASH_REDIS_REST_URL/TOKEN not configured - sensitive endpoints will fail closed in production')
+      console.warn('UPSTASH_REDIS_REST_URL/TOKEN not configured - using Postgres rate-limit fallback in production')
     }
     return null
   }
@@ -21,8 +22,51 @@ export function getRedis(): Redis | null {
 }
 
 /**
- * Distributed rate limiter using Upstash Redis.
- * Falls back to no-op in development if Redis is not configured.
+ * Postgres fallback used in production when Upstash is not configured. It is
+ * distributed across serverless instances and fails closed on database errors.
+ */
+async function databaseRateLimit(
+  key: string,
+  options: { max: number; windowMs: number },
+): Promise<{ allowed: boolean; remaining: number; resetAt: number }> {
+  const now = Date.now()
+  const windowStart = new Date(now)
+  const threshold = new Date(now - options.windowMs)
+
+  try {
+    const rows = await prisma.$queryRaw<Array<{ count: bigint | number; windowStart: Date }>>`
+      INSERT INTO "RateLimitCounter" ("key", "windowStart", "count")
+      VALUES (${key}, ${windowStart}, 1)
+      ON CONFLICT ("key") DO UPDATE SET
+        "count" = CASE
+          WHEN "RateLimitCounter"."windowStart" < ${threshold} THEN 1
+          ELSE "RateLimitCounter"."count" + 1
+        END,
+        "windowStart" = CASE
+          WHEN "RateLimitCounter"."windowStart" < ${threshold} THEN ${windowStart}
+          ELSE "RateLimitCounter"."windowStart"
+        END
+      RETURNING "count", "windowStart"
+    `
+    const count = Number(rows[0]?.count ?? options.max + 1)
+    const resetAt = new Date(rows[0]?.windowStart ?? windowStart).getTime() + options.windowMs
+    return {
+      allowed: count <= options.max,
+      remaining: Math.max(0, options.max - count),
+      resetAt,
+    }
+  } catch (err) {
+    console.error('Database rate limit error:', err)
+    if (config.isProd) {
+      return { allowed: false, remaining: 0, resetAt: now + options.windowMs }
+    }
+    return { allowed: true, remaining: options.max, resetAt: now + options.windowMs }
+  }
+}
+
+/**
+ * Distributed rate limiter using Upstash Redis when configured, otherwise a
+ * Postgres-backed counter in production. Development stays permissive.
  */
 export async function distributedRateLimit(
   key: string,
@@ -31,11 +75,7 @@ export async function distributedRateLimit(
   const client = getRedis()
 
   if (!client) {
-    // Never silently disable abuse protection in production. Configuration
-    // must be present before sensitive endpoints can be served.
-    if (config.isProd) {
-      return { allowed: false, remaining: 0, resetAt: Date.now() + options.windowMs }
-    }
+    if (config.isProd) return databaseRateLimit(key, options)
     return { allowed: true, remaining: options.max, resetAt: Date.now() + options.windowMs }
   }
 
