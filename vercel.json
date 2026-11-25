@@ -2,7 +2,6 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "buildCommand": "npx prisma generate && npm run build",
-  "outputDirectory": null,
   "functions": {
     "api/*.js": {
       "includeFiles": "{dist/**,prisma/schema.prisma}"
