@@ -121,7 +121,7 @@ async function processClaimedEvents(
       const maxAttempts = event.maxAttempts
 
       if (nextAttempt >= maxAttempts) {
-        await basePrisma.outboxEvent.update({
+        await prisma.outboxEvent.update({
           where: { id: event.id },
           data: {
             status: 'DEAD_LETTER',
@@ -134,7 +134,7 @@ async function processClaimedEvents(
         // Exponential backoff: 1min, 2min, 4min, 8min, 16min...
         const delayMinutes = Math.min(2 ** (nextAttempt - 1), 60)
         const scheduledAt = new Date(Date.now() + delayMinutes * 60 * 1000)
-        await basePrisma.outboxEvent.update({
+        await prisma.outboxEvent.update({
           where: { id: event.id },
           data: {
             status: 'FAILED',
