@@ -70,7 +70,11 @@ function useBlobStore() {
 
 function signProofPath(pathname: string) {
   // Capability link: the blob stays private, but whoever holds the URL can view it.
-  return createHmac('sha256', config.jwt.accessSecret).update(pathname).digest('base64url')
+  // Domain-separate from auth tokens so a JWT secret cannot be reused as proof.
+  return createHmac('sha256', config.jwt.accessSecret)
+    .update('tkt-private-proof-v1\0')
+    .update(pathname)
+    .digest('base64url')
 }
 
 export function proofUrl(pathname: string) {

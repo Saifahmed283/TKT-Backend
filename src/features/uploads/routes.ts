@@ -32,6 +32,8 @@ export async function uploadRoutes(app: FastifyInstance) {
     reply.header('Content-Length', file.size)
     reply.header('Cache-Control', 'private, no-cache')
     reply.header('X-Content-Type-Options', 'nosniff')
+    // Proofs may be SVG/PDF; disable active content if opened directly.
+    reply.header('Content-Security-Policy', "default-src 'none'; sandbox")
     return reply.send(file.stream)
   })
 }
