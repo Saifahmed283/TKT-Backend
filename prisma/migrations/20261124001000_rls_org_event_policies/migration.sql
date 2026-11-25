@@ -503,7 +503,7 @@ CREATE POLICY rls_bus_seat_delete ON "BusSeat" FOR DELETE
 -- ── Public-only tables ────────────────────────────────────────────────
 -- Public-site entities may be introduced by later migrations. Guard policy
 -- creation so a clean migration chain never references a table prematurely.
-DO $
+DO $rls$
 BEGIN
   IF to_regclass('"PublicReview"') IS NOT NULL THEN
     EXECUTE $policy$
@@ -558,4 +558,4 @@ BEGIN
       USING (app_is_internal() OR app_is_super_admin())
     $policy$;
   END IF;
-END $;
+END $rls$;
