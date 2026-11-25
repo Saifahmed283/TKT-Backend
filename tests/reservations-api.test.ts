@@ -414,6 +414,41 @@ describe('public reservation integrity', () => {
     })
   })
 
+  it('allows a public reservation to claim a seat after its hold expires', async () => {
+    const admin = await registerIsolatedUser('HoldExpiryAdmin', `hold-expiry-admin-${Date.now()}@isolated.tkt`)
+    const orgId = await createOrg(admin.token, `Org HoldExpiry ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event HoldExpiry ${Date.now()}`)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Conference + Bus', 0, true)
+    const bus = await createBus(admin.token, eventId)
+    const seatId = bus.seatIds[0]
+
+    const hold = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/buses/${bus.id}/hold`,
+      payload: { seatIds: [seatId], sessionId: 'expired-hold-session' },
+    })
+    expectStatus(hold, 200)
+
+    await runWithDbContext({ isInternal: true }, async () => {
+      await prisma.busSeat.update({ where: { id: seatId }, data: { holdExpiresAt: new Date(Date.now() - 1_000) } })
+    })
+
+    const reservation = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Expired Hold Guest',
+        email: `hold-expired-${Date.now()}@test.tkt`,
+        phone: '+20 100 123 4567',
+        ticketTypeId,
+        busId: bus.id,
+        seatIds: [seatId],
+      },
+    })
+    expectStatus(reservation, 201)
+  })
+
   it('prevents seat edits, layout rebuilds, and bus deletion while a public hold is active', async () => {
     const admin = await registerIsolatedUser('HoldGuardAdmin', `hold-guard-admin-${Date.now()}@isolated.tkt`)
     const orgId = await createOrg(admin.token, `Org HoldGuard ${Date.now()}`)
