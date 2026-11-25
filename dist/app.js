@@ -48,9 +48,16 @@ import { verifyAccessToken } from './lib/auth.js';
 const requestDbTransactions = new WeakMap();
 export async function buildApp() {
     assertRoleCatalogValid();
-    await syncSystemRoles();
-    if (!config.isTest)
+    // Vercel invokes buildApp() on every cold start. Role sync and the rejected
+    // reservation purge are maintenance jobs, not request setup: running them in
+    // a function boot adds unbounded DB work to the first request of every new
+    // instance. They run in long-lived server mode and can be scheduled as jobs
+    // in serverless environments.
+    const isServerless = Boolean(process.env.VERCEL);
+    if (!isServerless && !config.isTest) {
+        await syncSystemRoles();
         await purgeRejectedReservations();
+    }
     const app = Fastify({
         logger: config.isProd
             ? { level: 'warn' }
