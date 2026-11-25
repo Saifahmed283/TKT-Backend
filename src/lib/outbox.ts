@@ -27,7 +27,7 @@ export type OutboxEventPayload = Prisma.InputJsonValue
  * This ensures the event is persisted atomically with the business operation.
  */
 export async function addOutboxEvent(
-  tx: PrismaClient,
+  tx: PrismaClient | Prisma.TransactionClient,
   eventType: OutboxEventType,
   payload: OutboxEventPayload,
   options: { scheduledAt?: Date; maxAttempts?: number } = {}
