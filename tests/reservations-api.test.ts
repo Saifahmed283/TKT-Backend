@@ -217,6 +217,51 @@ describe('public reservation integrity', () => {
     }
   })
 
+  it('serves the standalone PWA ticket only for the matching reservation code and email', async () => {
+    const admin = await registerUser('ResPwaTicket')
+    const orgId = await createOrg(admin.token, `Org ResPwaTicket ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event ResPwaTicket ${Date.now()}`)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'PWA Guest', 0)
+    const email = `pwa-${Date.now()}@test.tkt`
+    const reserve = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: { name: 'PWA Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+    })
+    expectStatus(reserve, 201)
+    const reservationCode = reserve.json().data.reservationCode as string
+    await waitForCredential(reserve.json().data.ticketId)
+
+    const wrongEmail = await app.inject({
+      method: 'GET',
+      url: `/public/reservations/status?code=${encodeURIComponent(reservationCode)}&email=${encodeURIComponent(`wrong-${Date.now()}@test.tkt`)}` ,
+    })
+    expectStatus(wrongEmail, 404)
+    expect(wrongEmail.json().data).toBeUndefined()
+
+    const missingEmail = await app.inject({
+      method: 'GET',
+      url: `/public/reservations/status?code=${encodeURIComponent(reservationCode)}`,
+    })
+    expectStatus(missingEmail, 400)
+
+    const lookup = await app.inject({
+      method: 'GET',
+      url: `/public/reservations/status?code=${encodeURIComponent(reservationCode)}&email=${encodeURIComponent(email)}`,
+    })
+    expectStatus(lookup, 200)
+    const data = lookup.json().data
+    expect(data.reservationCode).toBe(reservationCode)
+    expect(data.eventName).toContain('Event ResPwaTicket')
+    expect(data.attendeeName).toBe('PWA Guest')
+    expect(data.approval).toBe('APPROVED')
+    expect(data.credentialStatus).toBe('ACTIVE')
+    expect(data.qr).toBeTruthy()
+    expect(data).not.toHaveProperty('reservationEmail')
+    expect(data).not.toHaveProperty('accessToken')
+  })
+
   it('resends a ticket publicly only for a matching reservation code and email', async () => {
     const admin = await registerUser('ResPublicResend')
     const orgId = await createOrg(admin.token, `Org ResPublicResend ${Date.now()}`)
