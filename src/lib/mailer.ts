@@ -97,6 +97,23 @@ export function ticketEmailShell(opts: {
   qrCid?: string | null
   ticketUrl?: string | null
   footer?: string
+  ticketDesign?: {
+    templateId?: string
+    paletteId?: string
+    panelColor?: string
+    accentColor?: string
+    backgroundColor?: string
+    textColor?: string
+  } | null
+  ticketPreview?: {
+    attendeeName: string
+    eventName: string
+    ticketTypeName: string
+    dateTime: string
+    venue?: string | null
+    seat?: string | null
+    reference?: string | null
+  } | null
 }): string {
   const arabicLabels: Record<string, string> = {
     Event: 'الفعالية',
@@ -152,6 +169,72 @@ export function ticketEmailShell(opts: {
   const action = ticketUrl
     ? `<a href="${escapeHtml(ticketUrl)}" target="_blank" style="display:block;padding:15px 24px;background:#c8a25c;color:#ffffff;text-decoration:none;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:16px;font-weight:700;line-height:1.5;text-align:center;border-radius:28px">عرض التذكرة&nbsp; / &nbsp;VIEW TICKET</a>`
     : `<div style="padding:14px 20px;background:#f1ede4;color:#0b1f44;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:13px;font-weight:700;line-height:1.6;text-align:center;border-radius:28px">احتفظ بهذا البريد لإبرازه عند الدخول&nbsp; / &nbsp;KEEP THIS EMAIL FOR ENTRY</div>`
+
+  const design = opts.ticketDesign ?? {}
+  const safeColor = (value: unknown, fallback: string) =>
+    typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback
+  const panelColor = safeColor(design.panelColor, '#0b0b0c')
+  const accentColor = safeColor(design.accentColor, '#c8a25c')
+  const surfaceColor = safeColor(design.backgroundColor, '#f1ede4')
+  const ticketTextColor = safeColor(design.textColor, '#171717')
+  const preview = opts.ticketPreview
+  const ticketPreviewBlock = preview ? (() => {
+    const attendee = escapeHtml(preview.attendeeName || 'Ticket holder')
+    const eventName = escapeHtml(preview.eventName)
+    const ticketTypeName = escapeHtml(preview.ticketTypeName)
+    const dateTime = escapeHtml(preview.dateTime)
+    const venue = escapeHtml(preview.venue || '—')
+    const seat = preview.seat ? escapeHtml(preview.seat) : null
+    const reference = escapeHtml(preview.reference || '')
+    const isEditorial = design.templateId === 'editorial-wide'
+    const detailRows = [
+      ['ATTENDEE', attendee],
+      ['DATE & TIME', dateTime],
+      ['LOCATION', venue],
+      ...(seat ? [['SEAT', seat]] : []),
+    ].map(([label, value]) => `<tr><td style="padding:7px 0;color:#7c766b;font-family:Poppins,Arial,sans-serif;font-size:9px;letter-spacing:.08em;width:35%">${label}</td><td style="padding:7px 0;color:${ticketTextColor};font-family:Cairo,Tahoma,Arial,sans-serif;font-size:12px;font-weight:700;text-align:right">${value}</td></tr>`).join('')
+    const code = reference ? `<p style="margin:12px 0 0;color:${accentColor};font-family:ui-monospace,monospace;font-size:10px;letter-spacing:.08em">${reference} · SCAN AT ENTRY</p>` : ''
+    const qr = opts.qrCid ? `<img src="cid:${escapeHtml(opts.qrCid)}" width="78" height="78" alt="Ticket QR code" style="display:block;width:78px;height:78px;background:#fff;padding:4px;border:0">` : ''
+    if (isEditorial) {
+      return `<tr><td style="padding:0 0 22px;background:#fdfbf7">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border:1px solid #e5dccb;background:${surfaceColor}">
+          <tr><td colspan="2" bgcolor="${panelColor}" style="padding:18px 20px;background:${panelColor}">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+              <td style="color:#fff;font-family:Poppins,Arial,sans-serif;font-size:24px;font-weight:700;letter-spacing:.08em">TKT</td>
+              <td align="right" style="color:${accentColor};font-family:Poppins,Arial,sans-serif;font-size:10px;letter-spacing:.16em">EVENT PASS</td>
+            </tr></table>
+          </td></tr>
+          <tr><td colspan="2" style="padding:20px 20px 8px;color:${ticketTextColor};font-family:Cairo,Tahoma,Arial,sans-serif;font-size:21px;font-weight:700">${eventName}</td></tr>
+          <tr>
+            <td valign="top" style="padding:6px 20px 20px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${detailRows}</table>${code}</td>
+            <td width="100" align="center" valign="middle" style="padding:12px">${qr}</td>
+          </tr>
+          <tr><td colspan="2" bgcolor="${panelColor}" style="padding:8px 20px;color:#fff;font-family:Poppins,Arial,sans-serif;font-size:9px;letter-spacing:.16em">YOUR EXPERIENCE STARTS HERE</td></tr>
+        </table>
+        <p style="margin:7px 0 0;color:#8a8275;font-family:Poppins,Arial,sans-serif;font-size:9px;text-align:center">${ticketTypeName}</p>
+      </td></tr>`
+    }
+    return `<tr><td style="padding:0 0 22px;background:#fdfbf7">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border:1px solid #e5dccb;background:${surfaceColor}">
+        <tr>
+          <td width="34%" valign="middle" bgcolor="${panelColor}" style="width:34%;padding:20px 14px;background:${panelColor}">
+            <p style="margin:0;color:#fff;font-family:Poppins,Arial,sans-serif;font-size:26px;font-weight:700;letter-spacing:.08em">TKT</p>
+            <p style="margin:18px 0 0;color:${accentColor};font-family:Poppins,Arial,sans-serif;font-size:9px;letter-spacing:.15em">EVENT PASS</p>
+            <p style="margin:36px 0 0;color:#fff;font-family:Poppins,Arial,sans-serif;font-size:8px;letter-spacing:.14em">YOUR EXPERIENCE STARTS HERE</p>
+          </td>
+          <td valign="top" style="padding:18px 20px;background:${surfaceColor}">
+            <p style="margin:0;color:${ticketTextColor};font-family:Cairo,Tahoma,Arial,sans-serif;font-size:20px;font-weight:700;line-height:1.5">${eventName}</p>
+            <p style="margin:3px 0 12px;color:${accentColor};font-family:Poppins,Arial,sans-serif;font-size:10px;letter-spacing:.08em">${ticketTypeName}</p>
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${detailRows}</table>
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+              <td valign="bottom">${code}</td>
+              <td width="82" align="right" valign="bottom">${qr}</td>
+            </tr></table>
+          </td>
+        </tr>
+      </table>
+    </td></tr>`
+  })() : ''
 
   const titleAr = escapeHtml(opts.titleAr ?? 'تأكيد الحجز وإصدار التذكرة')
   const title = escapeHtml(opts.title)
@@ -224,6 +307,8 @@ export function ticketEmailShell(opts: {
           <p dir="rtl" style="margin:22px 0 0;color:#172033;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:16px;line-height:1.9">${bodyAr}</p>
           <p dir="ltr" style="margin:8px 0 0;color:#172033;font-family:Poppins,Arial,sans-serif;font-size:13px;line-height:1.8">${body}</p>
         </td></tr>
+
+        ${ticketPreviewBlock}
 
         <tr><td class="email-pad" style="padding:8px 36px 20px;background:#fdfbf7">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f1ede4" style="width:100%;background:#f1ede4;border-radius:16px">
