@@ -68,22 +68,32 @@ function useBlobStore() {
   return Boolean(blobToken())
 }
 
-function signProofPath(pathname: string) {
+function signProofPath(pathname: string, expiresAt?: number) {
   // Capability link: the blob stays private, but whoever holds the URL can view it.
   // Domain-separate from auth tokens so a JWT secret cannot be reused as proof.
+  // Includes optional expiration timestamp for TTL support.
+  const payload = `tkt-private-proof-v1\0${pathname}\0${expiresAt ?? 0}`
   return createHmac('sha256', config.jwt.accessSecret)
-    .update('tkt-private-proof-v1\0')
-    .update(pathname)
+    .update(payload)
     .digest('base64url')
 }
 
-export function proofUrl(pathname: string) {
-  return `${PROOF_PROXY_PREFIX}${pathname}?token=${signProofPath(pathname)}`
+export function proofUrl(pathname: string, ttlSeconds?: number) {
+  const expiresAt = ttlSeconds && ttlSeconds > 0 ? Date.now() + ttlSeconds * 1000 : undefined
+  const token = signProofPath(pathname, expiresAt)
+  const params = new URLSearchParams()
+  params.set('token', token)
+  if (expiresAt) params.set('exp', String(expiresAt))
+  return `${PROOF_PROXY_PREFIX}${pathname}?${params.toString()}`
 }
 
-export function verifyProofToken(pathname: string, token?: string) {
+export function verifyProofToken(pathname: string, token?: string, expiresAt?: number) {
   if (!token) return false
-  const expected = Buffer.from(signProofPath(pathname))
+  // If expiration was provided, check it
+  if (expiresAt && Date.now() > expiresAt) {
+    return false
+  }
+  const expected = Buffer.from(signProofPath(pathname, expiresAt))
   const actual = Buffer.from(token)
   return expected.length === actual.length && timingSafeEqual(expected, actual)
 }
@@ -136,7 +146,7 @@ export async function saveUpload(file: UploadFile) {
     try {
       const result = await put(key, buf, { access: 'private', token, contentType: mimeType })
       const storedPath = isSafeUploadPath(result.pathname) ? result.pathname : key
-      const url = proofUrl(storedPath)
+      const url = proofUrl(storedPath, config.uploads.proofTtl)
       return { url, path: url, name: file.filename, mimeType, size: buf.length }
     } catch {
       throw new AppError(503, 'UPLOAD_STORE_UNAVAILABLE', 'Upload storage is unavailable')

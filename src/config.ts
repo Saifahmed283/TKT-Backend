@@ -57,6 +57,8 @@ export const config = {
     // Production uploads use Vercel Blob; local/dev keeps writing to disk.
     blobToken: optional('BLOB_READ_WRITE_TOKEN', ''),
     blobStoreId: optional('BLOB_STORE_ID', ''),
+    // Proof URL TTL in seconds (default: 24 hours). Set to 0 for no expiration.
+    proofTtl: Number(optional('UPLOAD_PROOF_TTL', String(24 * 60 * 60))),
   },
   publicUrl: optional('PUBLIC_URL', 'http://localhost:5173'),
   isProd: optional('NODE_ENV', 'development') === 'production',

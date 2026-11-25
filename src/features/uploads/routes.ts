@@ -22,9 +22,10 @@ export async function uploadRoutes(app: FastifyInstance) {
   // <img> and admin proof links work without exposing store credentials.
   app.get('/blob/*', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (req, reply) => {
     const pathname = (req.params as { '*': string })['*']
-    const { token } = req.query as { token?: string }
-    if (!isSafeUploadPath(pathname) || !verifyProofToken(pathname, token)) {
-      throw errors.forbidden('Invalid proof link')
+    const { token, exp } = req.query as { token?: string; exp?: string }
+    const expiresAt = exp ? Number(exp) : undefined
+    if (!isSafeUploadPath(pathname) || !verifyProofToken(pathname, token, expiresAt)) {
+      throw errors.forbidden('Invalid or expired proof link')
     }
     const file = await readPrivateUpload(pathname)
     if (!file) throw errors.notFound('Proof not found')
