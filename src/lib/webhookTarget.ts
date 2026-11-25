@@ -6,6 +6,7 @@ import { errors } from './errors.js'
 import { URL } from 'node:url'
 import { createConnection } from 'node:net'
 import { createRequire } from 'node:module'
+import { checkServerIdentity } from 'node:tls'
 
 const require = createRequire(import.meta.url)
 const http = require('http')
@@ -211,6 +212,11 @@ function createTcpConnection(host: string, port: number): Promise<any> {
   })
 }
 
+/** Node's built-in check validates SAN/CN; a substring match is not enough. */
+export function verifyPinnedCertificate(hostname: string, cert: any): Error | undefined {
+  return checkServerIdentity(hostname, cert)
+}
+
 async function createTlsConnection(host: string, hostname: string, port: number): Promise<any> {
   const tls = await import('node:tls')
   return new Promise((resolve, reject) => {
@@ -221,7 +227,7 @@ async function createTlsConnection(host: string, hostname: string, port: number)
       // Node's built-in check validates SAN/CN correctly. A substring check
       // here would accept a certificate for a different hostname containing
       // the target as a substring.
-      checkServerIdentity: (_host: string, cert: any) => tls.checkServerIdentity(hostname, cert),
+      checkServerIdentity: (_host: string, cert: any) => verifyPinnedCertificate(hostname, cert),
     }, () => resolve(socket))
     socket.on('error', reject)
   })
@@ -336,7 +342,7 @@ async function fetchPinned(
         servername: url.hostname, // SNI
         // Verify against the URL hostname, not the pinned IP. Node's built-in
         // check avoids substring matches on unrelated certificate names.
-        checkServerIdentity: (_host: string, cert: any) => tlsModule.checkServerIdentity(url.hostname, cert),
+        checkServerIdentity: (_host: string, cert: any) => verifyPinnedCertificate(url.hostname, cert),
       }
 
       const tlsSocket = tlsModule.connect(tlsOptions, () => {
@@ -366,7 +372,7 @@ async function fetchPinned(
   })
 }
 
-function resolveResponse(res: any, resolve: (r: Response) => void, reject: (e: Error) => void) {
+export function resolveResponse(res: any, resolve: (r: Response) => void, reject: (e: Error) => void) {
   const chunks: Buffer[] = []
   res.on('data', (chunk: Buffer) => chunks.push(chunk))
   res.on('end', () => {

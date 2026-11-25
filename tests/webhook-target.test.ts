@@ -1,4 +1,5 @@
 import Fastify from 'fastify'
+import { EventEmitter } from 'node:events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -26,7 +27,13 @@ vi.mock('../src/middleware/authorize.js', () => ({ requirePermission: mocks.requ
 vi.mock('../src/lib/audit.js', () => ({ writeAudit: mocks.writeAudit }))
 
 import { integrationRoutes } from '../src/features/integrations/routes.js'
-import { assertSafeWebhookUrl, validateAndPinWebhookUrl, verifyPinnedTarget } from '../src/lib/webhookTarget.js'
+import {
+  assertSafeWebhookUrl,
+  resolveResponse,
+  validateAndPinWebhookUrl,
+  verifyPinnedCertificate,
+  verifyPinnedTarget,
+} from '../src/lib/webhookTarget.js'
 
 async function buildApp() {
   const app = Fastify()
@@ -116,5 +123,50 @@ describe('webhook target validation', () => {
     expect(verifyPinnedTarget(target)).toBe(true)
 
     expect(verifyPinnedTarget({ ...target, pinnedIps: ['169.254.169.254'] })).toBe(false)
+  })
+})
+
+describe('webhook delivery response handling', () => {
+  function fakeResponse(statusCode: number, body = '') {
+    const res: any = new EventEmitter()
+    res.statusCode = statusCode
+    res.headers = { 'content-type': 'application/json' }
+    queueMicrotask(() => {
+      res.emit('data', Buffer.from(body))
+      res.emit('end')
+    })
+    return res
+  }
+
+  it('accepts bodyless 204/205/304 acknowledgements', async () => {
+    for (const status of [204, 205, 304]) {
+      const response = await new Promise<Response>((resolve, reject) => {
+        resolveResponse(fakeResponse(status, 'ignored'), resolve, reject)
+      })
+      expect(response.status).toBe(status)
+      expect(await response.text()).toBe('')
+    }
+  })
+
+  it('keeps a normal response body', async () => {
+    const response = await new Promise<Response>((resolve, reject) => {
+      resolveResponse(fakeResponse(200, '{"ok":true}'), resolve, reject)
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true })
+  })
+
+  it('verifies the certificate against the exact hostname', () => {
+    const matching = {
+      subject: { CN: 'hooks.example.com' },
+      subjectaltname: 'DNS:hooks.example.com',
+    }
+    const unrelated = {
+      subject: { CN: 'hooks.example.com.attacker.test' },
+      subjectaltname: 'DNS:hooks.example.com.attacker.test',
+    }
+
+    expect(verifyPinnedCertificate('hooks.example.com', matching)).toBeUndefined()
+    expect(verifyPinnedCertificate('hooks.example.com', unrelated)).toBeInstanceOf(Error)
   })
 })
