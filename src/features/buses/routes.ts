@@ -247,7 +247,11 @@ export async function busRoutes(app: FastifyInstance) {
       if (!(await lockBusForSeatMutation(tx, busId, eventId, true))) throw errors.notFound('Active bus not found')
       const seats = await tx.busSeat.findMany({ where: { id: { in: body.seatIds }, busId, bus: { eventId, isActive: true } } })
       if (seats.length !== body.seatIds.length) throw errors.notFound('One or more seats not found')
-      const blocked = seats.filter(s => s.state !== 'AVAILABLE')
+      const now = new Date()
+      const blocked = seats.filter(s => !(
+        s.state === 'AVAILABLE'
+        || (s.state === 'HELD' && s.holdExpiresAt && s.holdExpiresAt <= now)
+      ))
       if (blocked.length) throw errors.conflict(`Seats already reserved or unavailable: ${blocked.map(s => s.label).join(', ')}`)
       if (body.ticketId) {
         const ticket = await tx.ticket.findFirst({ where: { id: body.ticketId, eventId } })
@@ -258,7 +262,14 @@ export async function busRoutes(app: FastifyInstance) {
       for (const id of body.seatIds) {
         const p = body.passengers?.find(x => x.seatId === id)
         const updated = await tx.busSeat.updateMany({
-          where: { id, busId, state: 'AVAILABLE' },
+          where: {
+            id,
+            busId,
+            OR: [
+              { state: 'AVAILABLE' },
+              { state: 'HELD', holdExpiresAt: { lte: now } },
+            ],
+          },
           data: {
             state: 'RESERVED',
             holderName: body.holderName,
