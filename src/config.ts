@@ -10,11 +10,23 @@ function optional(name: string, fallback: string): string {
   return process.env[name] || fallback
 }
 
+// These are browser origins, not API URLs. The deployed frontend and backend
+// are on different Vercel subdomains, so both must be explicitly allowed.
+const DEFAULT_CORS_ORIGINS = ['http://localhost:5173', 'https://ticketak.vercel.app']
+
+export function parseCorsOrigins(raw = optional('CORS_ORIGIN', '')): string[] {
+  const configured = raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+  return [...new Set([...DEFAULT_CORS_ORIGINS, ...configured])]
+}
+
 export const config = {
   env: optional('NODE_ENV', 'development'),
   port: Number(optional('PORT', '4000')),
   host: optional('HOST', '0.0.0.0'),
-  corsOrigin: optional('CORS_ORIGIN', 'http://localhost:5173'),
+  corsOrigins: parseCorsOrigins(),
   databaseUrl: required('DATABASE_URL'),
   jwt: {
     accessSecret: required('JWT_ACCESS_SECRET'),
@@ -48,6 +60,7 @@ export const config = {
   },
   publicUrl: optional('PUBLIC_URL', 'http://localhost:5173'),
   isProd: optional('NODE_ENV', 'development') === 'production',
+  isVercel: Boolean(process.env.VERCEL),
   isTest: optional('NODE_ENV', 'development') === 'test',
   rateLimits: {
     // Integration tests need many registrations; a dedicated test opts back in.

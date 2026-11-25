@@ -167,9 +167,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   }
 
   await app.register(cors, {
-    origin: config.corsOrigin.split(','),
+    origin: config.corsOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 
   await app.register(cookie)

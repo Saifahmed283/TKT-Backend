@@ -27,13 +27,30 @@ const loginSchema = z.object({
   password: z.string().min(1),
 })
 
-function setRefreshCookie(reply: any, token: string) {
-  reply.setCookie('tkt_refresh', token, {
+function refreshCookieOptions() {
+  // ticketak.vercel.app -> tkt-backend.vercel.app is cross-site, so the
+  // refresh cookie needs SameSite=None; Secure on Vercel. Localhost stays Lax
+  // so ordinary http dev servers keep working.
+  const crossSite = config.isProd || config.isVercel
+  return {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: config.isProd,
+    sameSite: crossSite ? ('none' as const) : ('lax' as const),
+    secure: crossSite,
     path: '/',
     maxAge: 60 * 60 * 24 * 7,
+  }
+}
+
+function setRefreshCookie(reply: any, token: string) {
+  reply.setCookie('tkt_refresh', token, refreshCookieOptions())
+}
+
+function clearRefreshCookie(reply: any) {
+  const crossSite = config.isProd || config.isVercel
+  reply.clearCookie('tkt_refresh', {
+    path: '/',
+    sameSite: crossSite ? ('none' as const) : ('lax' as const),
+    secure: crossSite,
   })
 }
 
@@ -107,7 +124,7 @@ export async function authRoutes(app: FastifyInstance) {
       if (!claims) throw errors.unauthorized('Refresh session expired')
       const user = await prisma.user.findUnique({ where: { id: claims.sub } })
       if (!user || user.status !== 'ACTIVE') {
-        reply.clearCookie('tkt_refresh', { path: '/' })
+        clearRefreshCookie(reply)
         throw errors.unauthorized('Account not found')
       }
 
@@ -123,7 +140,7 @@ export async function authRoutes(app: FastifyInstance) {
   })
 
   app.post('/logout', async (req, reply) => {
-    reply.clearCookie('tkt_refresh', { path: '/' })
+    clearRefreshCookie(reply)
     return reply.send({ data: { ok: true } })
   })
 
