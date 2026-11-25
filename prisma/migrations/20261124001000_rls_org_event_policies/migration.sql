@@ -15,8 +15,12 @@ BEGIN
     'EventInsurancePolicy', 'EventMapAsset', 'OpsAlert', 'TeamChatMessage',
     'AuditLog', 'Bus', 'BusSeat'
   ] LOOP
-    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
-    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    -- Some public-site entities are introduced by later migrations.
+    -- Enable RLS only when the relation exists at this point in the chain.
+    IF to_regclass(format('%I.%I', 'public', t)) IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+      EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    END IF;
   END LOOP;
 END $$;
 
@@ -497,37 +501,61 @@ CREATE POLICY rls_bus_seat_delete ON "BusSeat" FOR DELETE
   );
 
 -- ── Public-only tables ────────────────────────────────────────────────
-CREATE POLICY rls_public_review_select ON "PublicReview" FOR SELECT
-  USING (app_is_internal() OR app_is_super_admin() OR (app_is_public() AND "visible"));
+-- Public-site entities may be introduced by later migrations. Guard policy
+-- creation so a clean migration chain never references a table prematurely.
+DO $
+BEGIN
+  IF to_regclass('"PublicReview"') IS NOT NULL THEN
+    EXECUTE $policy$
+      CREATE POLICY rls_public_review_select ON "PublicReview" FOR SELECT
+      USING (app_is_internal() OR app_is_super_admin() OR (app_is_public() AND "visible"))
+    $policy$;
+    EXECUTE $policy$
+      CREATE POLICY rls_public_review_write ON "PublicReview" FOR ALL
+      USING (app_is_internal() OR app_is_super_admin())
+      WITH CHECK (app_is_internal() OR app_is_super_admin())
+    $policy$;
+  END IF;
 
-CREATE POLICY rls_public_review_write ON "PublicReview" FOR ALL
-  USING (app_is_internal() OR app_is_super_admin())
-  WITH CHECK (app_is_internal() OR app_is_super_admin());
+  IF to_regclass('"ContactMessage"') IS NOT NULL THEN
+    EXECUTE $policy$
+      CREATE POLICY rls_contact_read ON "ContactMessage" FOR SELECT
+      USING (app_is_internal() OR app_is_super_admin())
+    $policy$;
+    -- Prisma create uses INSERT ... RETURNING; expose only the row created by
+    -- the current public request.
+    EXECUTE $policy$
+      CREATE POLICY rls_contact_insert_returning ON "ContactMessage" FOR SELECT
+      USING (app_is_public() AND "id" = app_setting('app.contact_id'))
+    $policy$;
+    EXECUTE $policy$
+      CREATE POLICY rls_contact_insert ON "ContactMessage" FOR INSERT
+      WITH CHECK (app_is_internal() OR app_is_super_admin() OR app_is_public())
+    $policy$;
+    EXECUTE $policy$
+      CREATE POLICY rls_contact_write ON "ContactMessage" FOR ALL
+      USING (app_is_internal() OR app_is_super_admin())
+      WITH CHECK (app_is_internal() OR app_is_super_admin())
+    $policy$;
+  END IF;
 
-CREATE POLICY rls_contact_read ON "ContactMessage" FOR SELECT
-  USING (app_is_internal() OR app_is_super_admin());
-
--- Prisma create uses INSERT ... RETURNING; allow only the row whose id was
--- generated for this public request.
-CREATE POLICY rls_contact_insert_returning ON "ContactMessage" FOR SELECT
-  USING (app_is_public() AND "id" = app_setting('app.contact_id'));
-
-CREATE POLICY rls_contact_insert ON "ContactMessage" FOR INSERT
-  WITH CHECK (app_is_internal() OR app_is_super_admin() OR app_is_public());
-
-CREATE POLICY rls_contact_write ON "ContactMessage" FOR ALL
-  USING (app_is_internal() OR app_is_super_admin())
-  WITH CHECK (app_is_internal() OR app_is_super_admin());
-
-CREATE POLICY rls_wheel_select ON "WheelSpin" FOR SELECT
-  USING (app_is_internal() OR app_is_super_admin() OR app_is_public());
-
-CREATE POLICY rls_wheel_insert ON "WheelSpin" FOR INSERT
-  WITH CHECK (app_is_internal() OR app_is_super_admin() OR app_is_public());
-
-CREATE POLICY rls_wheel_update ON "WheelSpin" FOR UPDATE
-  USING (app_is_internal() OR app_is_super_admin() OR app_is_public())
-  WITH CHECK (app_is_internal() OR app_is_super_admin() OR app_is_public());
-
-CREATE POLICY rls_wheel_delete ON "WheelSpin" FOR DELETE
-  USING (app_is_internal() OR app_is_super_admin());
+  IF to_regclass('"WheelSpin"') IS NOT NULL THEN
+    EXECUTE $policy$
+      CREATE POLICY rls_wheel_select ON "WheelSpin" FOR SELECT
+      USING (app_is_internal() OR app_is_super_admin() OR app_is_public())
+    $policy$;
+    EXECUTE $policy$
+      CREATE POLICY rls_wheel_insert ON "WheelSpin" FOR INSERT
+      WITH CHECK (app_is_internal() OR app_is_super_admin() OR app_is_public())
+    $policy$;
+    EXECUTE $policy$
+      CREATE POLICY rls_wheel_update ON "WheelSpin" FOR UPDATE
+      USING (app_is_internal() OR app_is_super_admin() OR app_is_public())
+      WITH CHECK (app_is_internal() OR app_is_super_admin() OR app_is_public())
+    $policy$;
+    EXECUTE $policy$
+      CREATE POLICY rls_wheel_delete ON "WheelSpin" FOR DELETE
+      USING (app_is_internal() OR app_is_super_admin())
+    $policy$;
+  END IF;
+END $;
