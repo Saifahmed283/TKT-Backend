@@ -147,6 +147,7 @@ export async function reservationRoutes(app: FastifyInstance) {
           const now = new Date()
           const blocked = seatRows.filter((s: any) => {
             if (s.state === 'AVAILABLE') return false
+            if (s.state === 'HELD' && s.holdExpiresAt && s.holdExpiresAt <= now) return false
             if (s.state === 'HELD' && body.holdToken && s.holdToken === body.holdToken && s.holdExpiresAt && s.holdExpiresAt > now) return false
             return true
           })
@@ -204,7 +205,10 @@ export async function reservationRoutes(app: FastifyInstance) {
         if (seatIds.length > 0) {
           const groupId = randomUUID()
           const now = new Date()
-          const allowedSeatStates: Prisma.BusSeatWhereInput[] = [{ state: 'AVAILABLE' }]
+          const allowedSeatStates: Prisma.BusSeatWhereInput[] = [
+            { state: 'AVAILABLE' },
+            { state: 'HELD', holdExpiresAt: { lte: now } },
+          ]
           if (body.holdToken) {
             allowedSeatStates.push({ state: 'HELD', holdToken: body.holdToken, holdExpiresAt: { gt: now } })
           }
