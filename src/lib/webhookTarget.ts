@@ -218,14 +218,10 @@ async function createTlsConnection(host: string, hostname: string, port: number)
       host,
       port,
       servername: hostname, // SNI for TLS verification
-      checkServerIdentity: (host: string, cert: any) => {
-        // Verify the certificate matches the expected hostname
-        const altNames = cert.subjectaltname || ''
-        if (!altNames.toLowerCase().includes(hostname.toLowerCase())) {
-          return new Error(`Certificate does not match hostname ${hostname}`)
-        }
-        return undefined
-      },
+      // Node's built-in check validates SAN/CN correctly. A substring check
+      // here would accept a certificate for a different hostname containing
+      // the target as a substring.
+      checkServerIdentity: (_host: string, cert: any) => tls.checkServerIdentity(hostname, cert),
     }, () => resolve(socket))
     socket.on('error', reject)
   })
@@ -338,14 +334,9 @@ async function fetchPinned(
         host: targetIp,
         port,
         servername: url.hostname, // SNI
-        checkServerIdentity: (host: string, cert: any) => {
-          // Verify cert matches the expected hostname
-          const altNames = cert.subjectaltname || ''
-          if (!altNames.toLowerCase().includes(url.hostname.toLowerCase())) {
-            return new Error(`Certificate does not match hostname ${url.hostname}`)
-          }
-          return undefined
-        },
+        // Verify against the URL hostname, not the pinned IP. Node's built-in
+        // check avoids substring matches on unrelated certificate names.
+        checkServerIdentity: (_host: string, cert: any) => tlsModule.checkServerIdentity(url.hostname, cert),
       }
 
       const tlsSocket = tlsModule.connect(tlsOptions, () => {
@@ -379,12 +370,16 @@ function resolveResponse(res: any, resolve: (r: Response) => void, reject: (e: E
   const chunks: Buffer[] = []
   res.on('data', (chunk: Buffer) => chunks.push(chunk))
   res.on('end', () => {
-    const body = Buffer.concat(chunks).toString()
-    const response = new Response(body, {
-      status: res.statusCode,
+    const status = Number(res.statusCode) || 200
+    // Response() rejects a non-null body for 204/205/304. Those statuses are
+    // valid webhook acknowledgements and must not throw inside this handler.
+    const body = status === 204 || status === 205 || status === 304
+      ? null
+      : Buffer.concat(chunks).toString()
+    resolve(new Response(body, {
+      status,
       headers: res.headers as any,
-    })
-    resolve(response)
+    }))
   })
   res.on('error', reject)
 }

@@ -11,7 +11,7 @@ export function getRedis(): Redis | null {
 
   if (!url || !token) {
     if (config.isProd) {
-      console.warn('UPSTASH_REDIS_REST_URL/TOKEN not configured - distributed rate limiting disabled in production!')
+      console.error('UPSTASH_REDIS_REST_URL/TOKEN not configured - sensitive endpoints will fail closed in production')
     }
     return null
   }
@@ -31,9 +31,10 @@ export async function distributedRateLimit(
   const client = getRedis()
 
   if (!client) {
-    // No Redis configured - allow all requests in dev, but log warning in prod
+    // Never silently disable abuse protection in production. Configuration
+    // must be present before sensitive endpoints can be served.
     if (config.isProd) {
-      console.warn(`Rate limit check skipped for key "${key}" - Redis not configured`)
+      return { allowed: false, remaining: 0, resetAt: Date.now() + options.windowMs }
     }
     return { allowed: true, remaining: options.max, resetAt: Date.now() + options.windowMs }
   }

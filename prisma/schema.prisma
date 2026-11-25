@@ -1076,6 +1076,15 @@ model IdempotencyKey {
   @@index([expiresAt])
 }
 
+// Fallback for distributed rate limiting when Upstash is not configured.
+model RateLimitCounter {
+  key         String   @id
+  windowStart DateTime
+  count       Int      @default(0)
+
+  @@index([windowStart])
+}
+
 enum OutboxEventType {
   RESERVATION_CREATED
   RESERVATION_APPROVED

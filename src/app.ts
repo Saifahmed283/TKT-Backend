@@ -153,7 +153,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     origin: config.corsOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
   })
 
   await app.register(cookie)
@@ -199,10 +199,8 @@ export async function buildApp(): Promise<FastifyInstance> {
     const path = (req.url || '').split('?')[0] || ''
     const ip = req.ip
 
-    // Skip if Redis not configured (dev mode) or in tests
-    const { getRedis, distributedRateLimit, rateLimitKeys } = await import('./lib/distributedRateLimit.js')
-    const redis = getRedis()
-    if (!redis) return
+    // The limiter fails closed in production when Redis is not configured.
+    const { distributedRateLimit, rateLimitKeys } = await import('./lib/distributedRateLimit.js')
 
     // Define sensitive endpoint patterns with their limits
     type RateLimitPattern = {

@@ -9,7 +9,7 @@ import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { decideReservation, reservationCodeOf, reservationPaymentOf } from '../reservations/service.js'
 import { publish, channelFor } from '../../lib/realtime.js'
-import { completeIdempotencyKey, getIdempotencyResponse } from '../../lib/idempotency.js'
+import { acquireIdempotencyKey, completeIdempotencyKey, releaseIdempotencyKey } from '../../lib/idempotency.js'
 
 const providerSchema = z.object({
   name: z.string().min(2),
@@ -208,81 +208,100 @@ export async function paymentRoutes(app: FastifyInstance) {
     await requirePermission(req, 'payment.review', { eventId })
     const body = reviewSchema.parse(req.body)
 
-    // Idempotency key support. Only completed responses are cached, so a
-    // failed review can be retried safely with the same key.
+    // Reserve the key before any mutation. A key is scoped to this route,
+    // actor, ticket, event, and payload so it cannot replay a different review.
     const rawKey = req.headers['idempotency-key']
     const idempotencyKey = (Array.isArray(rawKey) ? rawKey[0] : rawKey)?.trim()
+    let scopedKey: string | null = null
     if (idempotencyKey && idempotencyKey.length <= 255) {
-      const cached = await getIdempotencyResponse(prisma, idempotencyKey)
-      if (cached !== null) return reply.send(cached)
+      scopedKey = [
+        'POST',
+        '/events/:eventId/payments/reservations/:ticketId/review',
+        eventId,
+        ticketId,
+        req.user.id,
+        body.action,
+        body.note ?? '',
+        idempotencyKey,
+      ].join('|')
+      const acquired = await acquireIdempotencyKey(prisma, scopedKey)
+      if (acquired.state === 'replay') return reply.send(acquired.response)
+      if (acquired.state === 'processing') {
+        throw errors.conflict('A request with this idempotency key is already in progress')
+      }
     }
 
-    const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: { attendee: true, ticketType: true, event: true } })
-    if (!ticket || ticket.eventId !== eventId) throw errors.notFound('Ticket not found')
-    const meta = (ticket.metadata ?? {}) as Record<string, unknown>
-    if (reservationPaymentOf(ticket) !== 'PENDING') throw errors.conflict('Payment is not pending review')
+    let completed = false
+    try {
+      const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: { attendee: true, ticketType: true, event: true } })
+      if (!ticket || ticket.eventId !== eventId) throw errors.notFound('Ticket not found')
+      const meta = (ticket.metadata ?? {}) as Record<string, unknown>
+      if (reservationPaymentOf(ticket) !== 'PENDING') throw errors.conflict('Payment is not pending review')
 
-    const confirmedPayment = body.action === 'CONFIRM'
-    const paymentStatus = confirmedPayment ? 'CONFIRMED' : 'FAILED'
-    const reviewedAt = new Date().toISOString()
+      const confirmedPayment = body.action === 'CONFIRM'
+      const paymentStatus = confirmedPayment ? 'CONFIRMED' : 'FAILED'
+      const reviewedAt = new Date().toISOString()
 
-    await prisma.ticket.update({
-      where: { id: ticketId },
-      data: {
-        paymentStatus,
-        metadata: {
-          ...meta,
+      await prisma.ticket.update({
+        where: { id: ticketId },
+        data: {
           paymentStatus,
-          paymentReviewedAt: reviewedAt,
-          reviewedByUserId: req.user.id,
-          ...(confirmedPayment
-            ? { paymentConfirmedAt: reviewedAt }
-            : { paymentRejectedAt: reviewedAt, rejectedReason: body.note ?? 'Payment proof rejected' }),
-        } as any,
-      },
-    })
+          metadata: {
+            ...meta,
+            paymentStatus,
+            paymentReviewedAt: reviewedAt,
+            reviewedByUserId: req.user.id,
+            ...(confirmedPayment
+              ? { paymentConfirmedAt: reviewedAt }
+              : { paymentRejectedAt: reviewedAt, rejectedReason: body.note ?? 'Payment proof rejected' }),
+          } as any,
+        },
+      })
 
-    const decided = await decideReservation({
-      eventId,
-      ticketId,
-      approved: confirmedPayment,
-      actorUserId: req.user.id,
-      actorName: req.user.name,
-      reason: body.note,
-    })
+      const decided = await decideReservation({
+        eventId,
+        ticketId,
+        approved: confirmedPayment,
+        actorUserId: req.user.id,
+        actorName: req.user.name,
+        reason: body.note,
+      })
 
-    publish(channelFor.reservation(eventId), confirmedPayment ? 'reservation.approved' : 'reservation.rejected', {
-      ticketId,
-      approval: confirmedPayment ? 'APPROVED' : 'REJECTED',
-      alreadyDecided: decided.alreadyDecided,
-    })
-    await writeAudit({
-      organizationId: ticket.event.orgId,
-      eventId,
-      actorUserId: req.user.id,
-      action: confirmedPayment ? AuditActions.PAYMENT_CONFIRMED : AuditActions.PAYMENT_REJECTED,
-      resourceType: 'ticket',
-      resourceId: ticketId,
-      newValue: { action: body.action, paymentStatus, approval: confirmedPayment ? 'APPROVED' : 'REJECTED', credentialId: decided.credential?.id ?? null },
-      sourceIp: req.ip,
-    })
-
-    const response = {
-      data: {
-        ticket: decided.ticket,
+      publish(channelFor.reservation(eventId), confirmedPayment ? 'reservation.approved' : 'reservation.rejected', {
+        ticketId,
         approval: confirmedPayment ? 'APPROVED' : 'REJECTED',
-        paymentStatus,
-        credentialId: decided.credential?.id ?? null,
         alreadyDecided: decided.alreadyDecided,
-      },
-    }
+      })
+      await writeAudit({
+        organizationId: ticket.event.orgId,
+        eventId,
+        actorUserId: req.user.id,
+        action: confirmedPayment ? AuditActions.PAYMENT_CONFIRMED : AuditActions.PAYMENT_REJECTED,
+        resourceType: 'ticket',
+        resourceId: ticketId,
+        newValue: { action: body.action, paymentStatus, approval: confirmedPayment ? 'APPROVED' : 'REJECTED', credentialId: decided.credential?.id ?? null },
+        sourceIp: req.ip,
+      })
 
-    if (idempotencyKey && idempotencyKey.length <= 255) {
-      const replay = await completeIdempotencyKey(prisma, idempotencyKey, response)
-      if (replay !== null) return reply.send(replay)
-    }
+      const response = {
+        data: {
+          ticket: decided.ticket,
+          approval: confirmedPayment ? 'APPROVED' : 'REJECTED',
+          paymentStatus,
+          credentialId: decided.credential?.id ?? null,
+          alreadyDecided: decided.alreadyDecided,
+        },
+      }
 
-    return response
+      if (scopedKey) await completeIdempotencyKey(prisma, scopedKey, response)
+      completed = true
+      return response
+    } catch (error) {
+      if (scopedKey && !completed) {
+        await releaseIdempotencyKey(prisma, scopedKey).catch(() => undefined)
+      }
+      throw error
+    }
   })
 
   app.get('/summary', async (req) => {
