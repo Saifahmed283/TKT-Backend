@@ -171,7 +171,7 @@ export async function resendReservationCredential(params: {
     subject: typeof tpl.subject === 'string' && tpl.subject ? tpl.subject.replace('{event}', ticket.event.name) : `Your ticket — ${ticket.event.name}`,
     html: ticketEmailShell({
       preheader: typeof tpl.preheader === 'string' && tpl.preheader ? tpl.preheader : `Ticket for ${ticket.event.name} — present your QR at check-in`,
-      title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replace('{event}', ticket.event.name) : `Your ticket for ${ticket.event.name}`,
+      title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replace('{event}', ticket.event.name) : 'Booking Confirmation & Ticket Issuance',
       body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replaceAll('{event}', ticket.event.name) : `Here is your signed QR ticket for ${ticket.event.name}. Present it at check-in.`,
       rows: [
         { label: 'Event', value: ticket.event.name },
@@ -186,7 +186,7 @@ export async function resendReservationCredential(params: {
         })(),
       ],
       qrCid: TICKET_QR_CID,
-      titleAr: typeof tpl.titleAr === 'string' && tpl.titleAr ? tpl.titleAr.replaceAll('{event}', ticket.event.name) : 'تذكرتك جاهزة للدخول',
+      titleAr: typeof tpl.titleAr === 'string' && tpl.titleAr ? tpl.titleAr.replaceAll('{event}', ticket.event.name) : 'تأكيد الحجز وإصدار التذكرة',
       bodyAr: typeof tpl.bodyAr === 'string' && tpl.bodyAr ? tpl.bodyAr.replaceAll('{event}', ticket.event.name) : 'حجزك مؤكد. يرجى إظهار رمز QR عند بوابة الدخول.',
       ticketUrl: codeOf ? new URL(`/reservation/${encodeURIComponent(codeOf)}`, config.env === 'production' && config.publicUrl.includes('localhost') ? 'https://ticketak.vercel.app' : config.publicUrl).toString() : undefined,
       footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · YOUR EXPERIENCE STARTS HERE',
@@ -260,7 +260,7 @@ export async function deliverReservationCredentialEmail(params: {
     subject: typeof tpl.subject === 'string' && tpl.subject ? tpl.subject.replaceAll('{event}', event.name) : `Your ticket — ${event.name}`,
     html: ticketEmailShell({
       preheader: typeof tpl.preheader === 'string' && tpl.preheader ? tpl.preheader.replaceAll('{event}', event.name) : `Ticket for ${event.name} — present your QR at check-in`,
-      title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replaceAll('{event}', event.name) : `You're in, ${ticket.attendee.name.split(' ')[0]}`,
+      title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replaceAll('{event}', event.name) : 'Booking Confirmation & Ticket Issuance',
       body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replaceAll('{event}', event.name) : `Your reservation for ${event.name} is confirmed. Show this QR at the gate — it is signed, single-use and cannot be forged.`,
       rows: [
         { label: 'Event', value: event.name },
@@ -275,7 +275,7 @@ export async function deliverReservationCredentialEmail(params: {
         })(),
       ],
       qrCid: TICKET_QR_CID,
-      titleAr: typeof tpl.titleAr === 'string' && tpl.titleAr ? tpl.titleAr.replaceAll('{event}', event.name) : 'تم تأكيد حجزك بنجاح!',
+      titleAr: typeof tpl.titleAr === 'string' && tpl.titleAr ? tpl.titleAr.replaceAll('{event}', event.name) : 'تأكيد الحجز وإصدار التذكرة',
       bodyAr: typeof tpl.bodyAr === 'string' && tpl.bodyAr ? tpl.bodyAr.replaceAll('{event}', event.name) : `مرحباً ${ticket.attendee.name.split(' ')[0]}، يسعدنا تأكيد حجزك. تذكرتك جاهزة الآن.`,
       ticketUrl: codeOf ? new URL(`/reservation/${encodeURIComponent(codeOf)}`, config.env === 'production' && config.publicUrl.includes('localhost') ? 'https://ticketak.vercel.app' : config.publicUrl).toString() : undefined,
       footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · YOUR EXPERIENCE STARTS HERE',
