@@ -161,7 +161,7 @@ describe('Apple Wallet pass generation', () => {
       { key: 'location', label: 'LOCATION', value: 'Cairo Opera House · Gezira, Cairo' },
       { key: 'ticket-type', label: 'TICKET TYPE', value: 'Program + Bus Included' },
       { key: 'booking-reference', label: 'BOOKING REFERENCE', value: 'TKT-26001' },
-      { key: 'event-name', label: 'EVENT', value: 'TKT Signature Night' },
+      { key: 'event-name-back', label: 'EVENT', value: 'TKT Signature Night' },
     ]))
     expect(walletMock.props?.backgroundColor).toBe('rgb(255, 242, 247)')
     expect(walletMock.props?.foregroundColor).toBe('rgb(42, 16, 32)')
