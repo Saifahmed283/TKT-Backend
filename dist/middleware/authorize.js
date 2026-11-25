@@ -18,12 +18,17 @@ async function applyScopeToDbContext(userId, ctx) {
  */
 export async function requirePermission(req, permission, opts) {
     const userId = req.user.id;
-    // Platform super admin
-    const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { platformRole: true },
-    });
-    if (user?.platformRole === 'super_admin') {
+    // Platform role is loaded once per request by authenticate() and reused here.
+    let platformRole = req.platformRole;
+    if (platformRole === undefined) {
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { platformRole: true },
+        });
+        platformRole = user?.platformRole ?? null;
+        req.platformRole = platformRole;
+    }
+    if (platformRole === 'super_admin') {
         const ctx = {
             organizationId: opts?.eventId ? (await prisma.event.findUnique({ where: { id: opts.eventId }, select: { orgId: true } }))?.orgId ?? '' : '',
             eventId: opts?.eventId ?? '',
@@ -103,11 +108,16 @@ function hasScopeAccess(ctx, permission, target) {
     return true;
 }
 export async function resolveOrgContext(req, organizationId) {
-    const user = await prisma.user.findUnique({
-        where: { id: req.user.id },
-        select: { platformRole: true },
-    });
-    if (user?.platformRole === 'super_admin') {
+    let platformRole = req.platformRole;
+    if (platformRole === undefined) {
+        const user = await prisma.user.findUnique({
+            where: { id: req.user.id },
+            select: { platformRole: true },
+        });
+        platformRole = user?.platformRole ?? null;
+        req.platformRole = platformRole;
+    }
+    if (platformRole === 'super_admin') {
         await updateDbContext({ userId: req.user.id, orgId: organizationId, isSuperAdmin: true });
         return { role: 'ADMIN', isAdmin: true };
     }

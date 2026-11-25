@@ -8,16 +8,23 @@ export async function authenticate(req, reply) {
     const token = header?.match(BEARER_RE)?.[1];
     if (!token)
         throw errors.unauthorized();
-    const claims = await verifyAccessToken(token);
+    // The global onRequest hook already verified this token for RLS context.
+    // Reuse those claims instead of paying JWT verification twice per request.
+    const claims = req.authClaims ?? (await verifyAccessToken(token));
     if (!claims)
         throw errors.unauthorized('Session expired or invalid');
     req.user = { ...claims, id: claims.sub };
     await updateDbContext({ userId: claims.sub, isSuperAdmin: false });
-    const user = await prisma.user.findUnique({
-        where: { id: claims.sub },
-        select: { platformRole: true },
-    });
-    if (user?.platformRole === 'super_admin') {
+    let platformRole = req.platformRole;
+    if (platformRole === undefined) {
+        const user = await prisma.user.findUnique({
+            where: { id: claims.sub },
+            select: { platformRole: true },
+        });
+        platformRole = user?.platformRole ?? null;
+        req.platformRole = platformRole;
+    }
+    if (platformRole === 'super_admin') {
         await updateDbContext({ isSuperAdmin: true });
     }
 }

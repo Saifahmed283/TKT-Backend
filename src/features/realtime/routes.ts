@@ -15,6 +15,10 @@ export async function realtimeRoutes(app: FastifyInstance) {
     const { channel } = querySchema.parse(req.query)
     const eventId = channel.split(':')[1]!
     await requirePermission(req, 'event.view', { eventId })
+    // The stream is written directly to the raw response and stays open.
+    // Hijacking makes that lifecycle explicit and prevents Fastify from
+    // trying to send a second response after the handler returns.
+    reply.hijack()
     attachSse(reply, channel)
   })
 }

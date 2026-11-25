@@ -46,6 +46,12 @@ import { enterDbContext } from './lib/dbContext.js';
 import { prisma } from './lib/db.js';
 import { verifyAccessToken } from './lib/auth.js';
 const requestDbTransactions = new WeakMap();
+// These routes never touch the request-scoped Prisma transaction. Health probes
+// are called constantly by the status page and monitoring, static upload files
+// are served directly, and SSE streams must not pin a DB connection open for
+// their entire lifetime.
+const NO_TRANSACTION_PATHS = new Set(['/health', '/health/ready', '/', '/status.js', '/realtime']);
+const NO_AUTH_PATHS = new Set(['/health', '/health/ready', '/', '/status.js']);
 export async function buildApp() {
     assertRoleCatalogValid();
     // Vercel invokes buildApp() on every cold start. Role sync and the rejected
@@ -72,13 +78,28 @@ export async function buildApp() {
             const path = (req.url || '').split('?')[0] || '';
             const publicEvent = path.match(/^\/public\/events\/([^/]+)/);
             const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+            // Health/status/static requests do not need JWT verification or a DB
+            // transaction. Skipping them removes a DB round trip from every probe.
+            if (req.method === 'OPTIONS' || NO_AUTH_PATHS.has(path)) {
+                done();
+                return;
+            }
             const claims = token ? await verifyAccessToken(token) : null;
+            if (claims)
+                req.authClaims = claims;
             enterDbContext({
                 userId: claims?.sub,
                 isAuth: path.startsWith('/auth'),
                 isPublic: path.startsWith('/public'),
                 publicEventId: publicEvent?.[1],
             });
+            // SSE authenticates on connect but then stays open indefinitely. Auth
+            // queries fall back to short scoped transactions; the stream itself must
+            // not hold a connection open.
+            if (NO_TRANSACTION_PATHS.has(path) || path.startsWith('/uploads/')) {
+                done();
+                return;
+            }
             let completedTransaction;
             const completed = new Promise((resolve) => { completedTransaction = resolve; });
             requestDbTransactions.set(reply, completedTransaction);
@@ -274,7 +295,8 @@ export async function buildApp() {
 </html>`;
         return reply
             .type('text/html; charset=utf-8')
-            .header('Cache-Control', 'no-store')
+            // The shell is static; status.js fetches live data on every load.
+            .header('Cache-Control', 'public, max-age=60')
             .send(html);
     });
     app.get('/status.js', async (_req, reply) => {
@@ -375,7 +397,7 @@ export async function buildApp() {
 })()`;
         return reply
             .type('application/javascript; charset=utf-8')
-            .header('Cache-Control', 'no-store')
+            .header('Cache-Control', 'public, max-age=300')
             .send(js);
     });
     app.get('/health', async (_req, reply) => {
