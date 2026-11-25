@@ -1,4 +1,4 @@
-﻿import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify'
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify'
 import cookie from '@fastify/cookie'
 import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
@@ -39,6 +39,7 @@ import { integrationRoutes } from './features/integrations/routes.js'
 import { dashboardRoutes } from './features/dashboard/routes.js'
 import { busRoutes } from './features/buses/routes.js'
 import { metaRoutes } from './features/meta/routes.js'
+import { siteContentRoutes } from './features/site-content/routes.js'
 import { assertRoleCatalogValid } from './lib/roleAliases.js'
 import { syncSystemRoles } from './lib/roleSync.js'
 import { purgeRejectedReservations } from './features/reservations/purge.js'
@@ -47,15 +48,13 @@ import { registerBackgroundTasks } from './lib/background.js'
 import { prisma } from './lib/db.js'
 import { verifyAccessToken } from './lib/auth.js'
 
-const requestDbTransactions = new WeakMap<FastifyReply, () => void>()
 const requestStartedAt = new WeakMap<FastifyReply, number>()
-const transactionStartedAt = new WeakMap<FastifyReply, number>()
 
-// These routes never touch the request-scoped Prisma transaction. Health probes
+// These routes never need JWT verification or DB context. Health probes
 // are called constantly by the status page and monitoring, static upload files
 // are served directly, and SSE streams must not pin a DB connection open for
 // their entire lifetime.
-const NO_TRANSACTION_PATHS = new Set(['/health', '/health/ready', '/', '/status.js', '/realtime'])
+const NO_DB_CONTEXT_PATHS = new Set(['/health', '/health/ready', '/', '/status.js', '/realtime'])
 const NO_AUTH_PATHS = new Set(['/health', '/health/ready', '/', '/status.js'])
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -79,9 +78,9 @@ export async function buildApp(): Promise<FastifyInstance> {
     trustProxy: true,
   })
 
-  // One transaction per request keeps RLS context on a single connection and
-  // avoids a round-trip per Prisma operation. The transaction is released in
-  // onResponse, after the handler has finished using it.
+  // Request-scoped RLS context via AsyncLocalStorage.
+  // No request-scoped transaction: business operations use explicit
+  // prisma.$transaction() callbacks so commits happen before response.
   app.addHook('onRequest', (req, reply, done) => {
     requestStartedAt.set(reply, Date.now())
     void (async () => {
@@ -89,8 +88,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       const publicEvent = path.match(/^\/public\/events\/([^/]+)/)
       const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1]
 
-      // Health/status/static requests do not need JWT verification or a DB
-      // transaction. Skipping them removes a DB round trip from every probe.
+      // Health/status/static requests do not need JWT verification or DB context.
       if (req.method === 'OPTIONS' || NO_AUTH_PATHS.has(path)) {
         done()
         return
@@ -98,6 +96,13 @@ export async function buildApp(): Promise<FastifyInstance> {
 
       const claims = token ? await verifyAccessToken(token) : null
       if (claims) req.authClaims = claims
+
+      // Skip DB context for paths that must not hold connections (SSE, uploads, health).
+      if (NO_DB_CONTEXT_PATHS.has(path) || path.startsWith('/uploads/')) {
+        done()
+        return
+      }
+
       enterDbContext({
         userId: claims?.sub,
         isAuth: path.startsWith('/auth'),
@@ -105,59 +110,26 @@ export async function buildApp(): Promise<FastifyInstance> {
         publicEventId: publicEvent?.[1],
       })
 
-      // SSE authenticates on connect but then stays open indefinitely. Auth
-      // queries fall back to short scoped transactions; the stream itself must
-      // not hold a connection open.
-      if (NO_TRANSACTION_PATHS.has(path) || path.startsWith('/uploads/')) {
-        done()
-        return
-      }
-
-      let completedTransaction: () => void
-      const completed = new Promise<void>((resolve) => { completedTransaction = resolve })
-      requestDbTransactions.set(reply, completedTransaction!)
-      transactionStartedAt.set(reply, Date.now())
-      let started = false
-
-      try {
-        await (prisma.$transaction as any)(async () => {
-          started = true
-          done()
-          await completed
-        }, { maxWait: 10_000, timeout: 120_000 })
-      } catch (err) {
-        if (!started) done(err as Error)
-        else req.log.error({ err }, 'request database transaction failed')
-      }
+      done()
     })().catch(done)
   })
 
   app.addHook('onResponse', async (req, reply) => {
-    const hadTransaction = requestDbTransactions.has(reply)
-    requestDbTransactions.get(reply)?.()
-    requestDbTransactions.delete(reply)
-
     const started = requestStartedAt.get(reply)
-    const txStarted = transactionStartedAt.get(reply)
     requestStartedAt.delete(reply)
-    transactionStartedAt.delete(reply)
     const durationMs = started == null ? null : Date.now() - started
-    const transactionHoldMs = txStarted == null ? null : Date.now() - txStarted
     const fields = {
       method: req.method,
       url: req.url,
       status: reply.statusCode,
       duration_ms: durationMs,
-      transaction_hold_ms: hadTransaction ? transactionHoldMs : null,
     }
-    // Production logs are warn-level; surface slow connection holds there while
+    // Production logs are warn-level; surface slow requests there while
     // keeping normal timing available in development/test logs.
     if (durationMs != null && durationMs > 1000) req.log.warn(fields, 'request.slow')
     else req.log.info(fields, 'request.completed')
   })
 
-  // Must be registered after the transaction-release hook so queued work runs
-  // outside the request transaction, immediately after the response is sent.
   registerBackgroundTasks(app)
 
   if (config.isTest && !config.rateLimits.enabledInTests) {
@@ -522,6 +494,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(dashboardRoutes, { prefix: '/dashboard' })
   await app.register(realtimeRoutes, { prefix: '/realtime' })
   await app.register(publicRoutes, { prefix: '/public' })
+  await app.register(siteContentRoutes, { prefix: '/site-content' })
 
   return app
 }

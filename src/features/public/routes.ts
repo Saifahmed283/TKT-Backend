@@ -7,6 +7,7 @@ import { reservationStatusRoutes } from './status.js'
 import { statsRoutes } from './stats.js'
 import { contactRoutes } from './contact.js'
 import { wheelRoutes } from './wheel.js'
+import { publicSiteContentRoutes } from './site-content.js'
 
 // Route paths and response bodies are unchanged; this module only composes
 // the feature files so each public subresource can be maintained separately.
@@ -19,4 +20,5 @@ export async function publicRoutes(app: FastifyInstance) {
   await statsRoutes(app)
   await contactRoutes(app)
   await wheelRoutes(app)
+  await publicSiteContentRoutes(app)
 }

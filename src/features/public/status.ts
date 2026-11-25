@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import { resendReservationCredential, reservationApprovalOf, reservationCodeOf, reservationPaymentOf, normalizeReservationEmail } from '../reservations/service.js'
+import { hashAccessToken } from './schemas.js'
 
 export async function reservationStatusRoutes(app: FastifyInstance) {
 // ── Reservation status lookup (re-fetch QR after approval) ──
