@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { z } from 'zod'
 // Request-scoped start time for the reservation-only latency log.
 export const reservationStartedAt = new WeakMap<object, number>()
@@ -52,7 +52,6 @@ export function secureAccessToken(): string {
 
 // Hash access token for storage (use SHA-256 for token hashing)
 export function hashAccessToken(token: string): string {
-  const { createHash } = require('node:crypto')
   return createHash('sha256').update(token).digest('hex')
 }
 
