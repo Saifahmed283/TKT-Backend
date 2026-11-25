@@ -378,8 +378,17 @@ describe('public reservation integrity', () => {
       },
     })
     expectStatus(reserved, 201)
-    expect(reserved.json().data.price).toBe('150')
+    // The transport-included package is a fixed price: seat selection must
+    // not add the separate shuttle seat price a second time.
+    expect(reserved.json().data.price).toBe('100')
     expect(reserved.json().data.seats).toHaveLength(1)
+    const storedTicket = await runWithDbContext({ isInternal: true }, () =>
+      prisma.ticket.findUnique({
+        where: { id: reserved.json().data.ticketId },
+        select: { price: true },
+      }),
+    )
+    expect(storedTicket?.price.toString()).toBe('100')
   })
 
   it('blocks manual approval until payment proof is confirmed', async () => {
