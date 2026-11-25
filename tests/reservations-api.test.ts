@@ -217,6 +217,62 @@ describe('public reservation integrity', () => {
     }
   })
 
+  it('protects Apple Wallet downloads and fails clearly when signing credentials are not configured', async () => {
+    const admin = await registerUser('ResWallet')
+    const orgId = await createOrg(admin.token, `Org ResWallet ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event ResWallet ${Date.now()}`)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Free Wallet Ticket', 0)
+    const email = `wallet-${Date.now()}@test.tkt`
+
+    const reserve = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: { name: 'Wallet Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+    })
+    expectStatus(reserve, 201)
+    const { ticketId, reservationCode, accessToken } = reserve.json().data
+    await waitForCredential(ticketId)
+
+    const noCapability = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations/wallet`,
+      payload: { code: reservationCode },
+    })
+    expectStatus(noCapability, 400)
+
+    const wrongEmail = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations/wallet`,
+      payload: { code: reservationCode, email: `not-owner-${Date.now()}@test.tkt` },
+    })
+    expectStatus(wrongEmail, 404)
+
+    const badToken = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations/wallet`,
+      payload: { code: reservationCode, token: 'invalid-token-value-that-is-long-enough' },
+    })
+    expectStatus(badToken, 404)
+
+    const validOwner = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations/wallet`,
+      payload: { code: reservationCode, token: accessToken },
+    })
+
+    // CI deliberately has no Apple-issued signing certificate. Once the
+    // environment is configured, the same path must return a signed pkpass.
+    if (validOwner.statusCode === 503) {
+      expect(validOwner.json().error.code).toBe('APPLE_WALLET_NOT_CONFIGURED')
+    } else {
+      expectStatus(validOwner, 200)
+      expect(validOwner.headers['content-type']).toContain('application/vnd.apple.pkpass')
+      expect(validOwner.headers['content-disposition']).toContain('.pkpass')
+      expect(validOwner.rawPayload.length).toBeGreaterThan(100)
+    }
+  })
+
   it('resends a ticket publicly only for a matching reservation code and email', async () => {
     const admin = await registerUser('ResPublicResend')
     const orgId = await createOrg(admin.token, `Org ResPublicResend ${Date.now()}`)
