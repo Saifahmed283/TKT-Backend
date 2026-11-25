@@ -42,6 +42,12 @@ export async function registerCleanupEndpoint(app: FastifyInstance): Promise<voi
     }
     const count = await releaseExpiredSeatHolds()
     const outbox = await processOutboxEvents(100)
-    return { data: { cleaned: count, outbox } }
+    // Distinct IPs/clients create a counter row each; keep only the current
+    // window plus a small margin so the fallback table cannot grow forever.
+    const rateLimitsCleaned = await prisma.$executeRaw`
+      DELETE FROM "RateLimitCounter"
+      WHERE "windowStart" < ${new Date(Date.now() - 24 * 60 * 60 * 1000)}
+    `.catch(() => 0)
+    return { data: { cleaned: count, outbox, rateLimitsCleaned } }
   })
 }

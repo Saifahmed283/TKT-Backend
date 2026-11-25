@@ -272,7 +272,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     const correlationId = generateCorrelationId()
     reply.header('X-Correlation-ID', correlationId)
     return reply.status(404).send(createErrorResponse(
-      new AppError(404, 'NOT_FOUND', `Route ${req.method} ${req.url} not found`),
+      new AppError(404, 'NOT_FOUND', `Route ${req.method} ${safeUrlForLog(req.url)} not found`),
       correlationId
     ))
   })

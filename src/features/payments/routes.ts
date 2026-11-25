@@ -213,6 +213,7 @@ export async function paymentRoutes(app: FastifyInstance) {
     const rawKey = req.headers['idempotency-key']
     const idempotencyKey = (Array.isArray(rawKey) ? rawKey[0] : rawKey)?.trim()
     let scopedKey: string | null = null
+    let owner: string | null = null
     if (idempotencyKey && idempotencyKey.length <= 255) {
       scopedKey = [
         'POST',
@@ -225,6 +226,7 @@ export async function paymentRoutes(app: FastifyInstance) {
         idempotencyKey,
       ].join('|')
       const acquired = await acquireIdempotencyKey(prisma, scopedKey)
+      if (acquired.state === 'acquired') owner = acquired.owner
       if (acquired.state === 'replay') return reply.send(acquired.response)
       if (acquired.state === 'processing') {
         throw errors.conflict('A request with this idempotency key is already in progress')
@@ -293,12 +295,12 @@ export async function paymentRoutes(app: FastifyInstance) {
         },
       }
 
-      if (scopedKey) await completeIdempotencyKey(prisma, scopedKey, response)
+      if (scopedKey && owner) await completeIdempotencyKey(prisma, scopedKey, owner, response)
       completed = true
       return response
     } catch (error) {
-      if (scopedKey && !completed) {
-        await releaseIdempotencyKey(prisma, scopedKey).catch(() => undefined)
+      if (scopedKey && owner && !completed) {
+        await releaseIdempotencyKey(prisma, scopedKey, owner).catch(() => undefined)
       }
       throw error
     }

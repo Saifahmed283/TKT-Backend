@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../../lib/db.js'
-import { errors } from '../../lib/errors.js'
+import { AppError, errors } from '../../lib/errors.js'
 import { resendReservationCredential, reservationApprovalOf, reservationCodeOf, reservationPaymentOf, normalizeReservationEmail } from '../reservations/service.js'
 import { hashAccessToken } from './schemas.js'
 
@@ -115,13 +115,23 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
     // Same generic response for unknown email/code — no existence leak.
     if (!ticket) return { data: { ok: true, deliveryStatus: null } }
 
-    const result = await resendReservationCredential({
-      eventId,
-      ticketId: ticket.id,
-      actorUserId: null,
-      actorName: 'Public reservation',
-      toEmail: emailNorm,
-    })
+    let result: Awaited<ReturnType<typeof resendReservationCredential>>
+    try {
+      result = await resendReservationCredential({
+        eventId,
+        ticketId: ticket.id,
+        actorUserId: null,
+        actorName: 'Public reservation',
+        toEmail: emailNorm,
+      })
+    } catch (error) {
+      // An ineligible or missing reservation must look identical to an unknown
+      // email. Only these two conflicts disclose existence/status here.
+      if (error instanceof AppError && (error.statusCode === 404 || error.statusCode === 409)) {
+        return { data: { ok: true, deliveryStatus: null } }
+      }
+      throw error
+    }
     return {
       data: {
         ok: result.deliveryOk,

@@ -46,10 +46,16 @@ const querySchema = z.object({
 export async function taskRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate)
 
-  async function taskPermission(req: any, eventId: string, permission: any, target?: { teamId?: string | null; areaId?: string | null }) {
-    // Task routes apply team/area filtering themselves after this capability
-    // check, then make a second target-scoped check for specific resources.
-    return requirePermission(req, permission, { eventId, target, allowNarrowNoTarget: true })
+  async function taskPermission(
+    req: any,
+    eventId: string,
+    permission: any,
+    target?: { teamId?: string | null; areaId?: string | null },
+    allowNarrowNoTarget = true,
+  ) {
+    // List routes filter by scope themselves. Mutations pass false so a
+    // TEAM/AREA-scoped operator cannot act on an untargeted, event-wide task.
+    return requirePermission(req, permission, { eventId, target, allowNarrowNoTarget })
   }
 
   app.get('/', async (req) => {
@@ -95,7 +101,7 @@ export async function taskRoutes(app: FastifyInstance) {
     await taskPermission(req, eventId, 'task.create', {
       teamId: body.teamId ?? null,
       areaId: body.areaId ?? null,
-    })
+    }, false)
     const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true } })
     if (!event) throw errors.notFound('Event not found')
 
@@ -158,17 +164,17 @@ export async function taskRoutes(app: FastifyInstance) {
     const body = updateSchema.parse(req.body)
     const task = await prisma.task.findFirst({ where: { id: taskId, eventId } })
     if (!task) throw errors.notFound('Task not found')
-    await taskPermission(req, eventId, 'task.update', { teamId: task.teamId, areaId: task.areaId })
+    await taskPermission(req, eventId, 'task.update', { teamId: task.teamId, areaId: task.areaId }, false)
 
     if (body.teamId) {
       const team = await prisma.team.findFirst({ where: { id: body.teamId, eventId } })
       if (!team) throw errors.badRequest('Team not found in this event')
-      await taskPermission(req, eventId, 'task.update', { teamId: body.teamId, areaId: task.areaId })
+      await taskPermission(req, eventId, 'task.update', { teamId: body.teamId, areaId: task.areaId }, false)
     }
     if (body.areaId) {
       const area = await prisma.area.findFirst({ where: { id: body.areaId, eventId } })
       if (!area) throw errors.badRequest('Area not found in this event')
-      await taskPermission(req, eventId, 'task.update', { teamId: task.teamId, areaId: body.areaId })
+      await taskPermission(req, eventId, 'task.update', { teamId: task.teamId, areaId: body.areaId }, false)
     }
 
     const statusChanged = body.status && body.status !== task.status
@@ -207,7 +213,7 @@ export async function taskRoutes(app: FastifyInstance) {
     await taskPermission(req, eventId, 'task.delete')
     const task = await prisma.task.findFirst({ where: { id: taskId, eventId } })
     if (!task) throw errors.notFound('Task not found')
-    await taskPermission(req, eventId, 'task.delete', { teamId: task.teamId, areaId: task.areaId })
+    await taskPermission(req, eventId, 'task.delete', { teamId: task.teamId, areaId: task.areaId }, false)
     await prisma.task.delete({ where: { id: taskId } })
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'task.deleted', resourceType: 'task', resourceId: taskId, sourceIp: req.ip })
     return reply.status(204).send()
