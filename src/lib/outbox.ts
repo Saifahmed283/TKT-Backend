@@ -120,11 +120,10 @@ export async function processOutboxEvents(
   return { processed, failed }
 }
 
-async function processEvent(event: { eventType: OutboxEventType; payload: OutboxEventPayload }): Promise<void> {
+async function processEvent(event: { eventType: OutboxEventType; payload: Prisma.JsonValue }): Promise<void> {
   // Import handlers dynamically to avoid circular dependencies
   const { sendMail, ticketEmailShell } = await import('./mailer.js')
   const { issueReservationCredential, deliverReservationCredentialEmail } = await import('../features/reservations/service.js')
-  import('../features/reservations/service.js').then(m => m.ReservationTicket) // type only
   const { dispatchEventWebhooks } = await import('../features/integrations/dispatch.js')
   const { publish, channelFor } = await import('./realtime.js')
   const { writeAudit } = await import('./audit.js')
