@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectMimeType, isOwnBlobUrl } from '../src/lib/uploadStore.js'
+import { detectMimeType, isOwnBlobUrl, isSafeUploadPath, proofPathFromUrl, proofUrl, verifyProofToken } from '../src/lib/uploadStore.js'
 
 describe('upload content sniffing', () => {
   it('recognizes declared image and PDF signatures', () => {
@@ -22,7 +22,26 @@ describe('blob URL ownership', () => {
   it('only accepts Vercel Blob URLs under our uploads prefix', () => {
     expect(isOwnBlobUrl('https://example.public.blob.vercel-storage.com/uploads/proof.png')).toBe(true)
     expect(isOwnBlobUrl('https://example.public.blob.vercel-storage.com/uploads/proof.png?x=1')).toBe(true)
+    expect(isOwnBlobUrl('https://example.private.blob.vercel-storage.com/uploads/proof.png')).toBe(true)
     expect(isOwnBlobUrl('https://evil.example/uploads/proof.png')).toBe(false)
     expect(isOwnBlobUrl('/uploads/proof.png')).toBe(false)
+  })
+})
+
+describe('private proof capability links', () => {
+  it('signs and verifies a proof path', () => {
+    const url = proofUrl('uploads/proof.png')
+    const token = new URL(url, 'http://localhost').searchParams.get('token')!
+    expect(url.startsWith('/api/uploads/blob/uploads/proof.png?token=')).toBe(true)
+    expect(verifyProofToken('uploads/proof.png', token)).toBe(true)
+    expect(verifyProofToken('uploads/proof.png', `${token}x`)).toBe(false)
+    expect(verifyProofToken('uploads/other.png', token)).toBe(false)
+  })
+
+  it('parses only safe proof paths', () => {
+    expect(proofPathFromUrl(proofUrl('uploads/proof.png'))).toBe('uploads/proof.png')
+    expect(proofPathFromUrl('/api/uploads/blob/uploads/../secret?token=x')).toBeNull()
+    expect(isSafeUploadPath('uploads/proof.png')).toBe(true)
+    expect(isSafeUploadPath('/uploads/proof.png')).toBe(false)
   })
 })

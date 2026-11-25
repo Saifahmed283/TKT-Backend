@@ -44,6 +44,7 @@ export const config = {
     maxBytes: Number(optional('UPLOAD_MAX_BYTES', String(5 * 1024 * 1024))),
     // Production uploads use Vercel Blob; local/dev keeps writing to disk.
     blobToken: optional('BLOB_READ_WRITE_TOKEN', ''),
+    blobStoreId: optional('BLOB_STORE_ID', ''),
   },
   publicUrl: optional('PUBLIC_URL', 'http://localhost:5173'),
   isProd: optional('NODE_ENV', 'development') === 'production',

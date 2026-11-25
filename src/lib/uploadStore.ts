@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
-import { del, put } from '@vercel/blob'
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
+import { Readable } from 'node:stream'
+import { del, get, put } from '@vercel/blob'
 import { config } from '../config.js'
 import { AppError, errors } from './errors.js'
 
@@ -20,7 +21,9 @@ type UploadFile = {
   toBuffer: () => Promise<Buffer>
 }
 
-const BLOB_HOST_SUFFIX = '.public.blob.vercel-storage.com'
+const PUBLIC_BLOB_HOST_SUFFIX = '.public.blob.vercel-storage.com'
+const PRIVATE_BLOB_HOST_SUFFIX = '.private.blob.vercel-storage.com'
+export const PROOF_PROXY_PREFIX = '/api/uploads/blob/'
 
 function startsWith(buf: Buffer, value: string | number[], offset = 0) {
   const needle = typeof value === 'string' ? Buffer.from(value, 'binary') : Buffer.from(value)
@@ -30,8 +33,8 @@ function startsWith(buf: Buffer, value: string | number[], offset = 0) {
 function isSafeSvg(buf: Buffer) {
   const text = buf.toString('utf8').replace(/^\uFEFF/, '').trim()
   if (!/<svg[\s>]/i.test(text)) return false
-  // Uploaded SVGs are public assets. Scripts and handlers would turn a
-  // "payment proof" into stored XSS if a browser opens the URL directly.
+  // Uploaded SVGs are served through a signed proxy. Scripts and handlers would
+  // still turn a "payment proof" into stored XSS if opened directly.
   return !/<script\b|<\/script\b|\bon[a-z]+\s*=|\bjavascript:/i.test(text)
 }
 
@@ -46,15 +49,61 @@ export function detectMimeType(buf: Buffer): string | null {
   return null
 }
 
+export function isSafeUploadPath(value: unknown): value is string {
+  if (typeof value !== 'string' || !value.startsWith('uploads/')) return false
+  const name = path.basename(value)
+  return Boolean(name) && name !== '.' && name !== '..' && !name.includes('..') && value === `uploads/${name}`
+}
+
 function blobToken() {
   return process.env.BLOB_READ_WRITE_TOKEN || config.uploads.blobToken
 }
 
 function useBlobStore() {
+  // Tests stay on local disk so a configured token never makes them hit Blob.
+  if (config.isTest) return false
   // Production has no persistent local disk on serverless. Fail fast there
   // when the token is missing instead of silently writing an ephemeral file.
   if (config.isProd) return true
   return Boolean(blobToken())
+}
+
+function signProofPath(pathname: string) {
+  // Capability link: the blob stays private, but whoever holds the URL can view it.
+  return createHmac('sha256', config.jwt.accessSecret).update(pathname).digest('base64url')
+}
+
+export function proofUrl(pathname: string) {
+  return `${PROOF_PROXY_PREFIX}${pathname}?token=${signProofPath(pathname)}`
+}
+
+export function verifyProofToken(pathname: string, token?: string) {
+  if (!token) return false
+  const expected = Buffer.from(signProofPath(pathname))
+  const actual = Buffer.from(token)
+  return expected.length === actual.length && timingSafeEqual(expected, actual)
+}
+
+function privateBlobUrl(pathname: string) {
+  const storeId = process.env.BLOB_STORE_ID || config.uploads.blobStoreId
+  if (!storeId) throw new AppError(503, 'UPLOAD_STORE_UNAVAILABLE', 'Blob store is not configured')
+  return `https://${storeId}${PRIVATE_BLOB_HOST_SUFFIX}/${pathname}`
+}
+
+export async function readPrivateUpload(pathname: string) {
+  const token = blobToken()
+  if (!token) throw new AppError(503, 'UPLOAD_STORE_UNAVAILABLE', 'Upload storage is not configured')
+  try {
+    const result = await get(pathname, { access: 'private', token })
+    if (!result || result.statusCode !== 200 || !result.stream) return null
+    return {
+      stream: Readable.fromWeb(result.stream as any),
+      contentType: result.blob.contentType,
+      size: result.blob.size,
+    }
+  } catch {
+    return null
+  }
 }
 
 export async function saveUpload(file: UploadFile) {
@@ -79,14 +128,15 @@ export async function saveUpload(file: UploadFile) {
     if (!token) {
       throw new AppError(503, 'UPLOAD_STORE_UNAVAILABLE', 'Upload storage is not configured')
     }
-    let url: string
+    const key = `uploads/${name}`
     try {
-      const result = await put(pathname.slice(1), buf, { access: 'public', token, contentType: mimeType })
-      url = result.url
+      const result = await put(key, buf, { access: 'private', token, contentType: mimeType })
+      const storedPath = isSafeUploadPath(result.pathname) ? result.pathname : key
+      const url = proofUrl(storedPath)
+      return { url, path: url, name: file.filename, mimeType, size: buf.length }
     } catch {
       throw new AppError(503, 'UPLOAD_STORE_UNAVAILABLE', 'Upload storage is unavailable')
     }
-    return { url, path: url, name: file.filename, mimeType, size: buf.length }
   }
 
   const dir = path.resolve(process.cwd(), config.uploads.dir)
@@ -113,11 +163,31 @@ function parsedUrl(url: string) {
 export function isOwnBlobUrl(url: string) {
   const parsed = parsedUrl(url)
   if (!parsed || parsed.protocol !== 'https:') return false
-  return parsed.hostname.endsWith(BLOB_HOST_SUFFIX) && parsed.pathname.startsWith('/uploads/')
+  const ownHost = parsed.hostname.endsWith(PUBLIC_BLOB_HOST_SUFFIX) || parsed.hostname.endsWith(PRIVATE_BLOB_HOST_SUFFIX)
+  return ownHost && parsed.pathname.startsWith('/uploads/')
+}
+
+export function proofPathFromUrl(url?: string | null): string | null {
+  if (!url || typeof url !== 'string') return null
+  if (url.startsWith(PROOF_PROXY_PREFIX)) {
+    const pathname = url.slice(PROOF_PROXY_PREFIX.length).split('?')[0] ?? ''
+    return isSafeUploadPath(pathname) ? pathname : null
+  }
+  const parsed = parsedUrl(url)
+  const pathname = parsed?.hostname.endsWith(PRIVATE_BLOB_HOST_SUFFIX) ? parsed.pathname.replace(/^\//, '') : ''
+  return isSafeUploadPath(pathname) ? pathname : null
 }
 
 export async function deleteUploadedFile(url?: string | null) {
   if (!url || typeof url !== 'string') return
+
+  const proofPath = proofPathFromUrl(url)
+  if (proofPath) {
+    const token = blobToken()
+    if (!token) return
+    await del(privateBlobUrl(proofPath), { token }).catch(() => {})
+    return
+  }
 
   if (isOwnBlobUrl(url)) {
     const token = blobToken()

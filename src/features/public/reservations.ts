@@ -110,7 +110,7 @@ export async function reservationRoutes(app: FastifyInstance) {
         paymentProvider = await prisma.paymentProvider.findFirst({ where: { id: body.paymentProviderId, eventId, isActive: true }, select: { id: true, name: true } })
         if (!paymentProvider) throw errors.badRequest('Payment provider not found')
       }
-      if (body.paymentProofUrl && !(body.paymentProofUrl.startsWith('data:image/') || body.paymentProofUrl.startsWith('https://') || body.paymentProofUrl.startsWith('http://') || body.paymentProofUrl.startsWith('/uploads/'))) {
+      if (body.paymentProofUrl && !(body.paymentProofUrl.startsWith('data:image/') || body.paymentProofUrl.startsWith('https://') || body.paymentProofUrl.startsWith('http://') || body.paymentProofUrl.startsWith('/uploads/') || body.paymentProofUrl.startsWith('/api/uploads/blob/'))) {
         throw errors.badRequest('Payment proof must be an uploaded file URL or image URL')
       }
     }

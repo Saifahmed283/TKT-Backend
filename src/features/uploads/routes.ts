@@ -1,7 +1,7 @@
 ﻿import type { FastifyInstance } from 'fastify'
 import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
-import { saveUpload } from '../../lib/uploadStore.js'
+import { isSafeUploadPath, readPrivateUpload, saveUpload, verifyProofToken } from '../../lib/uploadStore.js'
 
 export async function uploadRoutes(app: FastifyInstance) {
   app.post('/', { preHandler: authenticate }, async (req) => {
@@ -16,5 +16,22 @@ export async function uploadRoutes(app: FastifyInstance) {
     const file = await req.file()
     if (!file) throw errors.badRequest('No file uploaded')
     return { data: await saveUpload(file) }
+  })
+
+  // Private Blob objects are streamed through this capability-URL proxy so
+  // <img> and admin proof links work without exposing store credentials.
+  app.get('/blob/*', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (req, reply) => {
+    const pathname = (req.params as { '*': string })['*']
+    const { token } = req.query as { token?: string }
+    if (!isSafeUploadPath(pathname) || !verifyProofToken(pathname, token)) {
+      throw errors.forbidden('Invalid proof link')
+    }
+    const file = await readPrivateUpload(pathname)
+    if (!file) throw errors.notFound('Proof not found')
+    reply.header('Content-Type', file.contentType)
+    reply.header('Content-Length', file.size)
+    reply.header('Cache-Control', 'private, no-cache')
+    reply.header('X-Content-Type-Options', 'nosniff')
+    return reply.send(file.stream)
   })
 }
