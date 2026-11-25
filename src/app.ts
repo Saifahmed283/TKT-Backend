@@ -216,8 +216,6 @@ export async function buildApp(): Promise<FastifyInstance> {
     const ip = req.ip
 
     // The limiter fails closed in production when Redis is not configured.
-    const { distributedRateLimit, rateLimitKeys } = await import('./lib/distributedRateLimit.js')
-
     // Define sensitive endpoint patterns with their limits
     type RateLimitPattern = {
       pattern: RegExp
