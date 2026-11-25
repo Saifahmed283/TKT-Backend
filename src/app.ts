@@ -73,7 +73,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   // instance. They run in long-lived server mode and can be scheduled as jobs
   // in serverless environments.
   const isServerless = Boolean(process.env.VERCEL)
-  if (!isServerless && !config.isTest) {
+  if (config.isTest) {
+    // Every test suite may build the app directly; ensure its disposable
+    // database has the canonical role catalog before routes are exercised.
+    await syncSystemRoles()
+  } else if (!isServerless) {
     await syncSystemRoles()
     await purgeRejectedReservations()
   }
