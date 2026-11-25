@@ -178,7 +178,7 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
         organizationId: null, // Will be filled by context if needed
         eventId,
         actorUserId: null,
-        action: AuditActions.RESERVATION_CREATED,
+        action: 'reservation.created',
         resourceType: 'ticket',
         resourceId: ticketId,
         newValue: { reservationCode, approval, paymentStatus, attendee, ticketType },
