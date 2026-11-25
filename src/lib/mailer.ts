@@ -225,3 +225,4 @@ export function ticketEmailShell(opts: {
   </table>
 </body>
 </html>`
+}
