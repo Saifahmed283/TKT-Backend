@@ -301,7 +301,7 @@ export async function busRoutes(app: FastifyInstance) {
       if (!(await lockBusForSeatMutation(tx, busId, eventId))) throw errors.notFound('Bus not found')
       const seats = await tx.busSeat.findMany({ where: { id: { in: body.seatIds }, busId } })
       if (seats.length !== body.seatIds.length) throw errors.notFound('One or more seats not found')
-      const linked = seats.filter(s => s.state === 'RESERVED' && s.ticketId !== null)
+      const linked = seats.filter(s => s.ticketId !== null)
       if (linked.length) {
         throw errors.conflict('Ticket-linked seats cannot be released directly; cancel or refund the ticket to free the seat')
       }
