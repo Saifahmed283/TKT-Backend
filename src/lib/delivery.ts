@@ -1,4 +1,4 @@
-import { sendMail, ticketEmailShell } from './mailer.js'
+import { sendMail, ticketEmailShell, type MailAttachment } from './mailer.js'
 
 export type DeliveryChannelName = 'EMAIL' | 'WHATSAPP'
 
@@ -7,6 +7,7 @@ export type DeliveryPayload = {
   subject: string
   html: string
   text?: string
+  attachments?: MailAttachment[]
 }
 
 export type DeliveryResult = {

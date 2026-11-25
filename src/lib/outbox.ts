@@ -1,9 +1,7 @@
-import { PrismaClient, Prisma } from '@prisma/client'
-import { runWithIsolatedDbContext, type DbContext } from './dbContext.js'
-
-const basePrisma = new PrismaClient({
-  log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
-})
+import { Prisma } from '@prisma/client'
+import { randomUUID } from 'node:crypto'
+import { prisma } from './db.js'
+import { runWithIsolatedDbContext } from './dbContext.js'
 
 export type OutboxEventType =
   | 'RESERVATION_CREATED'
@@ -27,13 +25,18 @@ export type OutboxEventPayload = Prisma.InputJsonValue
  * This ensures the event is persisted atomically with the business operation.
  */
 export async function addOutboxEvent(
-  tx: PrismaClient,
+  tx: Prisma.TransactionClient,
   eventType: OutboxEventType,
   payload: OutboxEventPayload,
   options: { scheduledAt?: Date; maxAttempts?: number } = {}
 ): Promise<string> {
+  const id = randomUUID()
+  // Public reservation requests may enqueue an event, but RLS exposes only
+  // this one inserted row to INSERT ... RETURNING — never the outbox itself.
+  await tx.$executeRaw`SELECT set_config('app.outbox_event_id', ${id}, true)`
   const event = await tx.outboxEvent.create({
     data: {
+      id,
       eventType,
       payload,
       status: 'PENDING',
@@ -53,21 +56,26 @@ export async function processOutboxEvents(
   batchSize = 50,
   options: { eventTypes?: OutboxEventType[] } = {}
 ): Promise<{ processed: number; failed: number }> {
-  const where: any = {
-    status: { in: ['PENDING', 'FAILED'] },
-    scheduledAt: { lte: new Date() },
-  }
-  if (options.eventTypes && options.eventTypes.length > 0) {
-    where.eventType = { in: options.eventTypes }
-  }
+  return runWithIsolatedDbContext({ isInternal: true }, async () => {
+    const staleProcessingBefore = new Date(Date.now() - 5 * 60 * 1000)
+    const where: Prisma.OutboxEventWhereInput = {
+      scheduledAt: { lte: new Date() },
+      OR: [
+        { status: { in: ['PENDING', 'FAILED'] } },
+        { status: 'PROCESSING', updatedAt: { lt: staleProcessingBefore } },
+      ],
+    }
+    if (options.eventTypes && options.eventTypes.length > 0) {
+      where.eventType = { in: options.eventTypes }
+    }
 
-  const events = await basePrisma.outboxEvent.findMany({
-    where,
-    orderBy: { scheduledAt: 'asc' },
-    take: batchSize,
+    const events = await prisma.outboxEvent.findMany({
+      where,
+      orderBy: { scheduledAt: 'asc' },
+      take: batchSize,
+    })
+    return processClaimedEvents(events)
   })
-
-  return processClaimedEvents(events)
 }
 
 /**
@@ -77,8 +85,10 @@ export async function processOutboxEvents(
  */
 export async function processOutboxEventIds(ids: string[]): Promise<{ processed: number; failed: number }> {
   if (ids.length === 0) return { processed: 0, failed: 0 }
-  const events = await basePrisma.outboxEvent.findMany({ where: { id: { in: ids } } })
-  return processClaimedEvents(events)
+  return runWithIsolatedDbContext({ isInternal: true }, async () => {
+    const events = await prisma.outboxEvent.findMany({ where: { id: { in: ids } } })
+    return processClaimedEvents(events)
+  })
 }
 
 async function processClaimedEvents(
@@ -88,17 +98,25 @@ async function processClaimedEvents(
   let failed = 0
 
   for (const event of events) {
-    // Mark as processing to prevent duplicate processing
-    const updated = await basePrisma.outboxEvent.updateMany({
-      where: { id: event.id, status: { in: ['PENDING', 'FAILED'] } },
+    // Claim pending work, or recover a processing lease left behind by a
+    // worker that crashed. The conditional update is the concurrency guard.
+    const staleProcessingBefore = new Date(Date.now() - 5 * 60 * 1000)
+    const updated = await prisma.outboxEvent.updateMany({
+      where: {
+        id: event.id,
+        OR: [
+          { status: { in: ['PENDING', 'FAILED'] } },
+          { status: 'PROCESSING', updatedAt: { lt: staleProcessingBefore } },
+        ],
+      },
       data: { status: 'PROCESSING', attempts: { increment: 1 } },
     })
 
     if (updated.count === 0) continue // Another worker picked it up
 
     try {
-      await processEvent(event)
-      await basePrisma.outboxEvent.update({
+      await runWithIsolatedDbContext({ isInternal: true }, () => processEvent(event))
+      await prisma.outboxEvent.update({
         where: { id: event.id },
         data: { status: 'COMPLETED', processedAt: new Date(), lastError: null },
       })
@@ -109,7 +127,7 @@ async function processClaimedEvents(
       const maxAttempts = event.maxAttempts
 
       if (nextAttempt >= maxAttempts) {
-        await basePrisma.outboxEvent.update({
+        await prisma.outboxEvent.update({
           where: { id: event.id },
           data: {
             status: 'DEAD_LETTER',
@@ -122,7 +140,7 @@ async function processClaimedEvents(
         // Exponential backoff: 1min, 2min, 4min, 8min, 16min...
         const delayMinutes = Math.min(2 ** (nextAttempt - 1), 60)
         const scheduledAt = new Date(Date.now() + delayMinutes * 60 * 1000)
-        await basePrisma.outboxEvent.update({
+        await prisma.outboxEvent.update({
           where: { id: event.id },
           data: {
             status: 'FAILED',
@@ -147,12 +165,11 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
   const { publish, channelFor } = await import('./realtime.js')
   const { writeAudit } = await import('./audit.js')
   const { AuditActions } = await import('./audit-actions.js')
-  const prisma = basePrisma
-
   switch (event.eventType) {
     case 'EMAIL_SEND': {
       const { to, subject, html } = event.payload as { to: string; subject: string; html: string }
-      await sendMail({ to, subject, html })
+      const result = await sendMail({ to, subject, html })
+      if (!result.ok) throw new Error(result.error ?? 'Email delivery failed')
       break
     }
 
@@ -170,11 +187,12 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
         ticket: ticket,
         sendEmail: false,
       })
-      await deliverReservationCredentialEmail({
+      const delivered = await deliverReservationCredentialEmail({
         event: eventWithDates,
         ticket: ticket,
         credential: issued.credential,
       })
+      if (!delivered) throw new Error('Credential email delivery failed; see the delivery attempt for details')
       break
     }
 
@@ -235,22 +253,6 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
     }
 
     default:
-      console.warn(`Unknown outbox event type: ${event.eventType}`)
+      throw new Error(`Unsupported outbox event type: ${event.eventType}`)
   }
-}
-
-/**
- * Legacy afterResponse helper - creates outbox events instead of fire-and-forget.
- * Maintains backward compatibility with existing code.
- */
-export function afterResponseOutbox(
-  tx: PrismaClient,
-  eventType: OutboxEventType,
-  payload: OutboxEventPayload,
-  options?: { scheduledAt?: Date; maxAttempts?: number }
-): void {
-  // This is called within a transaction, so we just add to outbox
-  addOutboxEvent(tx, eventType, payload, options).catch((err) => {
-    console.error('Failed to add outbox event:', err)
-  })
 }

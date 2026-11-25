@@ -4,7 +4,8 @@ import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import { credentialCode, generateUniqueShortCode, type CredentialPayload } from '../../lib/credentials.js'
 import { getDeliveryAdapter, ticketEmailShell } from '../../lib/delivery.js'
-import { qrDataUrl } from '../../lib/qr.js'
+import { createTicketQrAttachment, TICKET_QR_CID } from '../../lib/qr.js'
+import { config } from '../../config.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { dispatchEventWebhooks } from '../integrations/dispatch.js'
@@ -161,7 +162,7 @@ export async function resendReservationCredential(params: {
 
   const settings = ((ticket.event as any).settings ?? {}) as Record<string, any>
   const tpl = (settings.ticketEmail ?? {}) as Record<string, any>
-  const qr = await qrDataUrl(ticket.credential.code).catch(() => null)
+  const qrAttachment = await createTicketQrAttachment(ticket.credential.code)
   const codeOf = reservationCodeOf(ticket as any)
   const shortCode = (ticket.credential as any).shortCode ?? null
   const attempt = (ticket.deliveryAttempts ?? 0) + 1
@@ -171,7 +172,7 @@ export async function resendReservationCredential(params: {
     html: ticketEmailShell({
       preheader: typeof tpl.preheader === 'string' && tpl.preheader ? tpl.preheader : `Ticket for ${ticket.event.name} — present your QR at check-in`,
       title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replace('{event}', ticket.event.name) : `Your ticket for ${ticket.event.name}`,
-      body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replace('{event}', `<strong>${ticket.event.name}</strong>`) : `Here is your signed QR ticket for <strong>${ticket.event.name}</strong>. Present it at check-in.`,
+      body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replaceAll('{event}', ticket.event.name) : `Here is your signed QR ticket for ${ticket.event.name}. Present it at check-in.`,
       rows: [
         { label: 'Event', value: ticket.event.name },
         { label: 'Ticket', value: ticket.ticketType.name },
@@ -184,9 +185,13 @@ export async function resendReservationCredential(params: {
           return seats.length ? [{ label: 'Seats', value: seats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}${s.passengerName ? ` (${s.passengerName})` : ''}`).join(', ') }] : []
         })(),
       ],
-      qrDataUrl: qr,
-      footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · Control center for live events',
+      qrCid: TICKET_QR_CID,
+      titleAr: typeof tpl.titleAr === 'string' && tpl.titleAr ? tpl.titleAr.replaceAll('{event}', ticket.event.name) : 'تذكرتك جاهزة للدخول',
+      bodyAr: typeof tpl.bodyAr === 'string' && tpl.bodyAr ? tpl.bodyAr.replaceAll('{event}', ticket.event.name) : 'حجزك مؤكد. يرجى إظهار رمز QR عند بوابة الدخول.',
+      ticketUrl: codeOf ? new URL(`/reservation/${encodeURIComponent(codeOf)}`, config.env === 'production' && config.publicUrl.includes('localhost') ? 'https://ticketak.vercel.app' : config.publicUrl).toString() : undefined,
+      footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · YOUR EXPERIENCE STARTS HERE',
     }),
+    attachments: [qrAttachment],
   })
   const deliveryOk = delivery.ok
 
@@ -245,7 +250,7 @@ export async function deliverReservationCredentialEmail(params: {
   const { event, ticket, credential, issuerUserId = null } = params
   const codeOf = reservationCodeOf(ticket)
   const shortCode = credential.shortCode ?? null
-  const qr = await qrDataUrl(credential.code).catch(() => null)
+  const qrAttachment = await createTicketQrAttachment(credential.code)
   const attempt = ((ticket as any).deliveryAttempts ?? 0) + 1
   const settings = ((event as any).settings ?? {}) as Record<string, any>
   const tpl = (settings.ticketEmail ?? {}) as Record<string, any>
@@ -256,7 +261,7 @@ export async function deliverReservationCredentialEmail(params: {
     html: ticketEmailShell({
       preheader: typeof tpl.preheader === 'string' && tpl.preheader ? tpl.preheader.replaceAll('{event}', event.name) : `Ticket for ${event.name} — present your QR at check-in`,
       title: typeof tpl.title === 'string' && tpl.title ? tpl.title.replaceAll('{event}', event.name) : `You're in, ${ticket.attendee.name.split(' ')[0]}`,
-      body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replaceAll('{event}', `<strong>${event.name}</strong>`) : `Your reservation for <strong>${event.name}</strong> is confirmed. Show this QR at the gate — it is signed, single-use and cannot be forged.`,
+      body: typeof tpl.body === 'string' && tpl.body ? tpl.body.replaceAll('{event}', event.name) : `Your reservation for ${event.name} is confirmed. Show this QR at the gate — it is signed, single-use and cannot be forged.`,
       rows: [
         { label: 'Event', value: event.name },
         { label: 'Ticket', value: ticket.ticketType.name },
@@ -269,9 +274,13 @@ export async function deliverReservationCredentialEmail(params: {
           return seats.length ? [{ label: 'Seats', value: seats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}${s.passengerName ? ` (${s.passengerName})` : ''}`).join(', ') }] : []
         })(),
       ],
-      qrDataUrl: qr,
-      footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · Control center for live events',
+      qrCid: TICKET_QR_CID,
+      titleAr: typeof tpl.titleAr === 'string' && tpl.titleAr ? tpl.titleAr.replaceAll('{event}', event.name) : 'تم تأكيد حجزك بنجاح!',
+      bodyAr: typeof tpl.bodyAr === 'string' && tpl.bodyAr ? tpl.bodyAr.replaceAll('{event}', event.name) : `مرحباً ${ticket.attendee.name.split(' ')[0]}، يسعدنا تأكيد حجزك. تذكرتك جاهزة الآن.`,
+      ticketUrl: codeOf ? new URL(`/reservation/${encodeURIComponent(codeOf)}`, config.env === 'production' && config.publicUrl.includes('localhost') ? 'https://ticketak.vercel.app' : config.publicUrl).toString() : undefined,
+      footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · YOUR EXPERIENCE STARTS HERE',
     }),
+    attachments: [qrAttachment],
   })
 
   const deliveryOk = delivery.ok

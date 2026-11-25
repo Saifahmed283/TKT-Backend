@@ -1,4 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose'
+import { randomUUID } from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import { config } from '../config.js'
 
@@ -38,6 +39,7 @@ export async function signRefreshToken(userId: string): Promise<string> {
   return new SignJWT({ type: 'refresh' })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(userId)
+    .setJti(randomUUID())
     .setIssuedAt()
     .setExpirationTime(config.jwt.refreshTtl)
     .sign(refreshKey)

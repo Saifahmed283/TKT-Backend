@@ -73,7 +73,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   // instance. They run in long-lived server mode and can be scheduled as jobs
   // in serverless environments.
   const isServerless = Boolean(process.env.VERCEL)
-  if (!isServerless && !config.isTest) {
+  if (config.isTest) {
+    // Every test suite may build the app directly; ensure its disposable
+    // database has the canonical role catalog before routes are exercised.
+    await syncSystemRoles()
+  } else if (!isServerless) {
     await syncSystemRoles()
     await purgeRejectedReservations()
   }
@@ -216,8 +220,6 @@ export async function buildApp(): Promise<FastifyInstance> {
     const ip = req.ip
 
     // The limiter fails closed in production when Redis is not configured.
-    const { distributedRateLimit, rateLimitKeys } = await import('./lib/distributedRateLimit.js')
-
     // Define sensitive endpoint patterns with their limits
     type RateLimitPattern = {
       pattern: RegExp

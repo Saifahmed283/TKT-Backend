@@ -6,6 +6,7 @@ import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
+import { clearExpiredBusSeatHolds, lockBusForSeatMutation } from './seat-mutations.js'
 
 const seatDefSchema = z.object({
   label: z.string().min(1).max(16),
@@ -43,7 +44,7 @@ const passengerSchema = z.object({
 })
 
 const reserveSchema = z.object({
-  seatIds: z.array(z.string()).min(1).max(20),
+  seatIds: z.array(z.string()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, 'Seat IDs must be unique'),
   ticketId: z.string().optional(),
   holderName: z.string().min(2),
   groupId: z.string().optional(),
@@ -53,13 +54,16 @@ const reserveSchema = z.object({
 function templateSeats(template: string): { label: string; row: number; col: number; state: 'AVAILABLE' | 'UNAVAILABLE' }[] {
   if (template === 'mect49') {
     const seats: { label: string; row: number; col: number; state: 'AVAILABLE' | 'UNAVAILABLE' }[] = []
-    let n = 1
-    seats.push({ label: String(n++), row: 1, col: 3, state: 'AVAILABLE' })
-    seats.push({ label: String(n++), row: 1, col: 4, state: 'AVAILABLE' })
-    seats.push({ label: String(n++), row: 2, col: 3, state: 'AVAILABLE' })
-    seats.push({ label: String(n++), row: 2, col: 4, state: 'AVAILABLE' })
-    for (let r = 3; r <= 12; r++) for (const c of [1, 2, 3, 4]) seats.push({ label: String(n++), row: r, col: c, state: 'AVAILABLE' })
-    for (let c = 1; c <= 5; c++) seats.push({ label: String(n++), row: 13, col: c, state: 'AVAILABLE' })
+    const addRow = (row: number, cols: number[]) => {
+      for (const col of cols) seats.push({ label: String(seats.length + 1), row, col, state: 'AVAILABLE' })
+    }
+
+    for (let row = 1; row <= 5; row += 1) addRow(row, [1, 2, 3, 4])
+    addRow(6, [1, 2])
+    addRow(7, [1, 2])
+    addRow(8, [1, 2, 3, 4])
+    for (let row = 9; row <= 12; row += 1) addRow(row, [1, 2, 3, 4])
+    addRow(13, [1, 2, 3, 4, 5])
     return seats
   }
   if (template === 'coaster21') {
@@ -75,7 +79,6 @@ function templateSeats(template: string): { label: string; row: number; col: num
   }
   return []
 }
-
 function buildSeats(layout: z.infer<typeof layoutSchema>) {
   if (Array.isArray(layout.seats) && layout.seats.length) {
     return layout.seats.map(s => ({ label: String(s.label), row: Number(s.row), col: Number(s.col), state: (s.state === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'AVAILABLE') as 'AVAILABLE' | 'UNAVAILABLE' }))
@@ -133,32 +136,67 @@ export async function busRoutes(app: FastifyInstance) {
     const { eventId, busId } = req.params as { eventId: string; busId: string }
     await requirePermission(req, 'bus.manage', { eventId })
     const body = busSchema.partial().parse(req.body)
-    const bus = await prisma.bus.findFirst({ where: { id: busId, eventId } })
-    if (!bus) throw errors.notFound('Bus not found')
-    if (body.layout) {
-      const reserved = await prisma.busSeat.count({ where: { busId, state: 'RESERVED' } })
-      if (reserved > 0) throw errors.conflict('Cannot rebuild layout while seats are reserved')
-      const seats = buildSeats(body.layout)
-      await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
+      await lockBusForSeatMutation(tx, eventId, busId)
+      await clearExpiredBusSeatHolds(tx, busId)
+      const bus = await tx.bus.findFirst({ where: { id: busId, eventId } })
+      if (!bus) throw errors.notFound('Bus not found')
+
+      if (body.layout) {
+        const blocking = await tx.busSeat.count({
+          where: {
+            busId,
+            OR: [
+              { state: 'RESERVED' },
+              { state: 'HELD', holdExpiresAt: { gt: new Date() } },
+            ],
+          },
+        })
+        if (blocking > 0) throw errors.conflict('Cannot rebuild layout while seats are reserved or held')
+        const seats = buildSeats(body.layout)
         await tx.busSeat.deleteMany({ where: { busId } })
-        await tx.busSeat.createMany({ data: seats.map(s => ({ busId, label: s.label, row: s.row, col: s.col, state: s.state })) })
-        await tx.bus.update({ where: { id: busId }, data: { name: body.name ?? bus.name, layout: body.layout as any, seatPrice: body.seatPrice ?? bus.seatPrice, currency: body.currency ?? bus.currency, isActive: body.isActive ?? bus.isActive } })
-      })
-    } else {
-      await prisma.bus.update({ where: { id: busId }, data: { name: body.name, isActive: body.isActive, seatPrice: body.seatPrice, currency: body.currency ?? 'EGP' } })
-    }
-    const updated = await prisma.bus.findUnique({ where: { id: busId }, include: { seats: true } })
+        await tx.busSeat.createMany({
+          data: seats.map(s => ({ busId, label: s.label, row: s.row, col: s.col, state: s.state })),
+        })
+        await tx.bus.update({
+          where: { id: busId },
+          data: {
+            name: body.name ?? bus.name,
+            layout: body.layout as any,
+            seatPrice: body.seatPrice ?? bus.seatPrice,
+            currency: body.currency ?? bus.currency,
+            isActive: body.isActive ?? bus.isActive,
+          },
+        })
+      } else {
+        await tx.bus.update({
+          where: { id: busId },
+          data: { name: body.name, isActive: body.isActive, seatPrice: body.seatPrice, currency: body.currency ?? 'EGP' },
+        })
+      }
+    })
+    const updated = await prisma.bus.findFirst({ where: { id: busId, eventId }, include: { seats: true } })
     return { data: updated }
   })
 
   app.delete('/:busId', async (req, reply) => {
     const { eventId, busId } = req.params as { eventId: string; busId: string }
     await requirePermission(req, 'bus.manage', { eventId })
-    const bus = await prisma.bus.findFirst({ where: { id: busId, eventId } })
-    if (!bus) throw errors.notFound('Bus not found')
-    const reserved = await prisma.busSeat.count({ where: { busId, state: 'RESERVED' } })
-    if (reserved > 0) throw errors.conflict('Cannot delete bus with reserved seats')
-    await prisma.bus.delete({ where: { id: busId } })
+    await prisma.$transaction(async (tx) => {
+      await lockBusForSeatMutation(tx, eventId, busId)
+      await clearExpiredBusSeatHolds(tx, busId)
+      const blocking = await tx.busSeat.count({
+        where: {
+          busId,
+          OR: [
+            { state: 'RESERVED' },
+            { state: 'HELD', holdExpiresAt: { gt: new Date() } },
+          ],
+        },
+      })
+      if (blocking > 0) throw errors.conflict('Cannot delete a bus with reserved or actively held seats')
+      await tx.bus.delete({ where: { id: busId } })
+    })
     return reply.status(204).send()
   })
 
@@ -166,10 +204,18 @@ export async function busRoutes(app: FastifyInstance) {
     const { eventId, busId, seatId } = req.params as { eventId: string; busId: string; seatId: string }
     await requirePermission(req, 'bus.manage', { eventId })
     const body = z.object({ state: z.enum(['AVAILABLE', 'UNAVAILABLE']) }).parse(req.body)
-    const seat = await prisma.busSeat.findFirst({ where: { id: seatId, busId, bus: { eventId } } })
-    if (!seat) throw errors.notFound('Seat not found')
-    if (seat.state === 'RESERVED') throw errors.conflict('Reserved seats cannot be changed directly')
-    const updated = await prisma.busSeat.update({ where: { id: seatId }, data: { state: body.state } })
+    const updated = await prisma.$transaction(async (tx) => {
+      await lockBusForSeatMutation(tx, eventId, busId)
+      await clearExpiredBusSeatHolds(tx, busId)
+      const seat = await tx.busSeat.findFirst({ where: { id: seatId, busId } })
+      if (!seat) throw errors.notFound('Seat not found')
+      if (seat.state === 'RESERVED') throw errors.conflict('Reserved seats cannot be changed directly')
+      if (seat.state === 'HELD') throw errors.conflict('Actively held seats cannot be changed directly')
+      return tx.busSeat.update({
+        where: { id: seatId },
+        data: { state: body.state },
+      })
+    })
     return { data: updated }
   })
 
@@ -180,7 +226,9 @@ export async function busRoutes(app: FastifyInstance) {
     const groupId = body.groupId ?? crypto.randomUUID()
 
     const result = await prisma.$transaction(async (tx) => {
-      const seats = await tx.busSeat.findMany({ where: { id: { in: body.seatIds }, busId, bus: { eventId } } })
+      await lockBusForSeatMutation(tx, eventId, busId, true)
+      await clearExpiredBusSeatHolds(tx, busId)
+      const seats = await tx.busSeat.findMany({ where: { id: { in: body.seatIds }, busId } })
       if (seats.length !== body.seatIds.length) throw errors.notFound('One or more seats not found')
       const blocked = seats.filter(s => s.state !== 'AVAILABLE')
       if (blocked.length) throw errors.conflict(`Seats already reserved or unavailable: ${blocked.map(s => s.label).join(', ')}`)
@@ -192,8 +240,8 @@ export async function busRoutes(app: FastifyInstance) {
       }
       for (const id of body.seatIds) {
         const p = body.passengers?.find(x => x.seatId === id)
-        await tx.busSeat.update({
-          where: { id },
+        const updated = await tx.busSeat.updateMany({
+          where: { id, busId, state: 'AVAILABLE' },
           data: {
             state: 'RESERVED',
             holderName: body.holderName,
@@ -207,10 +255,9 @@ export async function busRoutes(app: FastifyInstance) {
             holdExpiresAt: null,
           },
         })
+        if (updated.count !== 1) throw errors.conflict('Seat reservation conflict — refresh and retry')
       }
-      const updated = await tx.busSeat.findMany({ where: { id: { in: body.seatIds } } })
-      if (updated.some(s => s.state !== 'RESERVED')) throw errors.conflict('Seat reservation conflict — refresh and retry')
-      return updated
+      return tx.busSeat.findMany({ where: { id: { in: body.seatIds }, busId } })
     })
 
     await writeAudit({ eventId, actorUserId: req.user.id, action: 'bus.seats.reserved', resourceType: 'bus', resourceId: busId, newValue: { seatIds: body.seatIds, holderName: body.holderName, groupId, ticketId: body.ticketId ?? null }, sourceIp: req.ip })
@@ -220,9 +267,41 @@ export async function busRoutes(app: FastifyInstance) {
   app.post('/:busId/release', async (req) => {
     const { eventId, busId } = req.params as { eventId: string; busId: string }
     await requirePermission(req, 'bus.manage', { eventId })
-    const body = z.object({ seatIds: z.array(z.string()).min(1) }).parse(req.body)
-    await prisma.busSeat.updateMany({ where: { id: { in: body.seatIds }, busId, bus: { eventId }, state: { in: ['RESERVED', 'HELD'] } }, data: { state: 'AVAILABLE', holderName: null, passengerName: null, passengerEmail: null, passengerPhone: null, groupId: null, ticketId: null, holdToken: null, holdExpiresAt: null, reservedAt: null } })
-    return { data: { ok: true } }
+    const body = z.object({ seatIds: z.array(z.string()).min(1).refine((ids) => new Set(ids).size === ids.length, 'Seat IDs must be unique') }).parse(req.body)
+    const released = await prisma.$transaction(async (tx) => {
+      await lockBusForSeatMutation(tx, eventId, busId)
+      const result = await tx.busSeat.updateMany({
+        where: {
+          id: { in: body.seatIds },
+          busId,
+          state: { in: ['RESERVED', 'HELD'] },
+          ticketId: null,
+        },
+        data: {
+          state: 'AVAILABLE',
+          holderName: null,
+          passengerName: null,
+          passengerEmail: null,
+          passengerPhone: null,
+          groupId: null,
+          ticketId: null,
+          holdToken: null,
+          holdExpiresAt: null,
+          reservedAt: null,
+        },
+      })
+      return result.count
+    })
+    await writeAudit({
+      eventId,
+      actorUserId: req.user.id,
+      action: 'bus.seats.released',
+      resourceType: 'bus',
+      resourceId: busId,
+      newValue: { seatIds: body.seatIds, released },
+      sourceIp: req.ip,
+    })
+    return { data: { ok: true, released } }
   })
 
   app.post('/:busId/hold', async (req) => {
@@ -233,14 +312,27 @@ export async function busRoutes(app: FastifyInstance) {
     const holdExpiresAt = new Date(Date.now() + (body.holdMinutes ?? 10) * 60_000)
     const now = new Date()
     const result = await prisma.$transaction(async (tx) => {
-      const seats = await tx.busSeat.findMany({ where: { id: { in: body.seatIds }, busId, bus: { eventId, isActive: true } } })
+      await lockBusForSeatMutation(tx, eventId, busId, true)
+      await clearExpiredBusSeatHolds(tx, busId, now)
+      const seats = await tx.busSeat.findMany({ where: { id: { in: body.seatIds }, busId } })
       if (seats.length !== body.seatIds.length) throw errors.notFound('One or more seats not found')
       const blocked = seats.filter(s => !(s.state === 'AVAILABLE' || (s.state === 'HELD' && s.holdToken === holdToken && s.holdExpiresAt && s.holdExpiresAt > now)))
       if (blocked.length) throw errors.conflict(`Seats unavailable: ${blocked.map(s => s.label).join(', ')}`)
       for (const id of body.seatIds) {
-        await tx.busSeat.update({ where: { id }, data: { state: 'HELD', holdToken, holdExpiresAt, groupId: null, ticketId: null, reservedAt: null } })
+        const updated = await tx.busSeat.updateMany({
+          where: {
+            id,
+            busId,
+            OR: [
+              { state: 'AVAILABLE' },
+              { state: 'HELD', holdToken, holdExpiresAt: { gt: now } },
+            ],
+          },
+          data: { state: 'HELD', holdToken, holdExpiresAt, groupId: null, ticketId: null, reservedAt: null },
+        })
+        if (updated.count !== 1) throw errors.conflict('A seat was taken by another reservation')
       }
-      return tx.busSeat.findMany({ where: { id: { in: body.seatIds } } })
+      return tx.busSeat.findMany({ where: { id: { in: body.seatIds }, busId } })
     })
     return { data: { holdToken, holdExpiresAt: holdExpiresAt.toISOString(), seats: result } }
   })

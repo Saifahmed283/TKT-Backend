@@ -1,27 +1,22 @@
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
-import { PrismaClient, Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import {
-  deliverReservationCredentialEmail,
-  issueReservationCredential,
   reservationApprovalOf,
   reservationCodeOf,
   reservationPaymentOf,
   normalizeReservationEmail,
   normalizeReservationPhone,
   reservationStatePatch,
-  type ReservationTicket,
 } from '../reservations/service.js'
-import { sendMail, ticketEmailShell } from '../../lib/mailer.js'
+import { ticketEmailShell } from '../../lib/mailer.js'
 import { logActivity } from '../../lib/activity.js'
 import { publish, channelFor } from '../../lib/realtime.js'
-import { writeAudit } from '../../lib/audit.js'
-import { AuditActions } from '../../lib/audit-actions.js'
-import { dispatchEventWebhooks } from '../integrations/dispatch.js'
 import { addOutboxEvent, processOutboxEventIds, type OutboxEventType } from '../../lib/outbox.js'
 import { afterResponse } from '../../lib/background.js'
+import { clearExpiredBusSeatHolds, lockBusForSeatMutation } from '../buses/seat-mutations.js'
 import { paidAmountMismatch, registrationWindow, reservationCode, secureAccessToken, hashAccessToken, reservationSchema, reservationStartedAt, type RegSettings } from './schemas.js'
 
 export async function reservationRoutes(app: FastifyInstance) {
@@ -96,36 +91,64 @@ export async function reservationRoutes(app: FastifyInstance) {
       throw errors.badRequest('Valid bus is required for seat reservations')
     }
     const busSeatUnitPriceForPricing = seatIds.length ? Number(bus?.seatPrice ?? 0) : 0
-    const computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0) + (seatIds.length * (Number.isFinite(busSeatUnitPriceForPricing) ? busSeatUnitPriceForPricing : 0))
+    let computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0) + (seatIds.length * (Number.isFinite(busSeatUnitPriceForPricing) ? busSeatUnitPriceForPricing : 0))
     const clientPaymentAmount = body.paymentAmount == null ? null : Number(body.paymentAmount)
     if (paidAmountMismatch(clientPaymentAmount, computedTotalForPricing)) {
       throw errors.badRequest('Payment amount does not match ticket and seat total')
     }
-    const paid = computedTotalForPricing > 0
-    const state = reservationStatePatch({ paid, approved: !paid })
+    let paid = computedTotalForPricing > 0
+    let state = reservationStatePatch({ paid, approved: !paid })
     const emailNorm = normalizeReservationEmail(body.email)
     const phoneNorm = normalizeReservationPhone(body.phone)
     let paymentProvider: { id: string; name: string } | null = null
-    if (paid) {
-      if (body.paymentProviderId) {
-        paymentProvider = await prisma.paymentProvider.findFirst({ where: { id: body.paymentProviderId, eventId, isActive: true }, select: { id: true, name: true } })
-        if (!paymentProvider) throw errors.badRequest('Payment provider not found')
-      }
-      if (body.paymentProofUrl && !(body.paymentProofUrl.startsWith('data:image/') || body.paymentProofUrl.startsWith('https://') || body.paymentProofUrl.startsWith('http://') || body.paymentProofUrl.startsWith('/uploads/') || body.paymentProofUrl.startsWith('/api/uploads/blob/'))) {
-        throw errors.badRequest('Payment proof must be an uploaded file URL or image URL')
-      }
+    if (body.paymentProviderId) {
+      paymentProvider = await prisma.paymentProvider.findFirst({
+        where: { id: body.paymentProviderId, eventId, isActive: true },
+        select: { id: true, name: true },
+      })
+      if (!paymentProvider) throw errors.badRequest('Payment provider not found')
+    }
+    if (body.paymentProofUrl && !(
+      body.paymentProofUrl.startsWith('data:image/')
+      || body.paymentProofUrl.startsWith('https://')
+      || body.paymentProofUrl.startsWith('http://')
+      || body.paymentProofUrl.startsWith('/uploads/')
+      || body.paymentProofUrl.startsWith('/api/uploads/blob/')
+    )) {
+      throw errors.badRequest('Payment proof must be an uploaded file URL or image URL')
     }
 
     let attendee: any
     let ticket: any
     let reservedSeats: { id: string; label: string; busId: string }[] = []
     let accessTokenForClient: string | null = null
-    const outboxEventIds: string[] = []
-    const queueOutbox = async (eventType: OutboxEventType, payload: any) => {
-      outboxEventIds.push(await addOutboxEvent(prisma, eventType, payload))
-    }
+    let outboxEventIds: string[] = []
     try {
       const created = await prisma.$transaction(async (tx) => {
+        // Serialize capacity checks for this ticket type so concurrent
+        // requests cannot both consume the final available ticket.
+        const lockedTicketTypes = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "TicketType"
+          WHERE "id" = ${ticketType.id} AND "eventId" = ${eventId}
+          FOR UPDATE
+        `
+        if (lockedTicketTypes.length !== 1) throw errors.badRequest('Ticket type is no longer available')
+        const soldCountInTransaction = await tx.ticket.count({
+          where: {
+            ticketTypeId: ticketType.id,
+            status: { in: ['ISSUED', 'ACTIVE', 'CONSUMED'] },
+          },
+        })
+        if (ticketType.quota != null && soldCountInTransaction >= ticketType.quota) {
+          throw errors.badRequest('This ticket type has sold out')
+        }
+
+        const transactionOutboxEventIds: string[] = []
+        const queueOutbox = async (eventType: OutboxEventType, payload: any) => {
+          transactionOutboxEventIds.push(await addOutboxEvent(tx, eventType, payload))
+        }
+
         const existing = await tx.ticket.findFirst({
           where: {
             eventId,
@@ -142,9 +165,28 @@ export async function reservationRoutes(app: FastifyInstance) {
         let seatRows: any[] = []
         if (seatIds.length > 0) {
           if (!body.busId) throw errors.badRequest('busId is required when reserving seats')
+          // The bus-row lock serializes final reservations with holds, admin
+          // seat edits, layout changes, deletes, and price changes.
+          await lockBusForSeatMutation(tx, eventId, body.busId, true)
+          const now = new Date()
+          await clearExpiredBusSeatHolds(tx, body.busId, now)
+          const lockedBus = await tx.bus.findFirst({
+            where: { id: body.busId, eventId, isActive: true },
+            select: { id: true, seatPrice: true },
+          })
+          if (!lockedBus) throw errors.badRequest('Valid bus is required for seat reservations')
+
+          const lockedSeatPrice = Number(lockedBus.seatPrice ?? 0)
+          computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0)
+            + (Number.isFinite(lockedSeatPrice) ? lockedSeatPrice : 0)
+          if (paidAmountMismatch(clientPaymentAmount, computedTotalForPricing)) {
+            throw errors.badRequest('Payment amount does not match ticket and seat total')
+          }
+          paid = computedTotalForPricing > 0
+          state = reservationStatePatch({ paid, approved: !paid })
+
           seatRows = await tx.busSeat.findMany({ where: { id: { in: seatIds }, busId: body.busId, bus: { eventId, isActive: true } } })
           if (seatRows.length !== seatIds.length) throw errors.badRequest('One or more seats are invalid')
-          const now = new Date()
           const blocked = seatRows.filter((s: any) => {
             if (s.state === 'AVAILABLE') return false
             if (s.state === 'HELD' && body.holdToken && s.holdToken === body.holdToken && s.holdExpiresAt && s.holdExpiresAt > now) return false
@@ -235,10 +277,85 @@ export async function reservationRoutes(app: FastifyInstance) {
           seatRows = await tx.busSeat.findMany({ where: { id: { in: seatIds } } })
         }
 
-        return { attendee, ticket, seatRows }
+        const ticketForOutbox = {
+          id: ticket.id,
+          eventId,
+          metadata: ticket.metadata,
+          price: ticket.price,
+          status: ticket.status,
+          reservationCode: ticket.reservationCode,
+          approvalStatus: ticket.approvalStatus,
+          paymentStatus: ticket.paymentStatus,
+          attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
+          ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
+        }
+
+        if (paid) {
+          const submittedPayment = Boolean(body.paymentReference || body.paymentProofUrl || paymentProvider)
+          await queueOutbox('EMAIL_SEND', {
+            to: body.email,
+            subject: `Reservation received — ${event.name}`,
+            html: ticketEmailShell({
+              preheader: `Your reservation for ${event.name} is ${submittedPayment ? 'awaiting payment review' : 'awaiting approval'}`,
+              title: 'Reservation received',
+              body: `Your reservation for <strong>${event.name}</strong> is in. ${submittedPayment ? 'Your payment proof was received and will be reviewed by the event team.' : 'The event team will review it shortly.'} Your QR ticket arrives by email once approved.`,
+              rows: [
+                { label: 'Event', value: event.name },
+                { label: 'Ticket', value: ticketType.name },
+                { label: 'Reservation', value: code },
+                ...(seatRows.length ? [{ label: 'Seats', value: seatRows.map((seat: any) => seat.label).join(', ') }] : []),
+                ...(paymentProvider ? [{ label: 'Payment method', value: paymentProvider.name }] : []),
+                ...(body.paymentReference?.trim() ? [{ label: 'Payment reference', value: body.paymentReference.trim() }] : []),
+                { label: 'Status', value: submittedPayment ? 'Awaiting payment review' : 'Awaiting approval' },
+              ],
+              footer: 'TKT · Control center for live events',
+            }),
+          })
+
+          if (submittedPayment) {
+            await queueOutbox('PAYMENT_SUBMITTED', {
+              eventId,
+              ticketId: ticket.id,
+              paymentProviderId: paymentProvider?.id ?? null,
+              paymentReference: body.paymentReference?.trim() || null,
+              hasProof: Boolean(body.paymentProofUrl),
+            })
+          }
+        } else {
+          await queueOutbox('CREDENTIAL_ISSUED', {
+            event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
+            ticket: ticketForOutbox,
+          })
+        }
+
+        await queueOutbox('RESERVATION_CREATED', {
+          eventId,
+          ticketId: ticket.id,
+          reservationCode: code,
+          approval: paid ? 'PENDING' : 'APPROVED',
+          paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
+          attendee: { name: body.name, email: body.email },
+          ticketType: { id: ticketType.id, name: ticketType.name },
+        })
+
+        await queueOutbox('WEBHOOK_DISPATCH', {
+          eventId,
+          eventName: 'reservation.created',
+          payload: {
+            ticketId: ticket.id,
+            reservationCode: code,
+            approval: paid ? 'PENDING' : 'APPROVED',
+            paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
+            attendee: { name: body.name, email: body.email },
+            ticketType: { id: ticketType.id, name: ticketType.name },
+          },
+        })
+
+        return { attendee, ticket, seatRows, outboxEventIds: transactionOutboxEventIds }
       })
       attendee = created.attendee
       ticket = created.ticket
+      outboxEventIds = created.outboxEventIds
       reservedSeats = (created.seatRows ?? []).map((s: any) => ({ id: s.id, label: s.label, busId: s.busId }))
     } catch (err: any) {
       if (err?.message === 'DUPLICATE_RESERVATION' && err.existing) {
@@ -259,110 +376,9 @@ export async function reservationRoutes(app: FastifyInstance) {
       throw err
     }
 
-    // Use transactional outbox for durable background processing
-    // This replaces fire-and-forget with durable, retryable events
-    if (paid) {
-      const submittedPayment = Boolean(body.paymentReference || body.paymentProofUrl || paymentProvider)
-
-      // Add email to outbox
-      await queueOutbox('EMAIL_SEND', {
-        to: body.email,
-        subject: `Reservation received — ${event.name}`,
-        html: ticketEmailShell({
-          preheader: `Your reservation for ${event.name} is ${submittedPayment ? 'awaiting payment review' : 'awaiting approval'}`,
-          title: 'Reservation received',
-          body: `Your reservation for <strong>${event.name}</strong> is in. ${submittedPayment ? 'Your payment proof was received and will be reviewed by the event team.' : 'The event team will review it shortly.'} Your QR ticket arrives by email once approved.`,
-          rows: [
-            { label: 'Event', value: event.name },
-            { label: 'Ticket', value: ticketType.name },
-            { label: 'Reservation', value: code },
-            ...(reservedSeats.length ? [{ label: 'Seats', value: reservedSeats.map(s => s.label).join(', ') }] : []),
-            ...(paymentProvider ? [{ label: 'Payment method', value: paymentProvider.name }] : []),
-            ...(body.paymentReference?.trim() ? [{ label: 'Payment reference', value: body.paymentReference.trim() }] : []),
-            { label: 'Status', value: submittedPayment ? 'Awaiting payment review' : 'Awaiting approval' },
-          ],
-          footer: 'TKT · Control center for live events',
-        }),
-      })
-
-      // Add payment submitted audit to outbox
-      if (submittedPayment) {
-        await queueOutbox('PAYMENT_SUBMITTED', {
-          eventId,
-          ticketId: ticket.id,
-          paymentProviderId: paymentProvider?.id ?? null,
-          paymentReference: body.paymentReference?.trim() || null,
-          hasProof: Boolean(body.paymentProofUrl),
-        })
-      }
-    } else {
-      const reservationTicket: ReservationTicket = {
-        id: ticket.id,
-        eventId,
-        metadata: ticket.metadata,
-        price: ticket.price,
-        status: ticket.status,
-        reservationCode: ticket.reservationCode,
-        approvalStatus: ticket.approvalStatus,
-        paymentStatus: ticket.paymentStatus,
-        attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
-        ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
-      }
-
-      // Add credential issuance + email to outbox
-      const ticketForOutbox = {
-        id: ticket.id,
-        eventId,
-        metadata: ticket.metadata,
-        price: ticket.price,
-        status: ticket.status,
-        reservationCode: ticket.reservationCode,
-        approvalStatus: ticket.approvalStatus,
-        paymentStatus: ticket.paymentStatus,
-        attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
-        ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
-      }
-      await queueOutbox('CREDENTIAL_ISSUED', {
-        event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
-        ticket: ticketForOutbox,
-      })
-    }
-
-    const busSeatUnitPrice = reservedSeats.length ? Number(bus?.seatPrice ?? 0) : 0
-    const computedTotal = (Number(ticketType.price ?? 0) || 0) + (reservedSeats.length * (Number.isFinite(busSeatUnitPrice) ? busSeatUnitPrice : 0))
-    if (reservedSeats.length && Math.abs(computedTotal - computedTotalForPricing) > 0.01) {
-      await prisma.busSeat.updateMany({
-        where: { id: { in: reservedSeats.map((s) => s.id) }, holdToken: body.holdToken ?? undefined },
-        data: { state: 'AVAILABLE', holderName: null, groupId: null, ticketId: null, passengerName: null, passengerEmail: null, passengerPhone: null, holdToken: null, holdExpiresAt: null },
-      }).catch(() => null)
-      throw errors.conflict('Seat pricing changed; please retry')
-    }
+    const computedTotal = computedTotalForPricing
     const seatSuffix = reservedSeats.length ? ` · seats ${reservedSeats.map((s) => s.label).join(', ')}` : ''
     logActivity(eventId, 'reservation', `${body.name} reserved ${ticketType.name} · ${code}${seatSuffix}`, body.name)
-
-    // Add realtime publish and webhook dispatch to outbox
-    await queueOutbox('RESERVATION_CREATED', {
-      eventId,
-      ticketId: ticket.id,
-      reservationCode: code,
-      approval: paid ? 'PENDING' : 'APPROVED',
-      paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
-      attendee: { name: body.name, email: body.email },
-      ticketType: { id: ticketType.id, name: ticketType.name },
-    })
-
-    await queueOutbox('WEBHOOK_DISPATCH', {
-      eventId,
-      eventName: 'reservation.created',
-      payload: {
-        ticketId: ticket.id,
-        reservationCode: code,
-        approval: paid ? 'PENDING' : 'APPROVED',
-        paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
-        attendee: { name: body.name, email: body.email },
-        ticketType: { id: ticketType.id, name: ticketType.name },
-      },
-    })
 
     // Capacity reached → lock the reservation pipeline.
     if (ticketType.quota != null && (await soldCount()) >= ticketType.quota) {

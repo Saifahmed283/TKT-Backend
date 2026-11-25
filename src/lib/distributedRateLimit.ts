@@ -1,6 +1,36 @@
 import { Redis } from '@upstash/redis'
+import { randomInt } from 'node:crypto'
 import { config } from '../config.js'
 import { prisma } from './db.js'
+
+const SLIDING_WINDOW_RATE_LIMIT_SCRIPT = `
+local now = tonumber(ARGV[1])
+local threshold = tonumber(ARGV[2])
+local windowMs = tonumber(ARGV[3])
+local maxRequests = tonumber(ARGV[4])
+local member = ARGV[5]
+local ttlSeconds = tonumber(ARGV[6])
+
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', threshold)
+local count = redis.call('ZCARD', KEYS[1])
+local allowed = 0
+
+if count < maxRequests then
+  redis.call('ZADD', KEYS[1], now, member)
+  count = count + 1
+  allowed = 1
+end
+
+redis.call('EXPIRE', KEYS[1], ttlSeconds)
+
+local resetAt = now + windowMs
+local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+if oldest[2] then
+  resetAt = tonumber(oldest[2]) + windowMs
+end
+
+return { allowed, count, math.max(0, maxRequests - count), resetAt }
+`
 
 let redis: Redis | null = null
 
@@ -84,29 +114,28 @@ export async function distributedRateLimit(
   const redisKey = `ratelimit:${key}`
 
   try {
-    // Use a sliding window with sorted set
-    const pipeline = client.pipeline()
-
-    // Remove expired entries
-    pipeline.zremrangebyscore(redisKey, 0, now - options.windowMs)
-
-    // Count current requests
-    pipeline.zcard(redisKey)
-
-    // Add current request with timestamp as score
-    pipeline.zadd(redisKey, { score: now, member: `${now}:${Math.random()}` })
-
-    // Set expiry on the key
-    pipeline.expire(redisKey, windowSec + 1)
-
-    const results = await pipeline.exec()
-
-    const currentCount = (results[1] as number) ?? 0
-    const allowed = currentCount < options.max
-    const remaining = Math.max(0, options.max - currentCount)
-    const resetAt = now + options.windowMs
-
-    return { allowed, remaining, resetAt }
+    // The entire sliding-window read/modify/write runs atomically in Redis.
+    const rawResult = await client.eval(
+      SLIDING_WINDOW_RATE_LIMIT_SCRIPT,
+      [redisKey],
+      [
+        now,
+        now - options.windowMs,
+        options.windowMs,
+        options.max,
+        randomInt(0, 0x1_0000_0000_0000),
+        windowSec + 1,
+      ],
+    )
+    if (!Array.isArray(rawResult) || rawResult.length !== 4) {
+      throw new Error('Unexpected response from atomic Redis rate limiter')
+    }
+    const [allowedValue, , remainingValue, resetValue] = rawResult
+    return {
+      allowed: Number(allowedValue) === 1,
+      remaining: Number(remainingValue),
+      resetAt: Number(resetValue),
+    }
   } catch (err) {
     console.error('Distributed rate limit error:', err)
     // A broken limiter must not silently disable abuse protection in prod.
