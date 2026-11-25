@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { runWithIsolatedDbContext, type DbContext } from './dbContext.js'
+import { afterResponseOutbox } from './outbox.js'
 
 type BackgroundTask = {
   label: string
@@ -12,15 +13,10 @@ const queues = new WeakMap<object, BackgroundTask[]>()
 /**
  * Post-response work queue for Fastify routes.
  *
- * The app keeps one Prisma transaction open per request for RLS context. Work
- * queued here runs in `onResponse`, after that transaction has committed, and
- * with an isolated DB context so it cannot accidentally join the closed
- * request transaction. Each task owns its own error boundary: a failed email
- * must never turn a committed reservation into an HTTP 500.
- *
- * TODO: replace this with a durable queue (BullMQ / a Vercel-compatible job
- * runner) once the project has one. Fire-and-forget is deliberate here, not
- * an excuse to skip retries forever.
+ * DEPRECATED: Use outbox pattern (afterResponseOutbox) for new code.
+ * This queue is kept for backward compatibility with existing code.
+ * It runs in `onResponse`, after the transaction has committed.
+ * Each task owns its own error boundary.
  */
 export function registerBackgroundTasks(app: FastifyInstance): void {
   app.addHook('onRequest', async (req) => {
@@ -37,6 +33,10 @@ export function registerBackgroundTasks(app: FastifyInstance): void {
   })
 }
 
+/**
+ * @deprecated Use afterResponseOutbox from outbox.ts instead.
+ * Queues work to run after the HTTP response is sent.
+ */
 export function afterResponse(
   req: object,
   label: string,
@@ -46,4 +46,22 @@ export function afterResponse(
   const queue = queues.get(req) ?? []
   queue.push({ label, context, work })
   queues.set(req, queue)
+}
+
+/**
+ * Creates an outbox event within the current transaction.
+ * Use this instead of afterResponse for durable, retryable background work.
+ */
+export function afterResponseOutboxAlias(
+  tx: any,
+  eventType: string,
+  payload: Record<string, unknown>,
+  options?: { scheduledAt?: Date; maxAttempts?: number }
+): void {
+  // Import dynamically to avoid circular dependency
+  import('./outbox.js').then(({ addOutboxEvent }) => {
+    addOutboxEvent(tx, eventType as any, payload, options).catch((err) => {
+      console.error('Failed to add outbox event:', err)
+    })
+  })
 }

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
-import { Prisma } from '@prisma/client'
+import { PrismaClient, Prisma } from '@prisma/client'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import {
@@ -20,7 +20,7 @@ import { publish, channelFor } from '../../lib/realtime.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { dispatchEventWebhooks } from '../integrations/dispatch.js'
-import { afterResponse } from '../../lib/background.js'
+import { addOutboxEvent, type OutboxEventType } from '../../lib/outbox.js'
 import { paidAmountMismatch, registrationWindow, reservationCode, secureAccessToken, hashAccessToken, reservationSchema, reservationStartedAt, type RegSettings } from './schemas.js'
 
 export async function reservationRoutes(app: FastifyInstance) {
@@ -254,62 +254,42 @@ export async function reservationRoutes(app: FastifyInstance) {
       throw err
     }
 
-    // Free tickets → QR minted after the response. Paid → pending approval/payment review.
-    // Credential minting, SMTP, delivery logging and audit writes are deliberately
-    // off the HTTP response path: neither SMTP nor QR work may hold a pooled DB
-    // connection open while 500 attendees confirm at the same time.
-    // TODO: move these to a durable queue (BullMQ / a Vercel-compatible runner) —
-    // the fire-and-forget helpers below are intentionally simple and each owns
-    // its own error boundary.
+    // Use transactional outbox for durable background processing
+    // This replaces fire-and-forget with durable, retryable events
     if (paid) {
       const submittedPayment = Boolean(body.paymentReference || body.paymentProofUrl || paymentProvider)
-      afterResponse(req, 'pending email', { eventId, orgId: event.orgId ?? undefined }, async () => {
-        const sent = await sendMail({
-          to: body.email,
-          subject: `Reservation received — ${event.name}`,
-          html: ticketEmailShell({
-            preheader: `Your reservation for ${event.name} is ${submittedPayment ? 'awaiting payment review' : 'awaiting approval'}`,
-            title: 'Reservation received',
-            body: `Your reservation for <strong>${event.name}</strong> is in. ${submittedPayment ? 'Your payment proof was received and will be reviewed by the event team.' : 'The event team will review it shortly.'} Your QR ticket arrives by email once approved.`,
-            rows: [
-              { label: 'Event', value: event.name },
-              { label: 'Ticket', value: ticketType.name },
-              { label: 'Reservation', value: code },
-              ...(reservedSeats.length ? [{ label: 'Seats', value: reservedSeats.map(s => s.label).join(', ') }] : []),
-              ...(paymentProvider ? [{ label: 'Payment method', value: paymentProvider.name }] : []),
-              ...(body.paymentReference?.trim() ? [{ label: 'Payment reference', value: body.paymentReference.trim() }] : []),
-              { label: 'Status', value: submittedPayment ? 'Awaiting payment review' : 'Awaiting approval' },
-            ],
-            footer: 'TKT · Control center for live events',
-          }),
-        })
-        await prisma.ticket.update({
-          where: { id: ticket.id },
-          data: { deliveryStatus: sent.ok ? 'SENT' : 'FAILED', lastDeliveryAt: sent.ok ? new Date() : undefined, deliveryAttempts: { increment: 1 } },
-        }).catch(() => {})
-        await prisma.credentialDeliveryAttempt.create({
-          data: {
-            eventId,
-            ticketId: ticket.id,
-            channel: 'EMAIL',
-            status: sent.ok ? 'SENT' : 'FAILED',
-            recipient: body.email,
-            provider: 'smtp',
-            providerMessageId: sent.messageId ?? null,
-            error: sent.error ?? null,
-            attempt: 1,
-            metadata: { source: 'public_reservation_pending', submittedPayment },
-          } as any,
-        }).catch(() => {})
-        if (submittedPayment) {
-          await writeAudit({
-            organizationId: event.orgId, eventId, actorUserId: null,
-            action: AuditActions.PAYMENT_SUBMITTED, resourceType: 'ticket', resourceId: ticket.id,
-            newValue: { paymentProviderId: paymentProvider?.id ?? null, paymentReference: body.paymentReference?.trim() || null, hasProof: Boolean(body.paymentProofUrl) },
-            sourceIp: req.ip,
-          }).catch(() => {})
-        }
+
+      // Add email to outbox
+      await addOutboxEvent(prisma, 'EMAIL_SEND', {
+        to: body.email,
+        subject: `Reservation received — ${event.name}`,
+        html: ticketEmailShell({
+          preheader: `Your reservation for ${event.name} is ${submittedPayment ? 'awaiting payment review' : 'awaiting approval'}`,
+          title: 'Reservation received',
+          body: `Your reservation for <strong>${event.name}</strong> is in. ${submittedPayment ? 'Your payment proof was received and will be reviewed by the event team.' : 'The event team will review it shortly.'} Your QR ticket arrives by email once approved.`,
+          rows: [
+            { label: 'Event', value: event.name },
+            { label: 'Ticket', value: ticketType.name },
+            { label: 'Reservation', value: code },
+            ...(reservedSeats.length ? [{ label: 'Seats', value: reservedSeats.map(s => s.label).join(', ') }] : []),
+            ...(paymentProvider ? [{ label: 'Payment method', value: paymentProvider.name }] : []),
+            ...(body.paymentReference?.trim() ? [{ label: 'Payment reference', value: body.paymentReference.trim() }] : []),
+            { label: 'Status', value: submittedPayment ? 'Awaiting payment review' : 'Awaiting approval' },
+          ],
+          footer: 'TKT · Control center for live events',
+        }),
       })
+
+      // Add payment submitted audit to outbox
+      if (submittedPayment) {
+        await addOutboxEvent(prisma, 'PAYMENT_SUBMITTED', {
+          eventId,
+          ticketId: ticket.id,
+          paymentProviderId: paymentProvider?.id ?? null,
+          paymentReference: body.paymentReference?.trim() || null,
+          hasProof: Boolean(body.paymentProofUrl),
+        })
+      }
     } else {
       const reservationTicket: ReservationTicket = {
         id: ticket.id,
@@ -323,17 +303,11 @@ export async function reservationRoutes(app: FastifyInstance) {
         attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
         ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
       }
-      afterResponse(req, 'credential issue + email', { eventId, orgId: event.orgId ?? undefined }, async () => {
-        const issued = await issueReservationCredential({
-          event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
-          ticket: reservationTicket,
-          sendEmail: false,
-        })
-        await deliverReservationCredentialEmail({
-          event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
-          ticket: reservationTicket,
-          credential: issued.credential,
-        })
+
+      // Add credential issuance + email to outbox
+      await addOutboxEvent(prisma, 'CREDENTIAL_ISSUED', {
+        event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
+        ticket: reservationTicket,
       })
     }
 
@@ -348,19 +322,29 @@ export async function reservationRoutes(app: FastifyInstance) {
     }
     const seatSuffix = reservedSeats.length ? ` · seats ${reservedSeats.map((s) => s.label).join(', ')}` : ''
     logActivity(eventId, 'reservation', `${body.name} reserved ${ticketType.name} · ${code}${seatSuffix}`, body.name)
-    publish(channelFor.reservation(eventId), 'reservation.created', {
-      ticketId: ticket.id,
-      reservationCode: code,
-      approval: paid ? 'PENDING' : 'APPROVED',
-      paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
-    })
-    void dispatchEventWebhooks(eventId, 'reservation.created', {
+
+    // Add realtime publish and webhook dispatch to outbox
+    await addOutboxEvent(prisma, 'RESERVATION_CREATED', {
+      eventId,
       ticketId: ticket.id,
       reservationCode: code,
       approval: paid ? 'PENDING' : 'APPROVED',
       paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
       attendee: { name: body.name, email: body.email },
       ticketType: { id: ticketType.id, name: ticketType.name },
+    })
+
+    await addOutboxEvent(prisma, 'WEBHOOK_DISPATCH', {
+      eventId,
+      eventName: 'reservation.created',
+      payload: {
+        ticketId: ticket.id,
+        reservationCode: code,
+        approval: paid ? 'PENDING' : 'APPROVED',
+        paymentStatus: paid ? 'PENDING' : 'NOT_REQUIRED',
+        attendee: { name: body.name, email: body.email },
+        ticketType: { id: ticketType.id, name: ticketType.name },
+      },
     })
 
     // Capacity reached → lock the reservation pipeline.
