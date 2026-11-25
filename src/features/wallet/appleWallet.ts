@@ -251,9 +251,7 @@ export async function createAppleWalletPass(input: AppleWalletPassInput): Promis
   pass.secondaryFields.push({
     key: 'date-time',
     label: 'DATE & TIME',
-    value: input.event.startAt.toISOString(),
-    dateStyle: 'PKDateStyleLong',
-    timeStyle: 'PKDateStyleShort',
+    value: dateTime,
   })
   pass.auxiliaryFields.push(
     { key: 'pass-holder', label: 'PASS HOLDER', value: input.attendeeName },
