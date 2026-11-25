@@ -59,6 +59,20 @@ function safeHttpUrl(value?: string | null): string | null {
   }
 }
 
+/** Verify the configured SMTP connection without sending a message. */
+export async function verifyMailTransport(): Promise<{ ok: boolean; error?: string }> {
+  const t = getTransporter()
+  if (!t) return { ok: false, error: 'SMTP transport is disabled or not configured' }
+  try {
+    await t.verify()
+    return { ok: true }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'SMTP connection verification failed'
+    console.error('[mailer:verify:error]', message)
+    return { ok: false, error: message }
+  }
+}
+
 /** Send an email with optional inline MIME attachments, including the ticket QR. */
 export async function sendMail(payload: MailPayload): Promise<MailSendResult> {
   const t = getTransporter()
