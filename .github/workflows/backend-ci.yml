@@ -58,8 +58,8 @@ jobs:
           import { appendFileSync } from 'node:fs'
           import { generateKeyPairSync } from 'node:crypto'
           const pair = generateKeyPairSync('ed25519')
-          const privateKey = pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString('base64url')
-          const publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString('base64url')
+          const privateKey = Buffer.from(pair.privateKey.export({ type: 'pkcs8', format: 'pem' })).toString('base64url')
+          const publicKey = Buffer.from(pair.publicKey.export({ type: 'spki', format: 'pem' })).toString('base64url')
           appendFileSync(process.env.GITHUB_ENV, 'CREDENTIAL_PRIVATE_KEY_B64=' + privateKey + String.fromCharCode(10) + 'CREDENTIAL_PUBLIC_KEY_B64=' + publicKey + String.fromCharCode(10))
           NODE
       - name: Type check
