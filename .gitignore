@@ -5,3 +5,6 @@ uploads/
 .env.*
 !.env.example
 .vercel
+# Runtime logs and one-off local inspection script
+*.log
+tmp-org2.mjs
