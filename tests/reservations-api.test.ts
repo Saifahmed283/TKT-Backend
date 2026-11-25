@@ -419,8 +419,12 @@ describe('public reservation integrity', () => {
     const orgId = await createOrg(admin.token, `Org HoldExpiry ${Date.now()}`)
     cleanupOrgIds.push(orgId)
     const eventId = await createPublishedEvent(admin.token, orgId, `Event HoldExpiry ${Date.now()}`)
+    const manager = await registerIsolatedUser('HoldExpiryMgr', `hold-expiry-mgr-${Date.now()}@isolated.tkt`)
+    await addOrgMember(admin.token, orgId, manager.email)
+    await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
+    const managerToken = await login(manager.email, manager.password)
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Conference + Bus', 0, true)
-    const bus = await createBus(admin.token, eventId)
+    const bus = await createBus(managerToken, eventId)
     const seatId = bus.seatIds[0]
 
     const hold = await app.inject({
