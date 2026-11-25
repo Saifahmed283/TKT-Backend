@@ -51,6 +51,9 @@
     "vitest": "^5.1.1"
   },
   "overrides": {
+    "@fastify/static": {
+      "content-disposition": "^2.0.1"
+    },
     "@prisma/config": {
       "deepmerge-ts": "^8.0.2",
       "effect": "^3.22.1"
