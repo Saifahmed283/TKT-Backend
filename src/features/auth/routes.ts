@@ -156,7 +156,7 @@ function extractRefreshToken(req: any): string | undefined {
   if (!cookieHeader) return undefined
 
   try {
-    const cookies = cookieHeader.split(';').reduce((acc: Record<string, string>, cookie) => {
+    const cookies = cookieHeader.split(';').reduce((acc: Record<string, string>, cookie: string) => {
       const [key, ...valueParts] = cookie.trim().split('=')
       if (key && valueParts.length > 0) {
         acc[key.trim()] = valueParts.join('=').trim()
@@ -181,7 +181,6 @@ function extractRefreshToken(req: any): string | undefined {
       req.log.info({
         hasCookieHeader,
         hasParsedCookies,
-        cookieHeaderPreview: req.headers?.cookie?.substring(0, 50),
         tokenFound: !!token,
       }, 'auth.refresh attempt')
 
@@ -195,7 +194,7 @@ function extractRefreshToken(req: any): string | undefined {
       
       const claims = await verifyRefreshToken(token)
       if (!claims) {
-        req.log.warn({ tokenPreview: token.substring(0, 10) }, 'auth.refresh: Token verification failed')
+        req.log.warn('auth.refresh: Token verification failed')
         throw errors.unauthorized('Refresh session expired')
       }
       
@@ -203,7 +202,7 @@ function extractRefreshToken(req: any): string | undefined {
       const tokenHash = hashRefreshToken(token)
       const session = await prisma.refreshSession.findUnique({ where: { tokenHash } })
       if (!session) {
-        req.log.warn({ tokenHash: tokenHash.substring(0, 10) }, 'auth.refresh: Session not found in DB')
+        req.log.warn('auth.refresh: Session not found in DB')
         await clearRefreshCookieAndRevoke(reply, token)
         throw errors.unauthorized('Refresh session not found')
       }
