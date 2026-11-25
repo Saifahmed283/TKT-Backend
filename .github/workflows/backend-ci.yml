@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: backend-ci-${{ github.ref }}
@@ -49,7 +49,17 @@ jobs:
           node-version: 22
           cache: npm
       - name: Install dependencies
-        run: npm ci
+        run: npm install
+      - name: Commit generated npm lockfile (feature branch bootstrap only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/custom-ticket-experience-wallet'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(wallet): sync passkit-generator lockfile"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
       - name: Generate Prisma client
         run: npm run generate
       - name: Generate ephemeral Ed25519 credential keys
