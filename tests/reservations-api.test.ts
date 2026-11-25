@@ -232,7 +232,15 @@ describe('public reservation integrity', () => {
     })
     expectStatus(reserve, 201)
     const { ticketId, reservationCode, accessToken } = reserve.json().data
+    expect(reserve.json().data.walletPassAvailable).toBe(false)
     await waitForCredential(ticketId)
+
+    const status = await app.inject({
+      method: 'GET',
+      url: `/public/events/${eventId}/reservations/status?code=${encodeURIComponent(reservationCode)}&token=${encodeURIComponent(accessToken)}`,
+    })
+    expectStatus(status, 200)
+    expect(status.json().data.walletPassAvailable).toBe(false)
 
     const noCapability = await app.inject({
       method: 'POST',
