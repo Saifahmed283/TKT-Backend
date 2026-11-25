@@ -1,4 +1,5 @@
-import { Prisma, type PrismaClient } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import { randomUUID } from 'node:crypto'
 import { prisma } from './db.js'
 import { runWithIsolatedDbContext } from './dbContext.js'
 
@@ -24,13 +25,18 @@ export type OutboxEventPayload = Prisma.InputJsonValue
  * This ensures the event is persisted atomically with the business operation.
  */
 export async function addOutboxEvent(
-  tx: PrismaClient | Prisma.TransactionClient,
+  tx: Prisma.TransactionClient,
   eventType: OutboxEventType,
   payload: OutboxEventPayload,
   options: { scheduledAt?: Date; maxAttempts?: number } = {}
 ): Promise<string> {
+  const id = randomUUID()
+  // Public reservation requests may enqueue an event, but RLS exposes only
+  // this one inserted row to INSERT ... RETURNING — never the outbox itself.
+  await tx.$executeRaw`SELECT set_config('app.outbox_event_id', ${id}, true)`
   const event = await tx.outboxEvent.create({
     data: {
+      id,
       eventType,
       payload,
       status: 'PENDING',
