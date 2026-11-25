@@ -52,10 +52,12 @@ export function afterResponse(
  * Creates an outbox event within the current transaction.
  * Use this instead of afterResponse for durable, retryable background work.
  */
+import { Prisma } from '@prisma/client'
+
 export function afterResponseOutboxAlias(
   tx: any,
   eventType: string,
-  payload: Record<string, unknown>,
+  payload: Prisma.InputJsonValue,
   options?: { scheduledAt?: Date; maxAttempts?: number }
 ): void {
   // Import dynamically to avoid circular dependency

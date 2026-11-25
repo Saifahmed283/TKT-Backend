@@ -305,9 +305,21 @@ export async function reservationRoutes(app: FastifyInstance) {
       }
 
       // Add credential issuance + email to outbox
+      const ticketForOutbox = {
+        id: ticket.id,
+        eventId,
+        metadata: ticket.metadata,
+        price: ticket.price,
+        status: ticket.status,
+        reservationCode: ticket.reservationCode,
+        approvalStatus: ticket.approvalStatus,
+        paymentStatus: ticket.paymentStatus,
+        attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
+        ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
+      }
       await addOutboxEvent(prisma, 'CREDENTIAL_ISSUED', {
         event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
-        ticket: reservationTicket,
+        ticket: ticketForOutbox,
       })
     }
 
