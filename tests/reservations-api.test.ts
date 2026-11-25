@@ -343,6 +343,120 @@ describe('public reservation integrity', () => {
     expect(reserved.json().data.seats).toHaveLength(1)
   })
 
+  it('serializes competing public holds and requires the winning hold token to reserve', async () => {
+    const admin = await registerIsolatedUser('HoldRaceAdmin', `hold-race-admin-${Date.now()}@isolated.tkt`)
+    const orgId = await createOrg(admin.token, `Org HoldRace ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event HoldRace ${Date.now()}`)
+    const manager = await registerIsolatedUser('HoldRaceMgr', `hold-race-mgr-${Date.now()}@isolated.tkt`)
+    await addOrgMember(admin.token, orgId, manager.email)
+    await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
+    const managerToken = await login(manager.email, manager.password)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Conference + Bus', 0, true)
+    const bus = await createBus(managerToken, eventId)
+    const seatId = bus.seatIds[0]
+
+    const [first, second] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/public/events/${eventId}/buses/${bus.id}/hold`,
+        payload: { seatIds: [seatId], sessionId: 'public-hold-session-A' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/public/events/${eventId}/buses/${bus.id}/hold`,
+        payload: { seatIds: [seatId], sessionId: 'public-hold-session-B' },
+      }),
+    ])
+    expect([first.statusCode, second.statusCode].sort()).toEqual([200, 409])
+    const winningToken = first.statusCode === 200 ? 'public-hold-session-A' : 'public-hold-session-B'
+
+    const withoutToken = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Race Guest',
+        email: `hold-race-no-token-${Date.now()}@test.tkt`,
+        phone: '+20 100 123 4567',
+        ticketTypeId,
+        busId: bus.id,
+        seatIds: [seatId],
+      },
+    })
+    expectStatus(withoutToken, 409)
+
+    const reserved = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Race Guest',
+        email: `hold-race-winner-${Date.now()}@test.tkt`,
+        phone: '+20 100 123 4567',
+        ticketTypeId,
+        busId: bus.id,
+        seatIds: [seatId],
+        holdToken: winningToken,
+      },
+    })
+    expectStatus(reserved, 201)
+
+    const directRelease = await app.inject({
+      method: 'POST',
+      url: `/events/${eventId}/buses/${bus.id}/release`,
+      headers: auth(managerToken),
+      payload: { seatIds: [seatId] },
+    })
+    expectStatus(directRelease, 409)
+    await runWithDbContext({ isInternal: true }, async () => {
+      const seat = await prisma.busSeat.findUnique({ where: { id: seatId }, select: { state: true, ticketId: true } })
+      expect(seat?.state).toBe('RESERVED')
+      expect(seat?.ticketId).toBe(reserved.json().data.ticketId)
+    })
+  })
+
+  it('prevents seat edits, layout rebuilds, and bus deletion while a public hold is active', async () => {
+    const admin = await registerIsolatedUser('HoldGuardAdmin', `hold-guard-admin-${Date.now()}@isolated.tkt`)
+    const orgId = await createOrg(admin.token, `Org HoldGuard ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event HoldGuard ${Date.now()}`)
+    const manager = await registerIsolatedUser('HoldGuardMgr', `hold-guard-mgr-${Date.now()}@isolated.tkt`)
+    await addOrgMember(admin.token, orgId, manager.email)
+    await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
+    const managerToken = await login(manager.email, manager.password)
+    const bus = await createBus(managerToken, eventId)
+    const seatId = bus.seatIds[0]
+
+    const hold = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/buses/${bus.id}/hold`,
+      payload: { seatIds: [seatId], sessionId: 'layout-hold-session' },
+    })
+    expectStatus(hold, 200)
+
+    const changeSeat = await app.inject({
+      method: 'PATCH',
+      url: `/events/${eventId}/buses/${bus.id}/seats/${seatId}`,
+      headers: auth(managerToken),
+      payload: { state: 'UNAVAILABLE' },
+    })
+    expectStatus(changeSeat, 409)
+
+    const rebuild = await app.inject({
+      method: 'PATCH',
+      url: `/events/${eventId}/buses/${bus.id}`,
+      headers: auth(managerToken),
+      payload: { layout: { template: 'grid', rows: 3, cols: 2 } },
+    })
+    expectStatus(rebuild, 409)
+
+    const remove = await app.inject({
+      method: 'DELETE',
+      url: `/events/${eventId}/buses/${bus.id}`,
+      headers: auth(managerToken),
+    })
+    expectStatus(remove, 409)
+  })
+
   it('blocks manual approval until payment proof is confirmed', async () => {
     const admin = await registerUser('ResPaymentGuard')
     const orgId = await createOrg(admin.token, `Org ResPaymentGuard ${Date.now()}`)
