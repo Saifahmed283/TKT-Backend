@@ -68,5 +68,7 @@ jobs:
         run: npx prisma migrate deploy
       - name: Integration tests
         run: npm test
+      - name: Validate staged load-test script syntax
+        run: node --check tests/load/reservations.js
       - name: Production build
         run: npm run build
