@@ -4,6 +4,12 @@ const walletMock = vi.hoisted(() => ({
   artwork: null as Record<string, Buffer> | null,
   certificates: null as Record<string, unknown> | null,
   props: null as Record<string, any> | null,
+  type: null as string | null,
+  headerFields: [] as Array<Record<string, unknown>>,
+  primaryFields: [] as Array<Record<string, unknown>>,
+  secondaryFields: [] as Array<Record<string, unknown>>,
+  auxiliaryFields: [] as Array<Record<string, unknown>>,
+  backFields: [] as Array<Record<string, unknown>>,
   barcodes: null as Array<Record<string, unknown>> | null,
 }))
 
@@ -13,6 +19,14 @@ vi.mock('passkit-generator', () => ({
       walletMock.artwork = artwork
       walletMock.certificates = certificates
       walletMock.props = props
+    }
+    headerFields: Array<Record<string, unknown>> = (walletMock.headerFields = [])
+    primaryFields: Array<Record<string, unknown>> = (walletMock.primaryFields = [])
+    secondaryFields: Array<Record<string, unknown>> = (walletMock.secondaryFields = [])
+    auxiliaryFields: Array<Record<string, unknown>> = (walletMock.auxiliaryFields = [])
+    backFields: Array<Record<string, unknown>> = (walletMock.backFields = [])
+    set type(value: string) {
+      walletMock.type = value
     }
     setBarcodes(...barcodes: Array<Record<string, unknown>>) {
       walletMock.barcodes = barcodes
@@ -41,6 +55,12 @@ afterEach(() => {
   walletMock.artwork = null
   walletMock.certificates = null
   walletMock.props = null
+  walletMock.type = null
+  walletMock.headerFields = []
+  walletMock.primaryFields = []
+  walletMock.secondaryFields = []
+  walletMock.auxiliaryFields = []
+  walletMock.backFields = []
   walletMock.barcodes = null
 })
 
@@ -124,19 +144,24 @@ describe('Apple Wallet pass generation', () => {
       passTypeIdentifier: 'pass.com.example.tkt',
       teamIdentifier: 'TEAM123456',
       organizationName: 'TKT Events',
-      eventTicket: {
-        primaryFields: [{ key: 'event-name', label: 'EVENT', value: 'TKT Signature Night' }],
-        auxiliaryFields: [
-          { key: 'pass-holder', label: 'PASS HOLDER', value: 'Abdullah Mohammed' },
-          { key: 'seat', label: 'SEAT', value: 'Shuttle One · A1' },
-        ],
-      },
     })
-    expect(walletMock.props?.eventTicket.backFields).toEqual(expect.arrayContaining([
-      expect.objectContaining({ key: 'location', value: 'Cairo Opera House · Gezira, Cairo' }),
-      expect.objectContaining({ key: 'ticket-type', value: 'Program + Bus Included' }),
-      expect.objectContaining({ key: 'booking-reference', value: 'TKT-26001' }),
-      expect.objectContaining({ key: 'event-name', value: 'TKT Signature Night' }),
+    expect(walletMock.type).toBe('eventTicket')
+    expect(walletMock.headerFields).toContainEqual({ key: 'pass-kind', label: 'TKT EVENT PASS', value: 'Program + Bus Included' })
+    expect(walletMock.primaryFields).toContainEqual({ key: 'event-name', label: 'EVENT', value: 'TKT Signature Night' })
+    expect(walletMock.secondaryFields).toContainEqual(expect.objectContaining({
+      key: 'date-time',
+      label: 'DATE & TIME',
+      value: '2026-11-24T17:30:00.000Z',
+    }))
+    expect(walletMock.auxiliaryFields).toEqual(expect.arrayContaining([
+      { key: 'pass-holder', label: 'PASS HOLDER', value: 'Abdullah Mohammed' },
+      { key: 'seat', label: 'SEAT', value: 'Shuttle One · A1' },
+    ]))
+    expect(walletMock.backFields).toEqual(expect.arrayContaining([
+      { key: 'location', label: 'LOCATION', value: 'Cairo Opera House · Gezira, Cairo' },
+      { key: 'ticket-type', label: 'TICKET TYPE', value: 'Program + Bus Included' },
+      { key: 'booking-reference', label: 'BOOKING REFERENCE', value: 'TKT-26001' },
+      { key: 'event-name', label: 'EVENT', value: 'TKT Signature Night' },
     ]))
     expect(walletMock.props?.backgroundColor).toBe('rgb(255, 242, 247)')
     expect(walletMock.props?.foregroundColor).toBe('rgb(42, 16, 32)')
