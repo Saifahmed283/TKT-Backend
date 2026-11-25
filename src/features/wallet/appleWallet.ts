@@ -127,10 +127,12 @@ function createPng(width: number, height: number, background: string, accent: st
   const startY = Math.floor((height - glyphHeight * scale) / 2)
 
   for (let index = 0; index < word.length; index += 1) {
-    const glyph = GLYPHS[word[index]]
+    const letter = word.charAt(index)
+    const glyph = GLYPHS[letter] ?? GLYPHS.T
     for (let gy = 0; gy < glyphHeight; gy += 1) {
+      const row = glyph[gy] ?? ''
       for (let gx = 0; gx < glyphWidth; gx += 1) {
-        if (glyph[gy][gx] !== '1') continue
+        if (row[gx] !== '1') continue
         for (let sy = 0; sy < scale; sy += 1) {
           for (let sx = 0; sx < scale; sx += 1) {
             setPixel(startX + index * (glyphWidth * scale + gap) + gx * scale + sx, startY + gy * scale + sy, fg)
