@@ -1,5 +1,5 @@
 import { Redis } from '@upstash/redis'
-import { randomUUID } from 'node:crypto'
+import { randomInt } from 'node:crypto'
 import { config } from '../config.js'
 import { prisma } from './db.js'
 
@@ -123,7 +123,7 @@ export async function distributedRateLimit(
         now - options.windowMs,
         options.windowMs,
         options.max,
-        `${now}:${randomUUID()}`,
+        randomInt(0, 0x1_0000_0000_0000),
         windowSec + 1,
       ],
     )
