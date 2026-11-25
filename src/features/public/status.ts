@@ -4,6 +4,8 @@ import { prisma } from '../../lib/db.js'
 import { AppError, errors } from '../../lib/errors.js'
 import { resendReservationCredential, reservationApprovalOf, reservationCodeOf, reservationPaymentOf, normalizeReservationEmail } from '../reservations/service.js'
 import { hashAccessToken } from './schemas.js'
+import { appleWalletIsConfigured, createAppleWalletPass } from '../wallet/appleWallet.js'
+import { canIssueReservationCredential } from '../reservations/service.js'
 
 export async function reservationStatusRoutes(app: FastifyInstance) {
 // ── Reservation status lookup (re-fetch QR after approval) ──
@@ -77,6 +79,98 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
         qr: ticket.credential?.code ?? null,
         seats: await prisma.busSeat.findMany({ where: { ticketId: ticket.id }, select: { id: true, label: true, busId: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } }).catch(() => []),
       },
+    }
+  })
+
+  // ── Apple Wallet pass download ─────────────────────────────
+  // The signed pass is created only for the reservation owner and only
+  // after the credential is active. A display code by itself is not access.
+  app.post('/events/:eventId/reservations/wallet', {
+    config: { rateLimit: { max: 5, timeWindow: '10 minutes' } },
+  }, async (req, reply) => {
+    const { eventId } = req.params as { eventId: string }
+    const body = z.object({
+      code: z.string().min(3),
+      token: z.string().min(16).optional(),
+      email: z.string().email().optional(),
+    }).refine((value) => Boolean(value.token || value.email), {
+      message: 'A reservation access token or booking email is required',
+    }).parse(req.body)
+
+    const ticket = await prisma.ticket.findFirst({
+      where: { eventId, reservationCode: body.code },
+      select: {
+        id: true,
+        status: true,
+        reservationCode: true,
+        reservationEmail: true,
+        accessTokenHash: true,
+        accessTokenExpiresAt: true,
+        approvalStatus: true,
+        paymentStatus: true,
+        metadata: true,
+        attendee: { select: { name: true } },
+        ticketType: { select: { name: true } },
+        credential: { select: { code: true, status: true } },
+        event: { select: { id: true, name: true, startAt: true, endAt: true, venueName: true, venueAddress: true } },
+        busSeats: {
+          select: { label: true, bus: { select: { name: true } } },
+          orderBy: { label: 'asc' },
+        },
+      },
+    })
+    if (!ticket) throw errors.notFound('Reservation not found')
+
+    const tokenOk = Boolean(
+      body.token
+      && ticket.accessTokenHash
+      && hashAccessToken(body.token) === ticket.accessTokenHash
+      && (!ticket.accessTokenExpiresAt || ticket.accessTokenExpiresAt > new Date()),
+    )
+    const emailNorm = normalizeReservationEmail(body.email)
+    const emailOk = Boolean(emailNorm && emailNorm === ticket.reservationEmail)
+    if (!tokenOk && !emailOk) throw errors.notFound('Reservation not found')
+
+    if (!canIssueReservationCredential(ticket as any) || ticket.credential?.status !== 'ACTIVE') {
+      throw errors.conflict('Apple Wallet pass is available after the ticket has been approved and issued')
+    }
+    if (!appleWalletIsConfigured()) {
+      return reply.code(503).send({
+        error: {
+          code: 'APPLE_WALLET_NOT_CONFIGURED',
+          message: 'Apple Wallet signing is not configured for this environment.',
+        },
+      })
+    }
+
+    try {
+      const metadata = (ticket.metadata && typeof ticket.metadata === 'object')
+        ? ticket.metadata as Record<string, unknown>
+        : {}
+      const pass = await createAppleWalletPass({
+        ticketId: ticket.id,
+        reservationCode: ticket.reservationCode ?? body.code,
+        credentialCode: ticket.credential.code,
+        attendeeName: ticket.attendee.name,
+        ticketTypeName: ticket.ticketType.name,
+        event: ticket.event,
+        seats: ticket.busSeats.map((seat) => ({ label: seat.label, busName: seat.bus.name })),
+        design: metadata.ticketDesign as any,
+      })
+      const filename = `TKT-${(ticket.reservationCode ?? body.code).replace(/[^a-zA-Z0-9-]/g, '')}.pkpass`
+      return reply
+        .type('application/vnd.apple.pkpass')
+        .header('Content-Disposition', `attachment; filename="${filename}"`)
+        .header('Cache-Control', 'private, no-store')
+        .send(pass)
+    } catch (error) {
+      req.log.error({ error, eventId, ticketId: ticket.id }, 'apple_wallet.pass_generation_failed')
+      return reply.code(500).send({
+        error: {
+          code: 'APPLE_WALLET_GENERATION_FAILED',
+          message: 'The Apple Wallet pass could not be generated. Please try again later.',
+        },
+      })
     }
   })
 
