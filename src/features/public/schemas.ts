@@ -32,7 +32,7 @@ export const reservationSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
   phone: z.string().min(8).max(24).refine((value) => {
-    const digits = value.replace(/\\D/g, '')
+    const digits = value.replace(/\D/g, '')
     return digits.length >= 8 && digits.length <= 15
   }, 'Phone number must contain 8–15 digits'),
   gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']),
