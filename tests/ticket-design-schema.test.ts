@@ -12,7 +12,19 @@ describe('public reservation ticket design schema', () => {
   }
 
   it('accepts supported templates and six-digit hex colors', () => {
-    expect(ticketDesignSchema.parse(validDesign)).toEqual(validDesign)
+    expect(ticketDesignSchema.parse(validDesign)).toEqual({ ...validDesign, stickerId: 'none' })
+  })
+
+  it('accepts a supported optional sticker and palette preset', () => {
+    expect(ticketDesignSchema.parse({
+      ...validDesign,
+      paletteId: 'midnight-azure',
+      stickerId: 'sparkle',
+    })).toMatchObject({ paletteId: 'midnight-azure', stickerId: 'sparkle' })
+  })
+
+  it('rejects unsupported sticker names', () => {
+    expect(ticketDesignSchema.safeParse({ ...validDesign, stickerId: 'external-script' }).success).toBe(false)
   })
 
   it('rejects non-hex colors and script-like payloads', () => {
