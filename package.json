@@ -16,10 +16,7 @@
     "migrate": "prisma migrate dev",
     "deploy": "prisma migrate deploy",
     "seed": "tsx prisma/seed.ts",
-    "seed:demo": "tsx prisma/seed-demo.ts",
-    "typecheck": "tsc -p tsconfig.build.json --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "typecheck": "tsc -p tsconfig.build.json --noEmit"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

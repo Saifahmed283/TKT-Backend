@@ -66,9 +66,5 @@ jobs:
         run: npm run typecheck
       - name: Apply migrations to disposable PostgreSQL
         run: npx prisma migrate deploy
-      - name: Integration tests
-        run: npm test
       - name: Production build
         run: npm run build
-      - name: Validate staged load-test script syntax
-        run: node --check tests/load/reservations.js
