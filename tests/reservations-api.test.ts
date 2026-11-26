@@ -466,7 +466,7 @@ describe('public reservation integrity', () => {
         ticketTypeId: transportTypeId,
         busId: bus.id,
         seatIds: [bus.seatIds[0]],
-        paymentAmount: 150,
+        paymentAmount: 100,
       },
     })
     expectStatus(duplicateSeatAttempt, 409)
