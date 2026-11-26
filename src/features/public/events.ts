@@ -38,6 +38,11 @@ export async function eventRoutes(app: FastifyInstance) {
           select: { id: true, name: true, description: true, category: true, tier: true, price: true, currency: true, quota: true, salesStartAt: true, salesEndAt: true, isPublic: true, transportIncluded: true, sortOrder: true, _count: { select: { tickets: true } } },
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         },
+        paymentProviders: {
+          where: { isActive: true },
+          select: { id: true, name: true, accountName: true, accountNumber: true, paymentPhone: true, paymentLink: true, instructions: true, imageUrl: true },
+          orderBy: { createdAt: 'asc' },
+        },
         buses: {
           where: { isActive: true },
           select: { id: true, name: true, layout: true, seatPrice: true, currency: true, seats: { select: { id: true, label: true, row: true, col: true, state: true } }, _count: { select: { seats: true } } },
@@ -81,6 +86,7 @@ export async function eventRoutes(app: FastifyInstance) {
             availability: availabilityOf({ reg, now: new Date(), eventStartAt: e.startAt, soldOut }),
           },
           ticketTypes,
+          paymentProviders: (e as any).paymentProviders ?? [],
           attendeeCount: e._count.attendees,
           ticketCount: e._count.tickets,
           scanCount: e._count.accessLogs,
