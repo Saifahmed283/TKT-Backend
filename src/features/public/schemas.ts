@@ -18,7 +18,8 @@ export const WHEEL_SEGMENTS = [
 
 export const ticketDesignSchema = z.object({
   templateId: z.enum(['signature-split', 'editorial-wide']),
-  paletteId: z.enum(['obsidian-gold', 'rose-noir', 'champagne', 'custom']),
+  paletteId: z.enum(['obsidian-gold', 'rose-noir', 'champagne', 'midnight-azure', 'emerald-ink', 'lavender-silk', 'custom']),
+  stickerId: z.enum(['none', 'sparkle', 'star', 'flower', 'heart', 'bolt', 'crown']).optional().default('none'),
   panelColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   backgroundColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
