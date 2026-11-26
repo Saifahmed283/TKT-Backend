@@ -423,7 +423,7 @@ describe('public reservation integrity', () => {
         ticketTypeId: transportTypeId,
         busId: bus.id,
         seatIds: [bus.seatIds[0]],
-        paymentAmount: 149,
+        paymentAmount: 99,
       },
     })
     expectStatus(wrongAmount, 400)
@@ -442,12 +442,12 @@ describe('public reservation integrity', () => {
         ticketTypeId: transportTypeId,
         busId: bus.id,
         seatIds: [bus.seatIds[0]],
-        paymentAmount: 150,
+        paymentAmount: 100,
         seatPassengers: [{ seatId: bus.seatIds[0], name: 'Transit Guest' }],
       },
     })
     expectStatus(reserved, 201)
-    expect(reserved.json().data.price).toBe('150')
+    expect(reserved.json().data.price).toBe('100')
     expect(reserved.json().data.seats).toHaveLength(1)
 
     const ticketId = reserved.json().data.ticketId as string
