@@ -14,7 +14,6 @@ import {
   normalizeReservationPhone,
   reservationStatePatch,
 } from '../reservations/service.js'
-import { ticketEmailShell } from '../../lib/mailer.js'
 import { logActivity } from '../../lib/activity.js'
 import { publish, channelFor } from '../../lib/realtime.js'
 import { addOutboxEvent, processOutboxEventIds, type OutboxEventType } from '../../lib/outbox.js'
@@ -331,26 +330,9 @@ export async function reservationRoutes(app: FastifyInstance) {
 
         if (paid) {
           const submittedPayment = Boolean(body.paymentReference || body.paymentProofUrl || paymentProvider)
-          await queueOutbox('EMAIL_SEND', {
-            to: body.email,
-            subject: `Reservation received — ${event.name}`,
-            html: ticketEmailShell({
-              preheader: `Your reservation for ${event.name} is ${submittedPayment ? 'awaiting payment review' : 'awaiting approval'}`,
-              title: 'Reservation received',
-              body: `Your reservation for <strong>${event.name}</strong> is in. ${submittedPayment ? 'Your payment proof was received and will be reviewed by the event team.' : 'The event team will review it shortly.'} Your QR ticket arrives by email once approved.`,
-              rows: [
-                { label: 'Event', value: event.name },
-                { label: 'Ticket', value: ticketType.name },
-                { label: 'Reservation', value: code },
-                ...(seatRows.length ? [{ label: 'Seats', value: seatRows.map((seat: any) => seat.label).join(', ') }] : []),
-                ...(paymentProvider ? [{ label: 'Payment method', value: paymentProvider.name }] : []),
-                ...(body.paymentReference?.trim() ? [{ label: 'Payment reference', value: body.paymentReference.trim() }] : []),
-                { label: 'Status', value: submittedPayment ? 'Awaiting payment review' : 'Awaiting approval' },
-              ],
-              footer: 'TKT · Control center for live events',
-            }),
-          })
-
+          // No email is sent at submission. The ticket-looking "reservation
+          // received" message made attendees think their QR ticket had arrived.
+          // The real credential email is queued on approval instead.
           if (submittedPayment) {
             await queueOutbox('PAYMENT_SUBMITTED', {
               eventId,
