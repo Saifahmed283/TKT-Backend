@@ -414,7 +414,7 @@ describe('public reservation integrity', () => {
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Conference', 0)
     const transportTypeId = await createTicketType(admin.token, eventId, 'Conference + Bus', 100, true)
     const bus = await createBus(managerToken, eventId, 50)
-    const paymentProviderId = await createPaymentProvider(managerToken, eventId)
+    const paymentProviderId = await createPaymentProvider(admin.token, eventId)
     const email = `transport-${Date.now()}@test.tkt`
 
     const noPhone = await app.inject({
@@ -559,7 +559,7 @@ describe('public reservation integrity', () => {
     await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
     const managerToken = await login(manager.email, manager.password)
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid Complete', 75)
-    const paymentProviderId = await createPaymentProvider(managerToken, eventId)
+    const paymentProviderId = await createPaymentProvider(admin.token, eventId)
     const email = `incomplete-proof-${Date.now()}@test.tkt`
 
     const missingReceipt = await app.inject({
@@ -609,7 +609,7 @@ describe('public reservation integrity', () => {
     await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
     const managerToken = await login(manager.email, manager.password)
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid Guard', 50)
-    const paymentProviderId = await createPaymentProvider(managerToken, eventId)
+    const paymentProviderId = await createPaymentProvider(admin.token, eventId)
     const emailSpy = vi.spyOn(getDeliveryAdapter('EMAIL'), 'send').mockResolvedValue({
       ok: true,
       provider: 'test',
