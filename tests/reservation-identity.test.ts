@@ -39,6 +39,7 @@ describe('reservation identity protection', () => {
       identityNumber: 'AB1234567',
     })
     expect(decryptReservationIdentity({ gender: 'unknown' })).toBeNull()
+    expect(decryptReservationIdentity({ gender: 'female', nationality: 'OTHER', encryptedIdentityNumber: 'v1:invalid:invalid:invalid' })).toBeNull()
   })
 
   it('accepts 14-digit Egyptian IDs and rejects malformed ones', () => {
