@@ -133,6 +133,7 @@ export function ticketEmailShell(opts: {
     accentColor?: string
     backgroundColor?: string
     textColor?: string
+    stickerId?: string
   } | null
   ticketPreview?: {
     attendeeName: string
@@ -206,6 +207,13 @@ export function ticketEmailShell(opts: {
   const ticketAccent = ticketColor(ticketDesign.accentColor, '#c8a25c')
   const ticketSurface = ticketColor(ticketDesign.backgroundColor, '#f1ede4')
   const ticketInk = ticketColor(ticketDesign.textColor, '#171717')
+  const stickerGlyphs: Record<string, string> = {
+    sparkle: '✦', star: '★', flower: '❀', heart: '♥', bolt: '⚡', crown: '♛',
+  }
+  const stickerGlyph = stickerGlyphs[String(ticketDesign.stickerId ?? '')] ?? ''
+  const stickerMarkup = stickerGlyph
+    ? '<span style="display:inline-block;margin:0 0 8px;padding:4px 8px;border:1px solid ' + ticketAccent + ';border-radius:18px;color:' + ticketAccent + ';font-family:Arial,sans-serif;font-size:14px;line-height:1">' + stickerGlyph + '</span>'
+    : ''
   const preview = opts.ticketPreview
   const ticketPreviewBlock = preview ? (() => {
     const attendee = escapeHtml(preview.attendeeName || 'Ticket holder')
@@ -229,7 +237,7 @@ export function ticketEmailShell(opts: {
       ? '<img src="cid:' + escapeHtml(opts.qrCid) + '" width="76" height="76" alt="Ticket QR code" style="display:block;width:76px;height:76px;background:#fff;padding:4px;border:0">'
       : ''
     const isEditorial = ticketDesign.templateId === 'editorial-wide'
-    const heading = '<p style="margin:0;color:' + ticketAccent +
+    const heading = stickerMarkup + '<p style="margin:0;color:' + ticketAccent +
       ';font-family:Arial,sans-serif;font-size:9px;font-weight:700;letter-spacing:.16em">TKT · EVENT PASS</p>' +
       '<p style="margin:8px 0;color:' + ticketInk +
       ';font-family:Arial,sans-serif;font-size:20px;font-weight:700;line-height:1.35">' + eventName + '</p>' +

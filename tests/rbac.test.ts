@@ -36,6 +36,12 @@ describe('Permission catalog', () => {
     }
   })
 
+  it('event_manager holds sensitive reservation identity permission while org_viewer does not', () => {
+    expect(roleByCode.get('event_manager')?.permissions).toContain('reservation.identity.view')
+    expect(roleByCode.get('org_admin')?.permissions).toContain('reservation.identity.view')
+    expect(roleByCode.get('org_viewer')?.permissions).not.toContain('reservation.identity.view')
+  })
+
   it('event_manager holds all event permissions', () => {
     const em = roleByCode.get('event_manager')!
     expect(em.permissions).toContain('event.update')
@@ -43,6 +49,7 @@ describe('Permission catalog', () => {
     expect(em.permissions).toContain('access.scan')
     expect(em.permissions).toContain('incident.resolve')
     expect(em.permissions).toContain('audit.view')
+    expect(em.permissions).toContain('reservation.identity.view')
   })
 })
 

@@ -143,6 +143,7 @@ type StoredTicketDesign = {
   accentColor?: string
   backgroundColor?: string
   textColor?: string
+  stickerId?: string
 }
 
 function ticketDesignFromMetadata(metadata: unknown): StoredTicketDesign | null {
@@ -154,7 +155,8 @@ function ticketDesignFromMetadata(metadata: unknown): StoredTicketDesign | null 
   const color = (input: unknown) => typeof input === 'string' && /^#[0-9a-fA-F]{6}$/.test(input) ? input : undefined
   return {
     templateId: design.templateId === 'editorial-wide' ? 'editorial-wide' : 'signature-split',
-    paletteId: ['obsidian-gold', 'rose-noir', 'champagne', 'custom'].includes(String(design.paletteId)) ? String(design.paletteId) : 'obsidian-gold',
+    paletteId: ['obsidian-gold', 'rose-noir', 'champagne', 'midnight-azure', 'emerald-ink', 'lavender-silk', 'custom'].includes(String(design.paletteId)) ? String(design.paletteId) : 'obsidian-gold',
+    stickerId: ['none', 'sparkle', 'star', 'flower', 'heart', 'bolt', 'crown'].includes(String(design.stickerId)) ? String(design.stickerId) : 'none',
     panelColor: color(design.panelColor),
     accentColor: color(design.accentColor),
     backgroundColor: color(design.backgroundColor),

@@ -3,11 +3,13 @@ import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { prisma } from '../../lib/db.js'
 import { ABOUT_SITE_CONTENT_KEY, DEFAULT_ABOUT_CONTENT, siteContentSchema } from './schema.js'
+import { refreshSiteContentImageUrls } from './assets.js'
 
 function normalize(row: { data: unknown; updatedAt: Date } | null) {
   const content = row ? siteContentSchema.parse(row.data) : DEFAULT_ABOUT_CONTENT
+  const freshAssets = refreshSiteContentImageUrls(content)
   return {
-    ...content,
+    ...freshAssets,
     updatedAt: row ? row.updatedAt.toISOString() : null,
   }
 }
