@@ -260,6 +260,7 @@ describe('public reservation integrity', () => {
     expect(data.attendeeName).toBe('PWA Guest')
     expect(data.approval).toBe('APPROVED')
     expect(data.credentialStatus).toBe('ACTIVE')
+    expect(data.currency).toBe('EGP')
     expect(data.qr).toBeTruthy()
     expect(data).not.toHaveProperty('reservationEmail')
     expect(data).not.toHaveProperty('accessToken')

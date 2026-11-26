@@ -40,7 +40,7 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
         accessTokenHash: true,
         accessTokenExpiresAt: true,
         attendee: { select: { id: true, name: true, email: true } },
-        ticketType: { select: { name: true, price: true } },
+        ticketType: { select: { name: true, price: true, currency: true } },
         credential: { select: { id: true, code: true, status: true } },
       },
     })
@@ -135,7 +135,7 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
         venueAddress: ticket.event.venueAddress,
         ticketName: ticket.ticketType.name,
         price: ticket.price?.toString() ?? ticket.ticketType.price?.toString() ?? '0',
-        currency: 'EGP',
+        currency: ticket.ticketType.currency ?? 'EGP',
         approval,
         paymentStatus,
         ticketStatus: ticket.status,
