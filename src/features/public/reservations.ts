@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
+import { encryptReservationIdentityNumber } from '../../lib/reservation-identity.js'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
@@ -111,13 +112,15 @@ export async function reservationRoutes(app: FastifyInstance) {
     }
     if (body.paymentProofUrl && !(
       body.paymentProofUrl.startsWith('data:image/')
-      || body.paymentProofUrl.startsWith('https://')
-      || body.paymentProofUrl.startsWith('http://')
       || body.paymentProofUrl.startsWith('/uploads/')
       || body.paymentProofUrl.startsWith('/api/uploads/blob/')
     )) {
-      throw errors.badRequest('Payment proof must be an uploaded file URL or image URL')
+      throw errors.badRequest('Payment proof must be uploaded through TKT')
     }
+    if (paid && (!paymentProvider || !body.paymentReference?.trim() || !body.paymentProofUrl)) {
+      throw errors.badRequest('Paid reservations require an active payment provider, transaction reference, and uploaded payment proof')
+    }
+    const encryptedIdentityNumber = encryptReservationIdentityNumber(body.identityNumber)
 
     let attendee: any
     let ticket: any
@@ -204,7 +207,15 @@ export async function reservationRoutes(app: FastifyInstance) {
             phone: body.phone,
             status: paid ? 'REGISTERED' : 'CONFIRMED',
             notes: body.notes?.trim() || null,
-            metadata: { source: 'public', notes: body.notes?.trim() || null },
+            metadata: {
+              source: 'public',
+              notes: body.notes?.trim() || null,
+              reservationIdentity: {
+                gender: body.gender,
+                nationality: body.nationality,
+                encryptedIdentityNumber,
+              },
+            },
           },
         })
 
@@ -232,7 +243,7 @@ export async function reservationRoutes(app: FastifyInstance) {
             paymentReference: paid ? (body.paymentReference?.trim() || null) : null,
             paymentProofUrl: paid ? (body.paymentProofUrl || null) : null,
             paymentAmount: paid ? computedTotalForPricing : null,
-            paymentSubmittedAt: paid && (body.paymentReference || body.paymentProofUrl || body.paymentProviderId) ? new Date() : null,
+            paymentSubmittedAt: paid ? new Date() : null,
             accessTokenHash,
             accessTokenExpiresAt,
             ...state,
