@@ -867,7 +867,9 @@ describe('public reservation integrity', () => {
 
     const viewer = await registerUser('ResIdentityViewer')
     await addOrgMember(admin.token, orgId, viewer.email)
-    await assignStaff(admin.token, eventId, viewer.userId, 'org_viewer')
+    // Registration staff is an event-scoped role with event/attendee read
+    // access, but it is not granted the dedicated identity-document permission.
+    await assignStaff(admin.token, eventId, viewer.userId, 'registration_staff')
     const viewerToken = await login(viewer.email, viewer.password)
 
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Identity ACL Free', 0)
