@@ -54,6 +54,21 @@ describe('reservation identity protection', () => {
     expect(reservationSchema.safeParse({ ...common, identityNumber: '1234567890123' }).success).toBe(false)
   })
 
+  it('rejects phone values without 8–15 actual digits', () => {
+    const common = {
+      name: 'Test Guest',
+      email: 'guest-phone@example.test',
+      gender: 'prefer_not_to_say',
+      nationality: 'EG',
+      identityNumber: '29901011234567',
+      ticketTypeId: 'ticket-type-id',
+    }
+    expect(reservationSchema.safeParse({ ...common, phone: '+20 100 123 4567' }).success).toBe(true)
+    expect(reservationSchema.safeParse({ ...common, phone: 'call-me-now' }).success).toBe(false)
+    expect(reservationSchema.safeParse({ ...common, phone: '1234567' }).success).toBe(false)
+    expect(reservationSchema.safeParse({ ...common, phone: '1234567890123456' }).success).toBe(false)
+  })
+
   it('accepts non-Egyptian passport numbers after normalization', () => {
     const result = reservationSchema.safeParse({
       name: 'Test Guest',
