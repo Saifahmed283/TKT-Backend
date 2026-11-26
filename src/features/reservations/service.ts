@@ -130,8 +130,52 @@ type DeliveryRecordInput = {
   createdById?: string | null
 }
 
+
 async function recordDeliveryAttempt(input: DeliveryRecordInput) {
   return prisma.credentialDeliveryAttempt.create({ data: input as any }).catch(() => null)
+}
+
+type StoredTicketDesign = {
+  templateId?: string
+  paletteId?: string
+  panelColor?: string
+  accentColor?: string
+  backgroundColor?: string
+  textColor?: string
+}
+
+function ticketDesignFromMetadata(metadata: unknown): StoredTicketDesign | null {
+  const value = metadata && typeof metadata === 'object'
+    ? (metadata as Record<string, unknown>).ticketDesign
+    : null
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const design = value as Record<string, unknown>
+  const color = (input: unknown) => typeof input === 'string' && /^#[0-9a-fA-F]{6}$/.test(input) ? input : undefined
+  return {
+    templateId: design.templateId === 'editorial-wide' ? 'editorial-wide' : 'signature-split',
+    paletteId: ['obsidian-gold', 'rose-noir', 'champagne', 'custom'].includes(String(design.paletteId)) ? String(design.paletteId) : 'obsidian-gold',
+    panelColor: color(design.panelColor),
+    accentColor: color(design.accentColor),
+    backgroundColor: color(design.backgroundColor),
+    textColor: color(design.textColor),
+  }
+}
+
+function ticketDateLabel(date: Date, timezone = 'UTC'): string {
+  const options: Intl.DateTimeFormatOptions = {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: timezone || 'UTC',
+  }
+  try {
+    return new Intl.DateTimeFormat('en-GB', options).format(date)
+  } catch {
+    return new Intl.DateTimeFormat('en-GB', { ...options, timeZone: 'UTC' }).format(date)
+  }
 }
 
 export async function resendReservationCredential(params: {
@@ -147,7 +191,7 @@ export async function resendReservationCredential(params: {
       attendee: { select: { id: true, name: true, email: true, phone: true } },
       ticketType: { select: { id: true, name: true, price: true } },
       credential: true,
-      event: { select: { id: true, orgId: true, name: true, startAt: true, endAt: true, venueName: true, settings: true } },
+      event: { select: { id: true, orgId: true, name: true, startAt: true, endAt: true, timezone: true, venueName: true, settings: true } },
     },
   })
   if (!ticket) throw errors.notFound('Reservation not found')
@@ -166,6 +210,21 @@ export async function resendReservationCredential(params: {
   const codeOf = reservationCodeOf(ticket as any)
   const shortCode = (ticket.credential as any).shortCode ?? null
   const attempt = (ticket.deliveryAttempts ?? 0) + 1
+  const previewSeats = await prisma.busSeat.findMany({
+    where: { ticketId: ticket.id },
+    select: { label: true, bus: { select: { name: true } } },
+    orderBy: { label: 'asc' },
+  }).catch(() => [] as any[])
+  const ticketDesign = ticketDesignFromMetadata(ticket.metadata)
+  const ticketPreview = {
+    attendeeName: ticket.attendee.name,
+    eventName: ticket.event.name,
+    ticketTypeName: ticket.ticketType.name,
+    dateTime: ticketDateLabel(ticket.event.startAt, ticket.event.timezone),
+    venue: ticket.event.venueName,
+    seat: previewSeats.map((seat: any) => `${seat.bus?.name ? seat.bus.name + ' ' : ''}${seat.label}`).join(', ') || null,
+    reference: codeOf ?? shortCode ?? ticket.id.slice(0, 8),
+  }
   const delivery = await getDeliveryAdapter('EMAIL').send({
     to,
     subject: typeof tpl.subject === 'string' && tpl.subject ? tpl.subject.replace('{event}', ticket.event.name) : `Your ticket — ${ticket.event.name}`,
@@ -176,7 +235,7 @@ export async function resendReservationCredential(params: {
       rows: [
         { label: 'Event', value: ticket.event.name },
         { label: 'Ticket', value: ticket.ticketType.name },
-        { label: 'Date', value: ticket.event.startAt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) },
+        { label: 'Date', value: ticketDateLabel(ticket.event.startAt, ticket.event.timezone) },
         { label: 'Venue', value: ticket.event.venueName ?? 'TBA' },
         ...(codeOf ? [{ label: 'Reservation', value: codeOf }] : []),
         ...(shortCode ? [{ label: 'Ticket code', value: shortCode }] : []),
@@ -191,6 +250,8 @@ export async function resendReservationCredential(params: {
       ticketUrl: codeOf ? new URL(`/my-ticket#code=${encodeURIComponent(codeOf)}`, config.env === 'production' && config.publicUrl.includes('localhost') ? 'https://ticketak.vercel.app' : config.publicUrl).toString() : undefined,
       footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · YOUR EXPERIENCE STARTS HERE',
       design: tpl.design && typeof tpl.design === 'object' ? tpl.design : undefined,
+      ticketDesign,
+      ticketPreview,
     }),
     attachments: [qrAttachment],
   })
@@ -243,7 +304,7 @@ export async function resendReservationCredential(params: {
  * fire-and-forget task. TODO: replace that pattern with a durable queue.
  */
 export async function deliverReservationCredentialEmail(params: {
-  event: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; venueName: string | null; settings?: unknown }
+  event: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; timezone?: string; venueName: string | null; settings?: unknown }
   ticket: ReservationTicket
   credential: { id: string; code: string; shortCode?: string | null }
   issuerUserId?: string | null
@@ -255,7 +316,22 @@ export async function deliverReservationCredentialEmail(params: {
   const attempt = ((ticket as any).deliveryAttempts ?? 0) + 1
   const settings = ((event as any).settings ?? {}) as Record<string, any>
   const tpl = (settings.ticketEmail ?? {}) as Record<string, any>
-  const eventDate = event.startAt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+  const eventDate = ticketDateLabel(event.startAt, event.timezone)
+  const previewSeats = await prisma.busSeat.findMany({
+    where: { ticketId: ticket.id },
+    select: { label: true, bus: { select: { name: true } } },
+    orderBy: { label: 'asc' },
+  }).catch(() => [] as any[])
+  const ticketDesign = ticketDesignFromMetadata(ticket.metadata)
+  const ticketPreview = {
+    attendeeName: ticket.attendee.name,
+    eventName: event.name,
+    ticketTypeName: ticket.ticketType.name,
+    dateTime: eventDate,
+    venue: event.venueName,
+    seat: previewSeats.map((seat: any) => `${seat.bus?.name ? seat.bus.name + ' ' : ''}${seat.label}`).join(', ') || null,
+    reference: codeOf ?? shortCode ?? ticket.id.slice(0, 8),
+  }
   const delivery = await getDeliveryAdapter('EMAIL').send({
     to: ticket.attendee.email ?? '',
     subject: typeof tpl.subject === 'string' && tpl.subject ? tpl.subject.replaceAll('{event}', event.name) : `Your ticket — ${event.name}`,
@@ -281,6 +357,8 @@ export async function deliverReservationCredentialEmail(params: {
       ticketUrl: codeOf ? new URL(`/my-ticket#code=${encodeURIComponent(codeOf)}`, config.env === 'production' && config.publicUrl.includes('localhost') ? 'https://ticketak.vercel.app' : config.publicUrl).toString() : undefined,
       footer: typeof tpl.footer === 'string' && tpl.footer ? tpl.footer : 'TKT · YOUR EXPERIENCE STARTS HERE',
       design: tpl.design && typeof tpl.design === 'object' ? tpl.design : undefined,
+      ticketDesign,
+      ticketPreview,
     }),
     attachments: [qrAttachment],
   })
@@ -341,7 +419,7 @@ export async function deliverReservationCredentialEmail(params: {
  * QR ticket to the attendee when sendEmail is true. Idempotent per ticket.
  */
 export async function issueReservationCredential(params: {
-  event: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; venueName: string | null; settings?: unknown }
+  event: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; timezone?: string; venueName: string | null; settings?: unknown }
   ticket: ReservationTicket
   issuerUserId?: string
   sendEmail?: boolean
