@@ -90,7 +90,8 @@ export async function reservationRoutes(app: FastifyInstance) {
     if (seatIds.length && (!body.busId || !bus || bus.eventId !== eventId || !bus.isActive)) {
       throw errors.badRequest('Valid bus is required for seat reservations')
     }
-    const busSeatUnitPriceForPricing = seatIds.length ? Number(bus?.seatPrice ?? 0) : 0
+    // Transport-inclusive tickets are fixed-price packages; seat choice is not an extra charge.
+    const busSeatUnitPriceForPricing = seatIds.length && !transportIncluded ? Number(bus?.seatPrice ?? 0) : 0
     let computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0) + (seatIds.length * (Number.isFinite(busSeatUnitPriceForPricing) ? busSeatUnitPriceForPricing : 0))
     const clientPaymentAmount = body.paymentAmount == null ? null : Number(body.paymentAmount)
     if (paidAmountMismatch(clientPaymentAmount, computedTotalForPricing)) {
@@ -176,7 +177,7 @@ export async function reservationRoutes(app: FastifyInstance) {
           })
           if (!lockedBus) throw errors.badRequest('Valid bus is required for seat reservations')
 
-          const lockedSeatPrice = Number(lockedBus.seatPrice ?? 0)
+          const lockedSeatPrice = transportIncluded ? 0 : Number(lockedBus.seatPrice ?? 0)
           computedTotalForPricing = (Number.isFinite(ticketPrice) ? ticketPrice : 0)
             + (Number.isFinite(lockedSeatPrice) ? lockedSeatPrice : 0)
           if (paidAmountMismatch(clientPaymentAmount, computedTotalForPricing)) {
@@ -248,6 +249,7 @@ export async function reservationRoutes(app: FastifyInstance) {
               seatIds,
               notes: body.notes?.trim() || null,
               transportIncluded,
+              ...(body.ticketDesign ? { ticketDesign: body.ticketDesign } : {}),
             },
           },
         })
@@ -323,7 +325,7 @@ export async function reservationRoutes(app: FastifyInstance) {
           }
         } else {
           await queueOutbox('CREDENTIAL_ISSUED', {
-            event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName, settings: event.settings },
+            event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, timezone: event.timezone, venueName: event.venueName, settings: event.settings },
             ticket: ticketForOutbox,
           })
         }
