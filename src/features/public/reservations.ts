@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { encryptReservationIdentityNumber } from '../../lib/reservation-identity.js'
+import { PROOF_PROXY_PREFIX, isSafeUploadPath, verifyProofToken } from '../../lib/uploadStore.js'
+import { config } from '../../config.js'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
@@ -19,6 +21,34 @@ import { addOutboxEvent, processOutboxEventIds, type OutboxEventType } from '../
 import { afterResponse } from '../../lib/background.js'
 import { clearExpiredBusSeatHolds, lockBusForSeatMutation } from '../buses/seat-mutations.js'
 import { paidAmountMismatch, registrationWindow, reservationCode, secureAccessToken, hashAccessToken, reservationSchema, reservationStartedAt, type RegSettings } from './schemas.js'
+
+function isValidPaymentProofUrl(value: string): boolean {
+  if (value.startsWith(PROOF_PROXY_PREFIX)) {
+    const pathname = value.slice(PROOF_PROXY_PREFIX.length).split(/[?#]/, 1)[0] ?? ''
+    if (!isSafeUploadPath(pathname)) return false
+    try {
+      const parsed = new URL(value, 'https://tkt.invalid')
+      const token = parsed.searchParams.get('token') ?? undefined
+      const expiresRaw = parsed.searchParams.get('exp')
+      const expiresAt = expiresRaw == null ? undefined : Number(expiresRaw)
+      if (expiresRaw != null && !Number.isFinite(expiresAt)) return false
+      return verifyProofToken(pathname, token, expiresAt)
+    } catch {
+      return false
+    }
+  }
+
+  // Development and test environments may use the local filesystem adapter.
+  // Production is Blob-only and must always use a signed private capability URL.
+  if (config.env === 'production') return false
+  try {
+    const base = new URL(config.publicUrl)
+    const parsed = new URL(value, base)
+    return parsed.origin === base.origin && parsed.pathname.startsWith('/uploads/')
+  } catch {
+    return false
+  }
+}
 
 export async function reservationRoutes(app: FastifyInstance) {
 // ── Public reservation ────────────────────────────────────
@@ -110,12 +140,8 @@ export async function reservationRoutes(app: FastifyInstance) {
       })
       if (!paymentProvider) throw errors.badRequest('Payment provider not found')
     }
-    if (body.paymentProofUrl && !(
-      body.paymentProofUrl.startsWith('data:image/')
-      || body.paymentProofUrl.startsWith('/uploads/')
-      || body.paymentProofUrl.startsWith('/api/uploads/blob/')
-    )) {
-      throw errors.badRequest('Payment proof must be uploaded through TKT')
+    if (body.paymentProofUrl && !isValidPaymentProofUrl(body.paymentProofUrl)) {
+      throw errors.badRequest('Payment proof must be uploaded through TKT and have a valid, unexpired upload signature')
     }
     if (paid && (!paymentProvider || !body.paymentReference?.trim() || !body.paymentProofUrl)) {
       throw errors.badRequest('Paid reservations require an active payment provider, transaction reference, and uploaded payment proof')
