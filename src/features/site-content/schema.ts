@@ -11,7 +11,9 @@ const localizedText = (max: number, required = true) => {
 const id = z.string().trim().min(1).max(80)
 
 const imageUrl = z.string().trim().max(2048).refine(
-  (value) => /^https?:\\/\\//i.test(value) || /^\\/uploads\\//.test(value) || /^\\/api\\/uploads\\/blob\\//.test(value),
+  (value) => value.startsWith('/uploads/')
+    || value.startsWith('/api/uploads/blob/')
+    || ((value.startsWith('https://') || value.startsWith('http://')) && z.string().url().safeParse(value).success),
   'Image must be an uploaded TKT asset or an HTTP(S) URL',
 ).nullable().optional()
 
