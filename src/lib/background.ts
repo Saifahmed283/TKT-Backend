@@ -1,4 +1,5 @@
-import type { FastifyInstance, FastifyReply } from 'fastify'
+import type { FastifyInstance } from 'fastify'
+import { waitUntil } from '@vercel/functions'
 import { runWithIsolatedDbContext, type DbContext } from './dbContext.js'
 
 type BackgroundTask = {
@@ -26,8 +27,12 @@ export function registerBackgroundTasks(app: FastifyInstance): void {
     const tasks = queues.get(req) ?? []
     queues.delete(req)
     for (const task of tasks) {
-      void runWithIsolatedDbContext({ isInternal: true, ...task.context }, task.work)
+      // Vercel suspends a function after its response unless post-response
+      // work is registered with the runtime. Keep each durable outbox drain
+      // alive without making the attendee wait for SMTP delivery.
+      const work = runWithIsolatedDbContext({ isInternal: true, ...task.context }, task.work)
         .catch((err) => req.log.error({ err }, `background.${task.label} failed`))
+      waitUntil(work)
     }
   })
 }
