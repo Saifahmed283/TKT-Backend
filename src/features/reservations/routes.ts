@@ -23,6 +23,16 @@ const decisionSchema = z.object({
   reason: z.string().max(280).optional(),
 })
 
+async function canViewReservationIdentity(req: Parameters<typeof requirePermission>[0], eventId: string): Promise<boolean> {
+  try {
+    await requirePermission(req, 'reservation.identity.view', { eventId })
+    return true
+  } catch (error) {
+    if ((error as { statusCode?: number })?.statusCode === 403) return false
+    throw error
+  }
+}
+
 export async function reservationRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate)
 
@@ -30,6 +40,7 @@ export async function reservationRoutes(app: FastifyInstance) {
   app.get('/', async (req) => {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'event.view', { eventId })
+    const canViewIdentity = await canViewReservationIdentity(req, eventId)
     const { status, q, page, pageSize } = listQuerySchema.parse(req.query)
 
     const where: any = {
@@ -95,7 +106,9 @@ export async function reservationRoutes(app: FastifyInstance) {
             email: t.attendee.email,
             phone: t.attendee.phone,
             status: t.attendee.status,
-            ...(decryptReservationIdentity((t.attendee.metadata as Record<string, unknown> | null)?.reservationIdentity) ?? {}),
+            ...(canViewIdentity
+              ? (decryptReservationIdentity((t.attendee.metadata as Record<string, unknown> | null)?.reservationIdentity) ?? {})
+              : {}),
           },
           ticketType: t.ticketType,
           credential: t.credential,
@@ -180,6 +193,7 @@ export async function reservationRoutes(app: FastifyInstance) {
   app.get('/export.xlsx', async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
     await requirePermission(req, 'report.export', { eventId })
+    const canViewIdentity = await canViewReservationIdentity(req, eventId)
     const { status, q } = listQuerySchema.partial().parse(req.query)
     const where: Record<string, unknown> = { eventId, metadata: { path: ['channel'], equals: 'public' } }
     if (status && status !== 'ALL') {
@@ -219,7 +233,9 @@ export async function reservationRoutes(app: FastifyInstance) {
     for (const t of rows as any[]) {
       const meta = (t.metadata ?? {}) as Record<string, any>
       const seats = t.busSeats ?? []
-      const identity = decryptReservationIdentity((t.attendee?.metadata as Record<string, unknown> | null)?.reservationIdentity)
+      const identity = canViewIdentity
+        ? decryptReservationIdentity((t.attendee?.metadata as Record<string, unknown> | null)?.reservationIdentity)
+        : null
       ws.addRow({
         reservationCode: t.reservationCode ?? meta.reservationCode ?? '',
         name: t.reservationName ?? t.attendee?.name ?? '',
