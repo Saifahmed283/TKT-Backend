@@ -8,6 +8,7 @@ import { requirePermission } from '../../middleware/authorize.js'
 import { publish, channelFor } from '../../lib/realtime.js'
 import { afterResponse } from '../../lib/background.js'
 import { processOutboxEventIds } from '../../lib/outbox.js'
+import { decryptReservationIdentity } from '../../lib/reservation-identity.js'
 import { decideReservation, isPaidTicket, resendReservationCredential, reservationApprovalOf, reservationCodeOf, reservationPaymentOf } from './service.js'
 
 const listQuerySchema = z.object({
@@ -57,7 +58,7 @@ export async function reservationRoutes(app: FastifyInstance) {
         skip: (page - 1) * pageSize,
         take: pageSize,
         include: {
-          attendee: { select: { id: true, name: true, email: true, phone: true, status: true } },
+          attendee: { select: { id: true, name: true, email: true, phone: true, status: true, metadata: true } },
           ticketType: { select: { id: true, name: true, price: true, tier: true } },
           credential: { select: { id: true, code: true, status: true } },
           paymentProvider: { select: { id: true, name: true } },
@@ -88,7 +89,14 @@ export async function reservationRoutes(app: FastifyInstance) {
           issuedAt: t.issuedAt,
           approvedAt: t.approvedAt,
           rejectedReason: t.rejectedReason,
-          attendee: t.attendee,
+          attendee: {
+            id: t.attendee.id,
+            name: t.attendee.name,
+            email: t.attendee.email,
+            phone: t.attendee.phone,
+            status: t.attendee.status,
+            ...(decryptReservationIdentity((t.attendee.metadata as Record<string, unknown> | null)?.reservationIdentity) ?? {}),
+          },
           ticketType: t.ticketType,
           credential: t.credential,
         })),
@@ -187,7 +195,7 @@ export async function reservationRoutes(app: FastifyInstance) {
         { reservationPhone: { contains: q, mode: 'insensitive' } },
       ]
     }
-    const rows = await prisma.ticket.findMany({ where: where as any, include: { attendee: true, ticketType: true, busSeats: { select: { label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } } }, orderBy: { issuedAt: 'desc' }, take: 5000 })
+    const rows = await prisma.ticket.findMany({ where: where as any, include: { attendee: { select: { id: true, name: true, email: true, phone: true, metadata: true } }, ticketType: true, busSeats: { select: { label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } } }, orderBy: { issuedAt: 'desc' }, take: 5000 })
     const wb = new ExcelJS.Workbook()
     const ws = wb.addWorksheet('Reservations')
     ws.columns = [
@@ -195,6 +203,10 @@ export async function reservationRoutes(app: FastifyInstance) {
       { header: 'Name', key: 'name', width: 26 },
       { header: 'Email', key: 'email', width: 30 },
       { header: 'Phone', key: 'phone', width: 18 },
+      { header: 'Gender', key: 'gender', width: 16 },
+      { header: 'Nationality', key: 'nationality', width: 16 },
+      { header: 'Identity Type', key: 'identityType', width: 18 },
+      { header: 'Identity Number', key: 'identityNumber', width: 24 },
       { header: 'Ticket Type', key: 'ticketType', width: 20 },
       { header: 'Seats', key: 'seats', width: 28 },
       { header: 'Seat Passengers', key: 'seatPassengers', width: 34 },
@@ -207,11 +219,16 @@ export async function reservationRoutes(app: FastifyInstance) {
     for (const t of rows as any[]) {
       const meta = (t.metadata ?? {}) as Record<string, any>
       const seats = t.busSeats ?? []
+      const identity = decryptReservationIdentity((t.attendee?.metadata as Record<string, unknown> | null)?.reservationIdentity)
       ws.addRow({
         reservationCode: t.reservationCode ?? meta.reservationCode ?? '',
         name: t.reservationName ?? t.attendee?.name ?? '',
         email: t.reservationEmail ?? t.attendee?.email ?? '',
         phone: t.reservationPhone ?? t.attendee?.phone ?? '',
+        gender: identity?.gender ?? '',
+        nationality: identity?.nationality ?? '',
+        identityType: identity?.identityType ?? '',
+        identityNumber: identity?.identityNumber ?? '',
         ticketType: t.ticketType?.name ?? '',
         seats: seats.map((s: any) => `${s.bus?.name ? s.bus.name + ' ' : ''}${s.label}`).join(', '),
         seatPassengers: seats.map((s: any) => `${s.label}: ${s.passengerName ?? t.attendee?.name ?? ''}`).join('; '),
