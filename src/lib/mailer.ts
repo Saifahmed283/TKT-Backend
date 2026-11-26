@@ -59,6 +59,20 @@ function safeHttpUrl(value?: string | null): string | null {
   }
 }
 
+/** Verify the configured SMTP connection without sending a message. */
+export async function verifyMailTransport(): Promise<{ ok: boolean; error?: string }> {
+  const t = getTransporter()
+  if (!t) return { ok: false, error: 'SMTP transport is disabled or not configured' }
+  try {
+    await t.verify()
+    return { ok: true }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'SMTP connection verification failed'
+    console.error('[mailer:verify:error]', message)
+    return { ok: false, error: message }
+  }
+}
+
 /** Send an email with optional inline MIME attachments, including the ticket QR. */
 export async function sendMail(payload: MailPayload): Promise<MailSendResult> {
   const t = getTransporter()
@@ -97,6 +111,16 @@ export function ticketEmailShell(opts: {
   qrCid?: string | null
   ticketUrl?: string | null
   footer?: string
+  design?: {
+    primaryColor?: string
+    accentColor?: string
+    backgroundColor?: string
+    headerColor?: string
+    panelColor?: string
+    logoUrl?: string
+    fontFamily?: string
+    layoutOrder?: string[]
+  }
 }): string {
   const arabicLabels: Record<string, string> = {
     Event: 'الفعالية',
@@ -159,8 +183,28 @@ export function ticketEmailShell(opts: {
   const body = escapeHtml(opts.body)
   const preheader = escapeHtml(opts.preheader)
   const footer = escapeHtml(opts.footer ?? 'Your Partner in Travel, Events & Special Occasions')
+  const design = opts.design ?? {}
+  const safeColor = (value: string | undefined, fallback: string) =>
+    typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback
+  const palette = {
+    primary: safeColor(design.primaryColor, '#0b1f44'),
+    accent: safeColor(design.accentColor, '#c8a25c'),
+    background: safeColor(design.backgroundColor, '#fdfbf7'),
+    header: safeColor(design.headerColor, '#0b0b0c'),
+    panel: safeColor(design.panelColor, '#f1ede4'),
+  }
+  const allowedFonts = ['Cairo', 'Tahoma', 'Arial', 'Poppins']
+  const fontFamily = allowedFonts.includes(design.fontFamily ?? '') ? design.fontFamily! : 'Cairo'
+  const logoUrl = safeHttpUrl(design.logoUrl)
+  const logoMarkup = logoUrl
+    ? '<img src="' + escapeHtml(logoUrl) + '" alt="TKT" width="112" style="display:block;max-width:112px;max-height:44px;width:auto;height:auto;border:0" />'
+    : '<div dir="ltr" style="color:#c8a25c;font-family:Italiana,Georgia,serif;font-size:36px;font-weight:400;letter-spacing:.04em;line-height:1">TKT</div>'
+  const defaultOrder = ['intro', 'details', 'qr', 'action', 'footer', 'legal']
+  const requestedOrder = Array.isArray(design.layoutOrder) ? design.layoutOrder : defaultOrder
+  const sectionOrder = [...new Set(requestedOrder.filter((name) => defaultOrder.includes(name)))]
+  for (const section of defaultOrder) if (!sectionOrder.includes(section)) sectionOrder.push(section)
 
-  return `
+  let html = `
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -207,7 +251,7 @@ export function ticketEmailShell(opts: {
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
               <tr>
                 <td width="112" valign="middle" align="left" style="width:112px;text-align:left">
-                  <div dir="ltr" style="color:#c8a25c;font-family:Italiana,Georgia,serif;font-size:36px;font-weight:400;letter-spacing:.04em;line-height:1">TKT</div>
+                  ${logoMarkup}
                 </td>
                 <td valign="middle" align="right">
                   <p dir="rtl" style="margin:0;color:#ffffff;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:12px;line-height:1.7">رحلتك تبدأ معنا</p>
@@ -218,6 +262,8 @@ export function ticketEmailShell(opts: {
           </td>
         </tr>
 
+        <!--TKT_SECTION_PLACEHOLDER-->
+        <!--TKT_SECTION:intro-->
         <tr><td class="email-pad" style="padding:30px 36px 22px;background:#fdfbf7">
           <h1 dir="rtl" style="margin:0;color:#0b1f44;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:27px;font-weight:700;line-height:1.5">${titleAr}</h1>
           <p dir="ltr" style="margin:2px 0 0;color:#c8a25c;font-family:Poppins,Arial,sans-serif;font-size:17px;font-weight:700;line-height:1.5">${title}</p>
@@ -225,6 +271,7 @@ export function ticketEmailShell(opts: {
           <p dir="ltr" style="margin:8px 0 0;color:#172033;font-family:Poppins,Arial,sans-serif;font-size:13px;line-height:1.8">${body}</p>
         </td></tr>
 
+        <!--TKT_SECTION:details-->
         <tr><td class="email-pad" style="padding:8px 36px 20px;background:#fdfbf7">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f1ede4" style="width:100%;background:#f1ede4;border-radius:16px">
             <tr><td style="padding:20px 20px 8px">
@@ -237,26 +284,56 @@ export function ticketEmailShell(opts: {
           </table>
         </td></tr>
 
+        <!--TKT_SECTION:qr-->
         <tr><td class="email-pad" style="padding:0 36px 18px;background:#fdfbf7">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%">${qrBlock}</table>
         </td></tr>
 
+        <!--TKT_SECTION:action-->
         <tr><td class="email-pad" style="padding:0 36px 26px;background:#fdfbf7">
           ${action}
         </td></tr>
 
+        <!--TKT_SECTION:footer-->
         <tr><td class="email-pad" style="padding:0 36px 18px;background:#fdfbf7">
           <p dir="rtl" style="margin:0;color:#0b1f44;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:14px;font-weight:700;line-height:1.8">TKT لتنظيم الرحلات والفعاليات والمناسبات</p>
           <p dir="ltr" style="margin:3px 0 0;color:#687080;font-family:Poppins,Arial,sans-serif;font-size:12px;line-height:1.7">${footer}</p>
         </td></tr>
 
+        <!--TKT_SECTION:legal-->
         <tr><td class="footer-pad" style="padding:0 36px 26px;background:#fdfbf7">
           <div style="height:1px;background:#e8e3d9;line-height:1px;font-size:1px">&nbsp;</div>
           <p dir="rtl" style="margin:14px 0 0;color:#8b8e96;font-family:Cairo,Tahoma,Arial,sans-serif;font-size:10px;line-height:1.6">تم إرسال هذا البريد لتأكيد تفاصيل حجزك مع TKT.</p>
         </td></tr>
+        <!--TKT_SECTION_END-->
       </table>
     </td></tr>
   </table>
 </body>
 </html>`
+
+  const sectionNames = ['intro', 'details', 'qr', 'action', 'footer', 'legal']
+  const ranges: Array<{ start: number; end: number; content: string }> = []
+  const sectionStarts = sectionNames.map((name) => html.indexOf('<!--TKT_SECTION:' + name + '-->'))
+  const endSentinel = html.indexOf('<!--TKT_SECTION_END-->')
+  for (let i = 0; i < sectionNames.length; i += 1) {
+    const start = sectionStarts[i]!
+    const markerLength = ('<!--TKT_SECTION:' + sectionNames[i] + '-->').length
+    const end = i + 1 < sectionNames.length ? sectionStarts[i + 1]! : endSentinel
+    if (start < 0 || end < 0 || end < start) throw new Error('Invalid ticket email section markers')
+    ranges.push({ start, end, content: html.slice(start + markerLength, end) })
+  }
+  for (const range of [...ranges].reverse()) html = html.slice(0, range.start) + html.slice(range.end)
+  html = html.replace(/<!--TKT_SECTION:(intro|details|qr|action|footer|legal)-->/g, '')
+  html = html.replace('<!--TKT_SECTION_END-->', '')
+  const contentByName = Object.fromEntries(sectionNames.map((name, index) => [name, ranges[index]!.content])) as Record<string, string>
+  html = html.replace('<!--TKT_SECTION_PLACEHOLDER-->', sectionOrder.map((name) => contentByName[name] ?? '').join('\n'))
+  html = html.replaceAll('#fdfbf7', palette.background)
+  html = html.replaceAll('#0b0b0c', palette.header)
+  html = html.replaceAll('#0b1f44', palette.primary)
+  html = html.replaceAll('#c8a25c', palette.accent)
+  html = html.replaceAll('#f1ede4', palette.panel)
+  html = html.replaceAll('Cairo,Tahoma,Arial,sans-serif', fontFamily + ',Tahoma,Arial,sans-serif')
+  html = html.replaceAll('Poppins,Arial,sans-serif', fontFamily + ',Arial,sans-serif')
+  return html
 }

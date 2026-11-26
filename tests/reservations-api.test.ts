@@ -217,6 +217,55 @@ describe('public reservation integrity', () => {
     }
   })
 
+  it('serves the standalone PWA ticket only for the matching reservation code and email', async () => {
+    const admin = await registerUser('ResPwaTicket')
+    const orgId = await createOrg(admin.token, `Org ResPwaTicket ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event ResPwaTicket ${Date.now()}`)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'PWA Guest', 0)
+    const email = `pwa-${Date.now()}@test.tkt`
+    const reserve = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: { name: 'PWA Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+    })
+    expectStatus(reserve, 201)
+    const reservationCode = reserve.json().data.reservationCode as string
+    await waitForCredential(reserve.json().data.ticketId)
+
+    const wrongEmail = await app.inject({
+      method: 'POST',
+      url: '/public/reservations/status',
+      payload: { code: reservationCode, email: `wrong-${Date.now()}@test.tkt` },
+    })
+    expectStatus(wrongEmail, 404)
+    expect(wrongEmail.json().data).toBeUndefined()
+
+    const missingEmail = await app.inject({
+      method: 'POST',
+      url: '/public/reservations/status',
+      payload: { code: reservationCode },
+    })
+    expectStatus(missingEmail, 400)
+
+    const lookup = await app.inject({
+      method: 'POST',
+      url: '/public/reservations/status',
+      payload: { code: reservationCode, email },
+    })
+    expectStatus(lookup, 200)
+    const data = lookup.json().data
+    expect(data.reservationCode).toBe(reservationCode)
+    expect(data.eventName).toContain('Event ResPwaTicket')
+    expect(data.attendeeName).toBe('PWA Guest')
+    expect(data.approval).toBe('APPROVED')
+    expect(data.credentialStatus).toBe('ACTIVE')
+    expect(data.currency).toBe('EGP')
+    expect(data.qr).toBeTruthy()
+    expect(data).not.toHaveProperty('reservationEmail')
+    expect(data).not.toHaveProperty('accessToken')
+  })
+
   it('resends a ticket publicly only for a matching reservation code and email', async () => {
     const admin = await registerUser('ResPublicResend')
     const orgId = await createOrg(admin.token, `Org ResPublicResend ${Date.now()}`)
@@ -364,6 +413,25 @@ describe('public reservation integrity', () => {
     expectStatus(twoSeats, 400)
     expect(twoSeats.json().error.message).toContain('select exactly one seat')
 
+    const wrongAmount = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Transit Guest',
+        email,
+        phone: '+20 100 123 4567',
+        ticketTypeId: transportTypeId,
+        busId: bus.id,
+        seatIds: [bus.seatIds[0]],
+        paymentAmount: 149,
+      },
+    })
+    expectStatus(wrongAmount, 400)
+    const availableAfterRejectedPayment = await runWithDbContext({ isInternal: true }, () =>
+      prisma.busSeat.findUnique({ where: { id: bus.seatIds[0] }, select: { state: true, ticketId: true } }),
+    )
+    expect(availableAfterRejectedPayment).toMatchObject({ state: 'AVAILABLE', ticketId: null })
+
     const reserved = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations`,
@@ -374,12 +442,38 @@ describe('public reservation integrity', () => {
         ticketTypeId: transportTypeId,
         busId: bus.id,
         seatIds: [bus.seatIds[0]],
+        paymentAmount: 150,
         seatPassengers: [{ seatId: bus.seatIds[0], name: 'Transit Guest' }],
       },
     })
     expectStatus(reserved, 201)
     expect(reserved.json().data.price).toBe('150')
     expect(reserved.json().data.seats).toHaveLength(1)
+
+    const ticketId = reserved.json().data.ticketId as string
+    const linkedSeat = await runWithDbContext({ isInternal: true }, () =>
+      prisma.busSeat.findUnique({ where: { id: bus.seatIds[0] }, select: { state: true, ticketId: true, passengerName: true } }),
+    )
+    expect(linkedSeat).toMatchObject({ state: 'RESERVED', ticketId, passengerName: 'Transit Guest' })
+
+    const duplicateSeatAttempt = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Second Transit Guest',
+        email: `transport-second-${Date.now()}@test.tkt`,
+        phone: '+20 100 123 4568',
+        ticketTypeId: transportTypeId,
+        busId: bus.id,
+        seatIds: [bus.seatIds[0]],
+        paymentAmount: 150,
+      },
+    })
+    expectStatus(duplicateSeatAttempt, 409)
+    const linkedSeatCount = await runWithDbContext({ isInternal: true }, () =>
+      prisma.busSeat.count({ where: { id: bus.seatIds[0], ticketId } }),
+    )
+    expect(linkedSeatCount).toBe(1)
   })
 
   it('blocks manual approval until payment proof is confirmed', async () => {

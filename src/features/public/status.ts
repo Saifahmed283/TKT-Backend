@@ -40,7 +40,7 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
         accessTokenHash: true,
         accessTokenExpiresAt: true,
         attendee: { select: { id: true, name: true, email: true } },
-        ticketType: { select: { name: true, price: true } },
+        ticketType: { select: { name: true, price: true, currency: true } },
         credential: { select: { id: true, code: true, status: true } },
       },
     })
@@ -76,6 +76,75 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
         attendeeName: ticket.attendee.name,
         qr: ticket.credential?.code ?? null,
         seats: await prisma.busSeat.findMany({ where: { ticketId: ticket.id }, select: { id: true, label: true, busId: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } }).catch(() => []),
+      },
+    }
+  })
+
+  // ── Device-friendly PWA ticket lookup ─────────────────────
+  // The reservation code is a locator, not a secret. Require the matching
+  // email as a second factor and return only the minimum ticket display data.
+  app.post('/reservations/status', {
+    config: { rateLimit: { max: 10, timeWindow: '15 minutes' } },
+  }, async (req) => {
+    const query = z.object({
+      code: z.string().trim().min(3).max(80),
+      email: z.string().email().max(254),
+    }).parse(req.body)
+    const email = normalizeReservationEmail(query.email)
+    const ticket = await prisma.ticket.findFirst({
+      where: {
+        OR: [
+          { reservationCode: query.code },
+          { metadata: { path: ['reservationCode'], equals: query.code } },
+        ],
+      },
+      select: {
+        id: true, status: true, price: true, reservationCode: true,
+        reservationEmail: true, metadata: true, approvalStatus: true, paymentStatus: true,
+        attendee: { select: { name: true } },
+        ticketType: { select: { name: true, price: true, currency: true } },
+        event: { select: { name: true, startAt: true, endAt: true, timezone: true, venueName: true, venueAddress: true } },
+        credential: { select: { code: true, status: true, validUntil: true } },
+        busSeats: {
+          select: { id: true, label: true, passengerName: true, bus: { select: { name: true } } },
+          orderBy: { label: 'asc' },
+        },
+      },
+    })
+    // Do not reveal whether the code exists when the email does not match.
+    if (!ticket || !email || email !== normalizeReservationEmail(ticket.reservationEmail)) {
+      throw errors.notFound('Reservation not found')
+    }
+    const approval = reservationApprovalOf(ticket as any)
+    const paymentStatus = reservationPaymentOf(ticket as any)
+    const credentialActive = Boolean(
+      ticket.credential?.status === 'ACTIVE' &&
+      (!ticket.credential.validUntil || ticket.credential.validUntil > new Date()) &&
+      String(ticket.status).toUpperCase() !== 'CANCELLED',
+    )
+    const qr = approval === 'APPROVED' && credentialActive ? ticket.credential?.code ?? null : null
+    return {
+      data: {
+        reservationCode: reservationCodeOf(ticket as any) ?? query.code,
+        attendeeName: ticket.attendee.name,
+        eventName: ticket.event.name,
+        eventStartAt: ticket.event.startAt,
+        eventEndAt: ticket.event.endAt,
+        timezone: ticket.event.timezone,
+        venueName: ticket.event.venueName,
+        venueAddress: ticket.event.venueAddress,
+        ticketName: ticket.ticketType.name,
+        price: ticket.price?.toString() ?? ticket.ticketType.price?.toString() ?? '0',
+        currency: ticket.ticketType.currency ?? 'EGP',
+        approval,
+        paymentStatus,
+        ticketStatus: ticket.status,
+        credentialStatus: ticket.credential?.status ?? 'NOT_ISSUED',
+        credentialValidUntil: ticket.credential?.validUntil ?? null,
+        qr,
+        seats: ticket.busSeats.map((seat) => ({
+          id: seat.id, label: seat.label, passengerName: seat.passengerName, busName: seat.bus?.name ?? null,
+        })),
       },
     }
   })
