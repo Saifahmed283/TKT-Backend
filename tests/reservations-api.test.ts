@@ -600,6 +600,25 @@ describe('public reservation integrity', () => {
     })
     expectStatus(missingReference, 400)
     expect(missingReference.json().error.message).toContain('transaction reference')
+
+    const forgedReceipt = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Forged Receipt Guest',
+        email: `forged-receipt-${Date.now()}@test.tkt`,
+        phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567',
+        ticketTypeId,
+        paymentProviderId,
+        paymentReference: 'TRANSFER-FORGED',
+        paymentProofUrl: '/api/uploads/blob/uploads/receipt.png?token=not-a-valid-signature',
+      },
+    })
+    expectStatus(forgedReceipt, 400)
+    expect(forgedReceipt.json().error.message).toContain('valid, unexpired upload signature')
   })
 
   it('blocks manual approval until payment proof is confirmed', async () => {
