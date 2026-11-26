@@ -536,6 +536,9 @@ describe('public reservation integrity', () => {
         ticketTypeId: transportTypeId,
         busId: bus.id,
         seatIds: [bus.seatIds[0]],
+        paymentProviderId,
+        paymentReference: `duplicate-instapay-${Date.now()}`,
+        paymentProofUrl: '/api/uploads/blob/uploads/duplicate-receipt.png?token=preview',
         paymentAmount: 100,
       },
     })
@@ -583,6 +586,19 @@ describe('public reservation integrity', () => {
     expectStatus(reserve, 201)
     const ticketId = reserve.json().data.ticketId as string
     expect(reserve.json().data.paymentStatus).toBe('PENDING')
+    const listed = await app.inject({
+      method: 'GET',
+      url: `/events/${eventId}/reservations?status=PENDING`,
+      headers: auth(managerToken),
+    })
+    expectStatus(listed, 200)
+    const adminRow = listed.json().data.rows.find((row: any) => row.id === ticketId)
+    expect(adminRow.attendee).toMatchObject({
+      gender: 'prefer_not_to_say',
+      nationality: 'EG',
+      identityType: 'NATIONAL_ID',
+      identityNumber: '29901011234567',
+    })
 
     const pendingWithProof = await app.inject({
       method: 'GET',
