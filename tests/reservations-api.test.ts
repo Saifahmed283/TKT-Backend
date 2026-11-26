@@ -360,7 +360,12 @@ describe('public reservation integrity', () => {
       payload: { name: 'Free Guest', email: `free-decision-${Date.now()}@test.tkt`, phone: '+20 100 123 4567',
         gender: 'prefer_not_to_say',
         nationality: 'EG',
-        identityNumber: '29901011234567', ticketTypeId },
+        identityNumber: '29901011234567',
+        ticketTypeId,
+        paymentProviderId,
+        paymentReference: `purge-ref-${Date.now()}`,
+        paymentProofUrl: '/api/uploads/blob/uploads/purge-receipt.png?token=preview',
+      },
     })
     expectStatus(reserve, 201)
     const ticketId = reserve.json().data.ticketId as string
@@ -724,6 +729,7 @@ describe('public reservation integrity', () => {
     await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
     const managerToken = await login(manager.email, manager.password)
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid Visible', 50)
+    const paymentProviderId = await createPaymentProvider(admin.token, eventId)
     const email = `attendee-visible-${Date.now()}@test.tkt`
 
     const reserve = await app.inject({
@@ -732,7 +738,12 @@ describe('public reservation integrity', () => {
       payload: { name: 'Visible Guest', email, phone: '+20 100 123 4567',
         gender: 'prefer_not_to_say',
         nationality: 'EG',
-        identityNumber: '29901011234567', ticketTypeId },
+        identityNumber: '29901011234567',
+        ticketTypeId,
+        paymentProviderId,
+        paymentReference: `visible-ref-${Date.now()}`,
+        paymentProofUrl: '/api/uploads/blob/uploads/visible-receipt.png?token=preview',
+      },
     })
     expectStatus(reserve, 201)
 
@@ -779,6 +790,7 @@ describe('public reservation integrity', () => {
     await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
     const managerToken = await login(manager.email, manager.password)
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid Purge', 50)
+    const paymentProviderId = await createPaymentProvider(admin.token, eventId)
     const email = `purge-${Date.now()}@test.tkt`
 
     const reserve = await app.inject({
