@@ -85,6 +85,42 @@ describe('ticket email QR and responsive template', () => {
     expect(html.indexOf('Intro section marker')).toBeLessThan(html.indexOf('VIEW TICKET'))
   })
 
+  it('renders the selected ticket design in the credential email safely', () => {
+    const html = ticketEmailShell({
+      preheader: 'Your custom ticket',
+      title: 'Ticket ready',
+      body: 'Your ticket is confirmed.',
+      rows: [{ label: 'Event', value: 'Design review event' }],
+      qrCid: TICKET_QR_CID,
+      ticketDesign: {
+        templateId: 'editorial-wide',
+        paletteId: 'rose-noir',
+        panelColor: '#350D24',
+        accentColor: '#F22586',
+        backgroundColor: '#FFF2F7',
+        textColor: '#2A1020',
+      },
+      ticketPreview: {
+        attendeeName: '<Attendee>',
+        eventName: '<Design Event>',
+        ticketTypeName: 'Program + Bus',
+        dateTime: 'Fri, 27 Nov 2026',
+        venue: 'Cairo',
+        seat: 'A4',
+        reference: 'TKT-TEST',
+      },
+    })
+
+    expect(html).toContain('background:#FFF2F7')
+    expect(html).toContain('background:#350D24')
+    expect(html).toContain('color:#F22586')
+    expect(html).toContain('&lt;Design Event&gt;')
+    expect(html).toContain('&lt;Attendee&gt;')
+    expect(html).toContain('A4')
+    expect(html).toContain('src="cid:tkt-ticket-qr@tkt"')
+    expect(html).not.toContain('<Design Event>')
+  })
+
   it('does not render a broken ticket link when the URL is unavailable', () => {
     const html = ticketEmailShell({preheader:'Booking confirmed',title:'Your ticket',body:'Keep this email.',rows:[],qrCid:TICKET_QR_CID})
     expect(html).toContain('KEEP THIS EMAIL FOR ENTRY')
