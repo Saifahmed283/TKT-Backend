@@ -16,12 +16,24 @@ export const WHEEL_SEGMENTS = [
   { reward: 'FREE_TICKET', label: 'FREE ticket — jackpot', weight: 5 },
 ] as const
 
+export const ticketDesignSchema = z.object({
+  templateId: z.enum(['signature-split', 'editorial-wide']),
+  paletteId: z.enum(['obsidian-gold', 'rose-noir', 'champagne', 'custom']),
+  panelColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  backgroundColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  textColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+}).strict()
+
+export type TicketDesignInput = z.infer<typeof ticketDesignSchema>
+
 export const reservationSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
   phone: z.string().min(6).max(40),
   notes: z.string().max(1000).optional().nullable(),
   ticketTypeId: z.string(),
+  ticketDesign: ticketDesignSchema.optional(),
   paymentProviderId: z.string().optional().nullable(),
   paymentReference: z.string().max(200).optional().nullable(),
   paymentProofUrl: z.string().max(2_000_000).optional().nullable(),
