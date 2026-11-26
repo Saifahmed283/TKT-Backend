@@ -5,6 +5,7 @@ import { startTestApp, stopTestApp, app, registerUser, createOrg, auth, expectSt
 import { getDeliveryAdapter } from '../src/lib/delivery.js'
 import { prisma } from '../src/lib/db.js'
 import { runWithDbContext } from '../src/lib/dbContext.js'
+import { proofUrl } from '../src/lib/uploadStore.js'
 
 const cleanupOrgIds: string[] = []
 const cleanupUserIds: string[] = []
@@ -493,7 +494,7 @@ describe('public reservation integrity', () => {
         seatIds: [bus.seatIds[0]],
         paymentProviderId,
         paymentReference: `instapay-${Date.now()}`,
-        paymentProofUrl: '/api/uploads/blob/uploads/test-receipt.png?token=preview',
+        paymentProofUrl: proofUrl('uploads/test-receipt.png'),
         paymentAmount: 100,
         ticketDesign: {
           templateId: 'editorial-wide',
@@ -540,7 +541,7 @@ describe('public reservation integrity', () => {
         seatIds: [bus.seatIds[0]],
         paymentProviderId,
         paymentReference: `duplicate-instapay-${Date.now()}`,
-        paymentProofUrl: '/api/uploads/blob/uploads/duplicate-receipt.png?token=preview',
+        paymentProofUrl: proofUrl('uploads/duplicate-receipt.png'),
         paymentAmount: 100,
       },
     })
@@ -594,7 +595,7 @@ describe('public reservation integrity', () => {
         identityNumber: '29901011234567',
         ticketTypeId,
         paymentProviderId,
-        paymentProofUrl: '/api/uploads/blob/uploads/receipt.png?token=preview',
+        paymentProofUrl: proofUrl('uploads/receipt.png'),
       },
     })
     expectStatus(missingReference, 400)
@@ -632,7 +633,7 @@ describe('public reservation integrity', () => {
         ticketTypeId,
         paymentProviderId,
         paymentReference: `proof-guard-${Date.now()}`,
-        paymentProofUrl: '/api/uploads/blob/uploads/proof-guard.png?token=expired&exp=1',
+        paymentProofUrl: proofUrl('uploads/proof-guard.png'),
       },
     })
     expectStatus(reserve, 201)
@@ -739,7 +740,7 @@ describe('public reservation integrity', () => {
         ticketTypeId,
         paymentProviderId,
         paymentReference: `visible-ref-${Date.now()}`,
-        paymentProofUrl: '/api/uploads/blob/uploads/visible-receipt.png?token=preview',
+        paymentProofUrl: proofUrl('uploads/visible-receipt.png'),
       },
     })
     expectStatus(reserve, 201)
@@ -803,7 +804,7 @@ describe('public reservation integrity', () => {
         ticketTypeId,
         paymentProviderId,
         paymentReference: `purge-ref-${Date.now()}`,
-        paymentProofUrl: '/api/uploads/blob/uploads/purge-receipt.png?token=preview',
+        paymentProofUrl: proofUrl('uploads/purge-receipt.png'),
       },
     })
     expectStatus(reserve, 201)
