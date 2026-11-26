@@ -58,6 +58,9 @@ export const PERMISSIONS = {
   'attendee.delete': 'Delete attendees',
   'attendee.export': 'Export attendee data',
 
+  // Sensitive attendee identity documents (National ID / passport)
+  'reservation.identity.view': 'View attendee National ID and passport details',
+
   // Tickets
   'ticket.view': 'View tickets',
   'ticket.issue': 'Issue tickets',
