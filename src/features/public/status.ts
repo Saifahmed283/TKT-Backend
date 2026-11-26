@@ -72,6 +72,7 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
         deliveryStatus: (ticket as any).deliveryStatus ?? null,
         ticketStatus: ticket.status,
         price: ticket.price?.toString() ?? '0',
+        currency: ticket.ticketType.currency ?? 'EGP',
         ticketName: ticket.ticketType.name,
         attendeeName: ticket.attendee.name,
         qr: ticket.credential?.code ?? null,
