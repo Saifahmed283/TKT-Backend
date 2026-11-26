@@ -10,16 +10,23 @@ const localizedText = (max: number, required = true) => {
 
 const id = z.string().trim().min(1).max(80)
 
+const imageUrl = z.string().trim().max(2048).refine(
+  (value) => /^https?:\\/\\//i.test(value) || /^\\/uploads\\//.test(value) || /^\\/api\\/uploads\\/blob\\//.test(value),
+  'Image must be an uploaded TKT asset or an HTTP(S) URL',
+).nullable().optional()
+
 const memberSchema = z.object({
   id,
   name: localizedText(120),
   role: localizedText(120),
   bio: localizedText(1200),
+  imageUrl,
 })
 
 const partnerSchema = z.object({
   id,
   name: localizedText(120),
+  imageUrl,
 })
 
 const reportSchema = z.object({
