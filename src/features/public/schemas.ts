@@ -46,9 +46,9 @@ export const reservationSchema = z.object({
   seatPassengers: z.array(z.object({ seatId: z.string(), name: z.string().min(2), email: z.string().email().optional().nullable(), phone: z.string().optional().nullable() })).optional(),
   holdToken: z.string().optional().nullable(),
 }).superRefine((value, ctx) => {
-  const id = value.identityNumber.replace(/\\s/g, '')
+  const id = value.identityNumber.replace(/\s/g, '')
   const valid = value.nationality === 'EG'
-    ? /^\\d{14}$/.test(id)
+    ? /^\d{14}$/.test(id)
     : /^[A-Za-z0-9][A-Za-z0-9-]{4,19}$/.test(id)
   if (!valid) {
     ctx.addIssue({
