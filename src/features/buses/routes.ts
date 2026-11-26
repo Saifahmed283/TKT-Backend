@@ -13,19 +13,39 @@ const seatDefSchema = z.object({
   row: z.number().int().min(1).max(80),
   col: z.number().int().min(1).max(20),
   state: z.enum(['AVAILABLE', 'UNAVAILABLE']).optional(),
-  kind: z.string().optional(),
+  kind: z.enum(['seat', 'driver', 'door', 'aux']).optional(),
   x: z.number().optional(),
   y: z.number().optional(),
+  mx: z.number().optional(),
+  z: z.number().optional(),
+  width: z.number().min(0.1).max(2).optional(),
+  side: z.enum(['left', 'right', 'center']).optional(),
+})
+
+const layoutFeatureSchema = z.object({
+  id: z.string().min(1).max(64),
+  kind: z.string().min(1).max(32),
+  label: z.string().min(1).max(64),
+  labelAr: z.string().max(64).optional(),
+  x: z.number(),
+  y: z.number(),
+  w: z.number().min(1),
+  h: z.number().min(1),
 })
 
 const layoutSchema = z.object({
+  schemaVersion: z.number().int().min(1).max(10).optional(),
   template: z.enum(['grid', 'mect49', 'coaster21', 'custom']).optional(),
+  name: z.string().min(1).max(120).optional(),
   look: z.string().optional(),
   rows: z.number().int().min(1).max(80),
   cols: z.number().int().min(1).max(20),
   aisleAfterCol: z.number().int().min(0).max(20).optional(),
   unavailable: z.array(z.object({ row: z.number().int(), col: z.number().int() })).optional(),
   seats: z.array(seatDefSchema).max(200).optional(),
+  viewBox: z.object({ w: z.number().min(100), h: z.number().min(100) }).optional(),
+  features: z.array(layoutFeatureSchema).max(80).optional(),
+  cabin: z.object({ width: z.number().min(0.5), length: z.number().min(1), height: z.number().min(0.5) }).optional(),
 })
 
 const busSchema = z.object({

@@ -40,7 +40,7 @@ export async function eventRoutes(app: FastifyInstance) {
         },
         buses: {
           where: { isActive: true },
-          select: { id: true, name: true, layout: true, seats: { select: { id: true, label: true, row: true, col: true, state: true } }, _count: { select: { seats: true } } },
+          select: { id: true, name: true, layout: true, seatPrice: true, currency: true, seats: { select: { id: true, label: true, row: true, col: true, state: true } }, _count: { select: { seats: true } } },
           orderBy: { createdAt: 'asc' },
         },
         _count: { select: { attendees: true, tickets: true, accessLogs: true } },
@@ -87,6 +87,8 @@ export async function eventRoutes(app: FastifyInstance) {
           buses: ((e as any).buses ?? []).map((b: any) => ({
             id: b.id, name: b.name, layout: b.layout, totalSeats: b._count?.seats ?? b.seats?.length ?? 0,
             availableSeats: (b.seats ?? []).filter((s: any) => s.state === 'AVAILABLE').length,
+            seatPrice: b.seatPrice != null ? String(b.seatPrice) : '0',
+            currency: b.currency ?? 'EGP',
             seats: (b.seats ?? []).map((s: any) => ({ id: s.id, label: s.label, row: s.row, col: s.col, state: s.state })),
           })),
         }
