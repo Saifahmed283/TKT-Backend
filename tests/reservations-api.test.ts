@@ -362,9 +362,6 @@ describe('public reservation integrity', () => {
         nationality: 'EG',
         identityNumber: '29901011234567',
         ticketTypeId,
-        paymentProviderId,
-        paymentReference: `purge-ref-${Date.now()}`,
-        paymentProofUrl: '/api/uploads/blob/uploads/purge-receipt.png?token=preview',
       },
     })
     expectStatus(reserve, 201)
@@ -796,10 +793,18 @@ describe('public reservation integrity', () => {
     const reserve = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations`,
-      payload: { name: 'Purge Guest', email, phone: '+20 100 123 4567',
+      payload: {
+        name: 'Purge Guest',
+        email,
+        phone: '+20 100 123 4567',
         gender: 'prefer_not_to_say',
         nationality: 'EG',
-        identityNumber: '29901011234567', ticketTypeId },
+        identityNumber: '29901011234567',
+        ticketTypeId,
+        paymentProviderId,
+        paymentReference: `purge-ref-${Date.now()}`,
+        paymentProofUrl: '/api/uploads/blob/uploads/purge-receipt.png?token=preview',
+      },
     })
     expectStatus(reserve, 201)
     const ticketId = reserve.json().data.ticketId as string
