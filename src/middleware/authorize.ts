@@ -67,8 +67,15 @@ export async function requirePermission(
       ? (member!.role!.permissions as string[])
       : []
     if (!perms.includes(permission)) {
-      // Organization-level roles (admin/viewer) implicitly hold org permissions
-      if (ctx.eventScope !== 'ORGANIZATION') throw errors.forbidden()
+      // Sensitive identity documents are never inherited by organization-scoped
+      // viewer roles. Only explicit role grants or organization owners/admins
+      // may reveal them.
+      if (permission === 'reservation.identity.view') {
+        if (ctx.orgRole !== 'OWNER' && ctx.orgRole !== 'ADMIN') throw errors.forbidden()
+      } else if (ctx.eventScope !== 'ORGANIZATION') {
+        // Organization-level roles (admin/viewer) implicitly hold ordinary org permissions.
+        throw errors.forbidden()
+      }
     }
     if (!hasScopeAccess(ctx, permission, opts.target, opts.allowNarrowNoTarget)) throw errors.forbidden()
     await applyScopeToDbContext(userId, ctx)
