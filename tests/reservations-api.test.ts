@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { startTestApp, stopTestApp, app, registerUser, createOrg, auth, expectStatus, assignStaff, login } from './helpers.js'
 import { getDeliveryAdapter } from '../src/lib/delivery.js'
 import { prisma } from '../src/lib/db.js'
@@ -105,6 +105,10 @@ async function createBus(token: string, eventId: string, seatPrice = 0) {
 
 beforeAll(async () => {
   await startTestApp()
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 afterAll(async () => {
@@ -486,6 +490,12 @@ describe('public reservation integrity', () => {
     await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
     const managerToken = await login(manager.email, manager.password)
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid Guard', 50)
+    const emailSpy = vi.spyOn(getDeliveryAdapter('EMAIL'), 'send').mockResolvedValue({
+      ok: true,
+      provider: 'test',
+      providerMessageId: 'payment-review-test',
+      error: null,
+    })
 
     const reserve = await app.inject({
       method: 'POST',
@@ -495,11 +505,23 @@ describe('public reservation integrity', () => {
         email: `payment-guard-${Date.now()}@test.tkt`,
         phone: '+20 100 123 4567',
         ticketTypeId,
+        paymentReference: `proof-guard-${Date.now()}`,
+        paymentProofUrl: '/api/uploads/blob/uploads/proof-guard.png?token=expired&exp=1',
       },
     })
     expectStatus(reserve, 201)
     const ticketId = reserve.json().data.ticketId as string
     expect(reserve.json().data.paymentStatus).toBe('PENDING')
+
+    const pendingWithProof = await app.inject({
+      method: 'GET',
+      url: `/events/${eventId}/payments/pending`,
+      headers: auth(managerToken),
+    })
+    expectStatus(pendingWithProof, 200)
+    const reviewRow = pendingWithProof.json().data.find((p: any) => p.id === ticketId)
+    expect(reviewRow?.paymentProofUrl).toContain('/api/uploads/blob/uploads/proof-guard.png?')
+    expect(reviewRow?.paymentProofUrl).not.toContain('token=expired')
 
     const blocked = await app.inject({
       method: 'POST',
@@ -521,6 +543,7 @@ describe('public reservation integrity', () => {
     expectStatus(review, 200)
     expect(review.json().data.approval).toBe('APPROVED')
     expect(review.json().data.paymentStatus).toBe('CONFIRMED')
+    expect(review.json().data.credentialId).toBeTruthy()
 
     const replay = await app.inject({
       method: 'POST',
@@ -539,6 +562,19 @@ describe('public reservation integrity', () => {
     })
     expectStatus(alreadyDecided, 200)
     expect(alreadyDecided.json().data.alreadyDecided).toBe(true)
+
+    // The QR is returned by the review call; email is queued and delivered
+    // only after the response, without blocking the admin's confirmation.
+    await vi.waitFor(async () => {
+      const delivery = await runWithDbContext({ isInternal: true }, () =>
+        prisma.credentialDeliveryAttempt.findFirst({
+          where: { ticketId, channel: 'EMAIL' },
+          select: { status: true },
+        }),
+      )
+      expect(delivery?.status).toBe('SENT')
+    }, { timeout: 15_000 })
+    expect(emailSpy).toHaveBeenCalled()
   })
 
   it('hides pending attendees until approval', async () => {

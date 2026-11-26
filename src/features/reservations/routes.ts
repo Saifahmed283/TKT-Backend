@@ -6,6 +6,8 @@ import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { publish, channelFor } from '../../lib/realtime.js'
+import { afterResponse } from '../../lib/background.js'
+import { processOutboxEventIds } from '../../lib/outbox.js'
 import { decideReservation, isPaidTicket, resendReservationCredential, reservationApprovalOf, reservationCodeOf, reservationPaymentOf } from './service.js'
 
 const listQuerySchema = z.object({
@@ -120,6 +122,10 @@ export async function reservationRoutes(app: FastifyInstance) {
       actorName: req.user.name,
       reason,
     })
+    if (result.deliveryEventId) {
+      const deliveryEventId = result.deliveryEventId
+      afterResponse(req, 'reservation decision delivery', { eventId }, () => processOutboxEventIds([deliveryEventId]))
+    }
     publish(channelFor.reservation(eventId), approved ? 'reservation.approved' : 'reservation.rejected', {
       ticketId,
       approval: approved ? 'APPROVED' : 'REJECTED',

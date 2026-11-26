@@ -8,6 +8,7 @@ import { createTicketQrAttachment, TICKET_QR_CID } from '../../lib/qr.js'
 import { config } from '../../config.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
+import { addOutboxEvent } from '../../lib/outbox.js'
 import { dispatchEventWebhooks } from '../integrations/dispatch.js'
 import { logActivity } from '../../lib/activity.js'
 import { purgeReservationTx } from './purge.js'
@@ -412,12 +413,20 @@ export async function decideReservation(params: {
   actorUserId: string
   actorName: string
   reason?: string
-}): Promise<{ ticket: any; credential: any | null; alreadyDecided: boolean; purged?: boolean }> {
-  const { eventId, ticketId, approved, actorUserId, reason } = params
+  /** Extra fields merged into the single ticket update (e.g. review metadata). */
+  metadata?: Record<string, unknown>
+  /** Callers that already loaded the event can avoid one more round-trip. */
+  event?: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; venueName: string | null; settings?: unknown }
+}): Promise<{ ticket: any; credential: any | null; alreadyDecided: boolean; purged?: boolean; deliveryEventId?: string }> {
+  const { eventId, ticketId, approved, actorUserId, reason, metadata: extraMetadata, event: loadedEvent } = params
 
-  const event = await prisma.event.findUnique({ where: { id: eventId } })
-  if (!event) throw errors.notFound('Event not found')
+  const event = loadedEvent ?? await prisma.event.findUnique({ where: { id: eventId } })
+  if (!event || event.id !== eventId) throw errors.notFound('Event not found')
 
+  const eventForCred = {
+    id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt,
+    endAt: event.endAt, venueName: event.venueName, settings: event.settings,
+  }
   const decided = await prisma.$transaction(async (tx) => {
     const current = await tx.ticket.findFirst({
       where: { id: ticketId, eventId },
@@ -432,40 +441,50 @@ export async function decideReservation(params: {
     const approval = reservationApprovalOf(current)
     if (approval !== 'PENDING') {
       const same = (approved && approval === 'APPROVED') || (!approved && approval === 'REJECTED')
-      if (same) return { ticket: current, credential: current.credential, alreadyDecided: true, purged: false }
+      if (same) return { ticket: current, credential: current.credential, alreadyDecided: true, purged: false, deliveryEventId: undefined as string | undefined }
       throw errors.conflict('Reservation is not awaiting approval')
     }
 
     const meta = (current.metadata as Record<string, any>) ?? {}
     const paid = isPaidTicket(current)
+    const rejectionReason = reason?.trim() || 'Rejected by event team'
+    const reviewedMeta = { ...meta, ...extraMetadata }
+    const decidedMeta = {
+      ...reviewedMeta,
+      approval: approved ? 'APPROVED' : 'REJECTED',
+      rejectedReason: approved ? null : rejectionReason,
+    }
     const snapshot = {
       ...current,
       status: approved ? 'ACTIVE' : 'CANCELLED',
       approvalStatus: approved ? 'APPROVED' : 'REJECTED',
       paymentStatus: approved ? (paid ? 'CONFIRMED' : 'NOT_REQUIRED') : 'FAILED',
       metadata: {
-        ...meta,
-        approval: approved ? 'APPROVED' : 'REJECTED',
-        rejectedReason: approved ? null : (reason?.trim() || 'Rejected by event team'),
+        ...decidedMeta,
+        ...(approved
+          ? { approvedAt: new Date().toISOString(), approvedById: actorUserId }
+          : { rejectedAt: new Date().toISOString() }),
       },
       credential: null,
     }
 
+    // The delivery work is recorded in the same transaction as the decision,
+    // then executed only after the HTTP response has been sent.
     if (approved) {
       const nextState = reservationStatePatch({ paid, approved, rejected: false })
+      const now = new Date()
       const ticket = await tx.ticket.update({
         where: { id: current.id },
         data: {
           status: 'ACTIVE',
-          approvedAt: new Date(),
+          approvedAt: now,
           approvedById: actorUserId,
           rejectedReason: null,
-          paymentConfirmedAt: paid ? new Date() : null,
+          paymentConfirmedAt: paid ? now : null,
           ...nextState,
           metadata: {
-            ...meta,
-            approval: 'APPROVED',
-            approvedAt: new Date().toISOString(),
+            ...decidedMeta,
+            approvedAt: now.toISOString(),
             approvedById: actorUserId,
             rejectedReason: null,
           },
@@ -480,43 +499,46 @@ export async function decideReservation(params: {
         where: { id: current.attendeeId },
         data: { status: 'CONFIRMED' },
       })
-      return { ticket, credential: ticket.credential, alreadyDecided: false, purged: false }
+      const deliveryEventId = await addOutboxEvent(tx, 'CREDENTIAL_ISSUED', {
+        event: eventForCred,
+        ticket: {
+          id: ticket.id,
+          eventId,
+          metadata: ticket.metadata,
+          price: ticket.price,
+          status: ticket.status,
+          reservationCode: reservationCodeOf(ticket),
+          reservationEmail: ticket.reservationEmail ?? null,
+          reservationPhone: ticket.reservationPhone ?? null,
+          reservationName: ticket.reservationName ?? null,
+          approvalStatus: ticket.approvalStatus,
+          paymentStatus: ticket.paymentStatus,
+          deliveryAttempts: ticket.deliveryAttempts ?? 0,
+          attendee: {
+            id: current.attendee.id,
+            name: current.attendee.name,
+            email: current.attendee.email ?? null,
+            phone: current.attendee.phone ?? null,
+          },
+          ticketType: {
+            id: current.ticketType.id,
+            name: current.ticketType.name,
+            price: current.ticketType.price,
+          },
+        },
+      } as any)
+      return {
+        ticket: { ...ticket, attendee: current.attendee, ticketType: current.ticketType },
+        credential: ticket.credential,
+        alreadyDecided: false,
+        purged: false,
+        deliveryEventId,
+      }
     }
 
     await purgeReservationTx(tx, current)
-    return { ticket: snapshot, credential: null, alreadyDecided: false, purged: true }
-  })
-
-  if (decided.alreadyDecided) {
-    return { ticket: decided.ticket, credential: decided.credential, alreadyDecided: true }
-  }
-
-
-  const eventForCred = { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, venueName: event.venueName }
-  let credential = decided.credential
-
-  if (approved) {
-    const issued = await issueReservationCredential({
-      event: eventForCred,
-      ticket: decided.ticket as any,
-      issuerUserId: actorUserId,
-    })
-    credential = issued.credential
-    await writeAudit({
-      organizationId: event.orgId,
-      eventId,
-      actorUserId,
-      action: AuditActions.RESERVATION_APPROVED,
-      resourceType: 'ticket',
-      resourceId: decided.ticket.id,
-      previousValue: { approval: 'PENDING' },
-      newValue: { approval: 'APPROVED', paymentStatus: reservationPaymentOf(decided.ticket) },
-    })
-    logActivity(eventId, 'reservation', `Reservation approved · ${reservationCodeOf(decided.ticket) ?? decided.ticket.id.slice(0, 8)}`, params.actorName)
-  } else {
-    const codeOf = reservationCodeOf(decided.ticket)
-    const rejectionDelivery = await getDeliveryAdapter('EMAIL').send({
-      to: decided.ticket.attendee.email ?? '',
+    const deliveryEventId = await addOutboxEvent(tx, 'EMAIL_SEND', {
+      to: current.attendee.email ?? '',
       subject: `Reservation update — ${event.name}`,
       html: ticketEmailShell({
         preheader: `Your reservation for ${event.name}`,
@@ -524,31 +546,59 @@ export async function decideReservation(params: {
         body: `We're sorry — your reservation for <strong>${event.name}</strong> could not be approved. If you believe this is a mistake, contact the event team directly.`,
         rows: [
           { label: 'Event', value: event.name },
-          { label: 'Ticket', value: decided.ticket.ticketType.name },
-          ...(codeOf ? [{ label: 'Reservation', value: codeOf }] : []),
+          { label: 'Ticket', value: current.ticketType.name },
+          ...((reservationCodeOf(current) || reservationCodeOf(snapshot))
+            ? [{ label: 'Reservation', value: reservationCodeOf(current) ?? reservationCodeOf(snapshot)! }]
+            : []),
           { label: 'Status', value: 'Not approved' },
         ],
         footer: 'TKT · Control center for live events',
       }),
-    }).catch(() => ({ ok: false, provider: 'smtp', providerMessageId: null, error: 'send failed' }))
-
-    await writeAudit({
-      organizationId: event.orgId,
-      eventId,
-      actorUserId,
-      action: AuditActions.RESERVATION_REJECTED,
-      resourceType: 'ticket',
-      resourceId: decided.ticket.id,
-      previousValue: { approval: 'PENDING' },
-      newValue: { approval: 'REJECTED', reason: reason?.trim() || 'Rejected by event team' },
     })
-    logActivity(eventId, 'reservation', `Reservation rejected · ${reservationCodeOf(decided.ticket) ?? decided.ticket.id.slice(0, 8)}`, params.actorName)
+    return { ticket: snapshot, credential: null, alreadyDecided: false, purged: true, deliveryEventId }
+  }, { maxWait: 10_000, timeout: 30_000 })
+
+  if (decided.alreadyDecided) {
+    return { ticket: decided.ticket, credential: decided.credential, alreadyDecided: true }
   }
 
-  if (decided.purged) return { ticket: decided.ticket, credential: null, alreadyDecided: false }
-  const updated = await prisma.ticket.findUnique({
-    where: { id: decided.ticket.id },
-    include: { credential: { select: { id: true, code: true, status: true } } },
+  let credential = decided.credential
+  if (approved && !decided.purged) {
+    // Mint the QR before responding so approvals return it immediately; only
+    // the SMTP round-trip is left to the outbox.
+    const issued = await issueReservationCredential({
+      event: eventForCred,
+      ticket: decided.ticket as any,
+      issuerUserId: actorUserId,
+      sendEmail: false,
+    })
+    credential = issued.credential
+  }
+
+  await writeAudit({
+    organizationId: event.orgId,
+    eventId,
+    actorUserId,
+    action: approved ? AuditActions.RESERVATION_APPROVED : AuditActions.RESERVATION_REJECTED,
+    resourceType: 'ticket',
+    resourceId: decided.ticket.id,
+    previousValue: { approval: 'PENDING' },
+    newValue: approved
+      ? { approval: 'APPROVED', paymentStatus: reservationPaymentOf(decided.ticket) }
+      : { approval: 'REJECTED', reason: reason?.trim() || 'Rejected by event team' },
   })
-  return { ticket: updated, credential, alreadyDecided: false }
+  logActivity(
+    eventId,
+    'reservation',
+    `${approved ? 'Reservation approved' : 'Reservation rejected'} · ${reservationCodeOf(decided.ticket) ?? decided.ticket.id.slice(0, 8)}`,
+    params.actorName,
+  )
+
+  return {
+    ticket: { ...decided.ticket, credential },
+    credential,
+    alreadyDecided: false,
+    purged: decided.purged,
+    deliveryEventId: decided.deliveryEventId,
+  }
 }

@@ -9,6 +9,11 @@ function getTransporter(): Transporter | null {
       host: config.mailer.host,
       port: config.mailer.port,
       secure: config.mailer.secure,
+      // A broken SMTP host must fail fast instead of holding an HTTP request
+      // open until nodemailer's multi-minute defaults expire.
+      connectionTimeout: 5_000,
+      greetingTimeout: 5_000,
+      socketTimeout: 15_000,
       auth:
         config.mailer.user && config.mailer.pass
           ? { user: config.mailer.user, pass: config.mailer.pass }

@@ -192,6 +192,18 @@ export function proofPathFromUrl(url?: string | null): string | null {
   return isSafeUploadPath(pathname) ? pathname : null
 }
 
+/**
+ * Re-sign a stored proof link before showing it to a reviewer. Capability links
+ * expire (24h by default), so a proof submitted days ago would otherwise render
+ * as a broken image in the payments dashboard. Local/external URLs are returned
+ * unchanged.
+ */
+export function refreshProofUrl(url?: string | null): string | null {
+  if (typeof url !== 'string' || !url.trim()) return null
+  const proofPath = proofPathFromUrl(url)
+  return proofPath ? proofUrl(proofPath, config.uploads.proofTtl) : url
+}
+
 export async function deleteUploadedFile(url?: string | null) {
   if (!url || typeof url !== 'string') return
 

@@ -9,6 +9,9 @@ import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
 import { decideReservation, reservationCodeOf, reservationPaymentOf } from '../reservations/service.js'
 import { publish, channelFor } from '../../lib/realtime.js'
+import { afterResponse } from '../../lib/background.js'
+import { processOutboxEventIds } from '../../lib/outbox.js'
+import { refreshProofUrl } from '../../lib/uploadStore.js'
 import { acquireIdempotencyKey, completeIdempotencyKey, releaseIdempotencyKey } from '../../lib/idempotency.js'
 
 const providerSchema = z.object({
@@ -26,6 +29,13 @@ const reviewSchema = z.object({
   action: z.enum(['CONFIRM', 'REJECT']),
   note: z.string().max(500).optional(),
 })
+
+/** Proofs live on the ticket column; metadata is the legacy location. */
+function proofUrlOf(ticket: { paymentProofUrl?: string | null; metadata: unknown }) {
+  const meta = (ticket.metadata ?? {}) as Record<string, unknown>
+  const legacy = typeof meta.paymentProofUrl === 'string' ? meta.paymentProofUrl : null
+  return refreshProofUrl(ticket.paymentProofUrl || legacy)
+}
 
 function toNumber(v: unknown) {
   if (v === null || v === undefined) return 0
@@ -105,7 +115,10 @@ export async function paymentRoutes(app: FastifyInstance) {
     return {
       data: tickets.map((t) => {
         const meta = (t.metadata ?? {}) as Record<string, unknown>
-        return { ...t, reservationCode: reservationCodeOf(t as any), paymentReference: typeof meta.paymentReference === 'string' ? meta.paymentReference : null, paymentProofUrl: typeof meta.paymentProofUrl === 'string' ? meta.paymentProofUrl : null, paymentProvider: typeof meta.paymentProvider === 'string' ? meta.paymentProvider : null }
+        // The public reservation stores the proof on the ticket column; older
+        // rows kept it in metadata. Freshly sign capability links so reviews
+        // started long after upload can still display the image.
+        return { ...t, reservationCode: reservationCodeOf(t as any), paymentReference: typeof meta.paymentReference === 'string' ? meta.paymentReference : null, paymentProofUrl: proofUrlOf(t), paymentProvider: typeof meta.paymentProvider === 'string' ? meta.paymentProvider : null }
       }),
     }
   })
@@ -120,7 +133,14 @@ export async function paymentRoutes(app: FastifyInstance) {
       include: { attendee: true, ticketType: { select: { id: true, name: true } } },
       orderBy: { issuedAt: 'desc' }, take: 20,
     })
-    return { data: tickets.map(t => ({ ...t, reservationCode: reservationCodeOf(t as any) })) }
+    return { data: tickets.map(t => {
+      const meta = (t.metadata ?? {}) as Record<string, unknown>
+      return {
+        ...t,
+        reservationCode: reservationCodeOf(t as any),
+        paymentProofUrl: proofUrlOf(t),
+      }
+    }) }
   })
 
   app.post('/reference/:reference/fetch', async (req) => {
@@ -237,29 +257,23 @@ export async function paymentRoutes(app: FastifyInstance) {
     try {
       const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: { attendee: true, ticketType: true, event: true } })
       if (!ticket || ticket.eventId !== eventId) throw errors.notFound('Ticket not found')
-      const meta = (ticket.metadata ?? {}) as Record<string, unknown>
       if (reservationPaymentOf(ticket) !== 'PENDING') throw errors.conflict('Payment is not pending review')
 
       const confirmedPayment = body.action === 'CONFIRM'
       const paymentStatus = confirmedPayment ? 'CONFIRMED' : 'FAILED'
       const reviewedAt = new Date().toISOString()
+      const reviewMetadata = {
+        paymentStatus,
+        paymentReviewedAt: reviewedAt,
+        reviewedByUserId: req.user.id,
+        ...(confirmedPayment
+          ? { paymentConfirmedAt: reviewedAt }
+          : { paymentRejectedAt: reviewedAt, rejectedReason: body.note ?? 'Payment proof rejected' }),
+      }
 
-      await prisma.ticket.update({
-        where: { id: ticketId },
-        data: {
-          paymentStatus,
-          metadata: {
-            ...meta,
-            paymentStatus,
-            paymentReviewedAt: reviewedAt,
-            reviewedByUserId: req.user.id,
-            ...(confirmedPayment
-              ? { paymentConfirmedAt: reviewedAt }
-              : { paymentRejectedAt: reviewedAt, rejectedReason: body.note ?? 'Payment proof rejected' }),
-          } as any,
-        },
-      })
-
+      // decideReservation folds review metadata into its own ticket update and
+      // queues the QR/email in the same transaction, so this request never waits
+      // on SMTP (or a second round of ticket writes).
       const decided = await decideReservation({
         eventId,
         ticketId,
@@ -267,8 +281,16 @@ export async function paymentRoutes(app: FastifyInstance) {
         actorUserId: req.user.id,
         actorName: req.user.name,
         reason: body.note,
+        metadata: reviewMetadata,
+        event: ticket.event,
       })
 
+      // QR email delivery is durable outbox work, never part of the request.
+      // An SMTP stall must not make the admin's confirm request time out.
+      if (decided.deliveryEventId) {
+        const deliveryEventId = decided.deliveryEventId
+        afterResponse(req, 'payment review delivery', { eventId }, () => processOutboxEventIds([deliveryEventId]))
+      }
       publish(channelFor.reservation(eventId), confirmedPayment ? 'reservation.approved' : 'reservation.rejected', {
         ticketId,
         approval: confirmedPayment ? 'APPROVED' : 'REJECTED',
@@ -370,7 +392,7 @@ export async function paymentRoutes(app: FastifyInstance) {
     ]
     for (const t of tickets) {
       const meta = (t.metadata ?? {}) as Record<string, unknown>
-      ws.addRow({ reservationCode: reservationCodeOf(t as any), attendee: t.attendee?.name ?? '', email: t.attendee?.email ?? '', ticketType: t.ticketType?.name ?? '', category: t.ticketType?.category ?? '', amount: toNumber(t.price), paymentStatus: String(meta.paymentStatus ?? ''), reference: String(meta.paymentReference ?? ''), provider: String(meta.paymentProvider ?? ''), proof: String(meta.paymentProofUrl ?? ''), issuedAt: t.issuedAt.toISOString() })
+      ws.addRow({ reservationCode: reservationCodeOf(t as any), attendee: t.attendee?.name ?? '', email: t.attendee?.email ?? '', ticketType: t.ticketType?.name ?? '', category: t.ticketType?.category ?? '', amount: toNumber(t.price), paymentStatus: String(meta.paymentStatus ?? ''), reference: String(meta.paymentReference ?? ''), provider: String(meta.paymentProvider ?? ''), proof: proofUrlOf(t) ?? '', issuedAt: t.issuedAt.toISOString() })
     }
     const buf = await wb.xlsx.writeBuffer()
     reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')

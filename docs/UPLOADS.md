@@ -16,6 +16,8 @@ capability link like `/api/uploads/blob/uploads/<file>?token=<hmac>` instead of
 a public Blob URL. `GET /uploads/blob/*` verifies the HMAC and streams the blob
 with `get(..., { access: 'private' })`. The blob is never publicly readable, but
 anyone holding the full link can view it — treat stored proof URLs as sensitive.
+`refreshProofUrl()` re-signs stored capability links when review APIs return
+them, so an expired `UPLOAD_PROOF_TTL` does not break an older proof preview.
 
 The frontend must be able to reach this endpoint. With the default
 `VITE_API_BASE=/api`, either deploy the frontend and backend behind one Vercel
