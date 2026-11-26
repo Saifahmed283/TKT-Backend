@@ -85,6 +85,32 @@ describe('ticket email QR and responsive template', () => {
     expect(html.indexOf('Intro section marker')).toBeLessThan(html.indexOf('VIEW TICKET'))
   })
 
+  it('renders the selected ticket sticker in the issued ticket email', () => {
+    const html = ticketEmailShell({
+      preheader: 'Ticket ready',
+      title: 'Ticket ready',
+      body: 'Your ticket is ready.',
+      rows: [{ label: 'Event', value: 'Design Test' }],
+      ticketDesign: {
+        templateId: 'signature-split',
+        paletteId: 'emerald-ink',
+        stickerId: 'flower',
+        panelColor: '#0C3028',
+        accentColor: '#72C6A2',
+        backgroundColor: '#EFF8F2',
+        textColor: '#16392F',
+      },
+      ticketPreview: {
+        attendeeName: 'Test Guest',
+        eventName: 'Design Test',
+        ticketTypeName: 'VIP',
+        dateTime: 'Tomorrow',
+      },
+    })
+    expect(html).toContain('❀')
+    expect(html).toContain('#72C6A2')
+  })
+
   it('renders the selected ticket design in the credential email safely', () => {
     const html = ticketEmailShell({
       preheader: 'Your custom ticket',
