@@ -859,6 +859,60 @@ describe('public reservation integrity', () => {
     expect(after.json().data.some((p: any) => p.id === ticketId)).toBe(false)
   })
 
+  it('reveals identity documents only to event managers and organization owners', async () => {
+    const admin = await registerUser('ResIdentityAcl')
+    const orgId = await createOrg(admin.token, `Org ResIdentityAcl ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event ResIdentityAcl ${Date.now()}`)
+
+    const viewer = await registerUser('ResIdentityViewer')
+    await addOrgMember(admin.token, orgId, viewer.email)
+    await assignStaff(admin.token, eventId, viewer.userId, 'org_viewer')
+    const viewerToken = await login(viewer.email, viewer.password)
+
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Identity ACL Free', 0)
+    const email = `identity-acl-${Date.now()}@test.tkt`
+    const reserve = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Identity ACL Guest',
+        email,
+        phone: '+20 100 123 4567',
+        gender: 'female',
+        nationality: 'EG',
+        identityNumber: '29901011234567',
+        ticketTypeId,
+      },
+    })
+    expectStatus(reserve, 201)
+
+    const viewerRows = await app.inject({
+      method: 'GET',
+      url: `/events/${eventId}/reservations?status=ALL`,
+      headers: auth(viewerToken),
+    })
+    expectStatus(viewerRows, 200)
+    const viewerRow = viewerRows.json().data.rows.find((row: any) => row.attendee.email === email)
+    expect(viewerRow).toBeTruthy()
+    expect(viewerRow.attendee.gender).toBeUndefined()
+    expect(viewerRow.attendee.identityNumber).toBeUndefined()
+
+    const ownerRows = await app.inject({
+      method: 'GET',
+      url: `/events/${eventId}/reservations?status=ALL`,
+      headers: auth(admin.token),
+    })
+    expectStatus(ownerRows, 200)
+    const ownerRow = ownerRows.json().data.rows.find((row: any) => row.attendee.email === email)
+    expect(ownerRow.attendee).toMatchObject({
+      gender: 'female',
+      nationality: 'EG',
+      identityType: 'NATIONAL_ID',
+      identityNumber: '29901011234567',
+    })
+  })
+
   it('serializes concurrent public holds so only one visitor can hold a seat', async () => {
     const admin = await registerUser('HoldRace')
     const orgId = await createOrg(admin.token, `Org HoldRace ${Date.now()}`)
