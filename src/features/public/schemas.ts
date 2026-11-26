@@ -31,7 +31,10 @@ export type TicketDesignInput = z.infer<typeof ticketDesignSchema>
 export const reservationSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
-  phone: z.string().min(8).max(24),
+  phone: z.string().min(8).max(24).refine((value) => {
+    const digits = value.replace(/\\D/g, '')
+    return digits.length >= 8 && digits.length <= 15
+  }, 'Phone number must contain 8–15 digits'),
   gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']),
   nationality: z.enum(['EG', 'OTHER']),
   identityNumber: z.string().trim().min(5).max(20),
