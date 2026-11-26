@@ -549,6 +549,56 @@ describe('public reservation integrity', () => {
     expect(linkedSeatCount).toBe(1)
   })
 
+  it('rejects paid reservations unless provider, reference, and proof are all present', async () => {
+    const admin = await registerUser('ResIncompletePayment')
+    const orgId = await createOrg(admin.token, `Org ResIncompletePayment ${Date.now()}`)
+    cleanupOrgIds.push(orgId)
+    const eventId = await createPublishedEvent(admin.token, orgId, `Event ResIncompletePayment ${Date.now()}`)
+    const manager = await registerUser('ResIncompletePaymentMgr')
+    await addOrgMember(admin.token, orgId, manager.email)
+    await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
+    const managerToken = await login(manager.email, manager.password)
+    const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid Complete', 75)
+    const paymentProviderId = await createPaymentProvider(managerToken, eventId)
+    const email = `incomplete-proof-${Date.now()}@test.tkt`
+
+    const missingReceipt = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Incomplete Payment Guest',
+        email,
+        phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567',
+        ticketTypeId,
+        paymentProviderId,
+        paymentReference: 'TRANSFER-123',
+      },
+    })
+    expectStatus(missingReceipt, 400)
+    expect(missingReceipt.json().error.message).toContain('uploaded payment proof')
+
+    const missingReference = await app.inject({
+      method: 'POST',
+      url: `/public/events/${eventId}/reservations`,
+      payload: {
+        name: 'Incomplete Payment Guest',
+        email: `missing-reference-${Date.now()}@test.tkt`,
+        phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567',
+        ticketTypeId,
+        paymentProviderId,
+        paymentProofUrl: '/api/uploads/blob/uploads/receipt.png?token=preview',
+      },
+    })
+    expectStatus(missingReference, 400)
+    expect(missingReference.json().error.message).toContain('transaction reference')
+  })
+
   it('blocks manual approval until payment proof is confirmed', async () => {
     const admin = await registerUser('ResPaymentGuard')
     const orgId = await createOrg(admin.token, `Org ResPaymentGuard ${Date.now()}`)
