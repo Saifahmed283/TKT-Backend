@@ -234,21 +234,24 @@ describe('public reservation integrity', () => {
     await waitForCredential(reserve.json().data.ticketId)
 
     const wrongEmail = await app.inject({
-      method: 'GET',
-      url: `/public/reservations/status?code=${encodeURIComponent(reservationCode)}&email=${encodeURIComponent(`wrong-${Date.now()}@test.tkt`)}` ,
+      method: 'POST',
+      url: '/public/reservations/status',
+      payload: { code: reservationCode, email: `wrong-${Date.now()}@test.tkt` },
     })
     expectStatus(wrongEmail, 404)
     expect(wrongEmail.json().data).toBeUndefined()
 
     const missingEmail = await app.inject({
-      method: 'GET',
-      url: `/public/reservations/status?code=${encodeURIComponent(reservationCode)}`,
+      method: 'POST',
+      url: '/public/reservations/status',
+      payload: { code: reservationCode },
     })
     expectStatus(missingEmail, 400)
 
     const lookup = await app.inject({
-      method: 'GET',
-      url: `/public/reservations/status?code=${encodeURIComponent(reservationCode)}&email=${encodeURIComponent(email)}`,
+      method: 'POST',
+      url: '/public/reservations/status',
+      payload: { code: reservationCode, email },
     })
     expectStatus(lookup, 200)
     const data = lookup.json().data

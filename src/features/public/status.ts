@@ -83,13 +83,13 @@ export async function reservationStatusRoutes(app: FastifyInstance) {
   // ── Device-friendly PWA ticket lookup ─────────────────────
   // The reservation code is a locator, not a secret. Require the matching
   // email as a second factor and return only the minimum ticket display data.
-  app.get('/reservations/status', {
+  app.post('/reservations/status', {
     config: { rateLimit: { max: 10, timeWindow: '15 minutes' } },
   }, async (req) => {
     const query = z.object({
       code: z.string().trim().min(3).max(80),
       email: z.string().email().max(254),
-    }).parse(req.query)
+    }).parse(req.body)
     const email = normalizeReservationEmail(query.email)
     const ticket = await prisma.ticket.findFirst({
       where: {
