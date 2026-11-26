@@ -52,10 +52,16 @@ export function decryptReservationIdentity(value: unknown): ReservationIdentityR
     || typeof record.encryptedIdentityNumber !== 'string'
   ) return null
   const nationality = record.nationality as 'EG' | 'OTHER'
-  return {
-    gender: record.gender as ReservationIdentityRecord['gender'],
-    nationality,
-    identityType: nationality === 'EG' ? 'NATIONAL_ID' : 'PASSPORT',
-    identityNumber: decryptReservationIdentityNumber(record.encryptedIdentityNumber),
+  try {
+    return {
+      gender: record.gender as ReservationIdentityRecord['gender'],
+      nationality,
+      identityType: nationality === 'EG' ? 'NATIONAL_ID' : 'PASSPORT',
+      identityNumber: decryptReservationIdentityNumber(record.encryptedIdentityNumber),
+    }
+  } catch {
+    // A key rotation or malformed stored value should hide the field, not
+    // break the entire reservation inbox or leak an internal crypto error.
+    return null
   }
 }
