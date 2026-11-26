@@ -442,15 +442,32 @@ describe('public reservation integrity', () => {
         ticketTypeId: transportTypeId,
         busId: bus.id,
         seatIds: [bus.seatIds[0]],
-        paymentAmount: 150,
+        paymentAmount: 100,
+        ticketDesign: {
+          templateId: 'editorial-wide',
+          paletteId: 'rose-noir',
+          panelColor: '#350D24',
+          accentColor: '#F22586',
+          backgroundColor: '#FFF2F7',
+          textColor: '#2A1020',
+        },
         seatPassengers: [{ seatId: bus.seatIds[0], name: 'Transit Guest' }],
       },
     })
     expectStatus(reserved, 201)
-    expect(reserved.json().data.price).toBe('150')
+    expect(reserved.json().data.price).toBe('100')
     expect(reserved.json().data.seats).toHaveLength(1)
 
     const ticketId = reserved.json().data.ticketId as string
+    const savedTicket = await runWithDbContext({ isInternal: true }, () =>
+      prisma.ticket.findUnique({ where: { id: ticketId }, select: { metadata: true } }),
+    )
+    expect((savedTicket?.metadata as any)?.ticketDesign).toMatchObject({
+      templateId: 'editorial-wide',
+      paletteId: 'rose-noir',
+      panelColor: '#350D24',
+      accentColor: '#F22586',
+    })
     const linkedSeat = await runWithDbContext({ isInternal: true }, () =>
       prisma.busSeat.findUnique({ where: { id: bus.seatIds[0] }, select: { state: true, ticketId: true, passengerName: true } }),
     )
