@@ -30,7 +30,10 @@ export type TicketDesignInput = z.infer<typeof ticketDesignSchema>
 export const reservationSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
-  phone: z.string().min(6).max(40),
+  phone: z.string().min(8).max(24),
+  gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']),
+  nationality: z.enum(['EG', 'OTHER']),
+  identityNumber: z.string().trim().min(5).max(20),
   notes: z.string().max(1000).optional().nullable(),
   ticketTypeId: z.string(),
   ticketDesign: ticketDesignSchema.optional(),
@@ -42,6 +45,20 @@ export const reservationSchema = z.object({
   seatIds: z.array(z.string()).max(20).optional(),
   seatPassengers: z.array(z.object({ seatId: z.string(), name: z.string().min(2), email: z.string().email().optional().nullable(), phone: z.string().optional().nullable() })).optional(),
   holdToken: z.string().optional().nullable(),
+}).superRefine((value, ctx) => {
+  const id = value.identityNumber.replace(/\\s/g, '')
+  const valid = value.nationality === 'EG'
+    ? /^\\d{14}$/.test(id)
+    : /^[A-Za-z0-9][A-Za-z0-9-]{4,19}$/.test(id)
+  if (!valid) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['identityNumber'],
+      message: value.nationality === 'EG'
+        ? 'Egyptian National ID must contain exactly 14 digits'
+        : 'Passport number must contain 5–20 letters or digits',
+    })
+  }
 })
 
 export const contactSchema = z.object({
