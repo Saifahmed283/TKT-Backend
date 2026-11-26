@@ -86,6 +86,21 @@ async function addOrgMember(token: string, orgId: string, email: string) {
   expect([200, 201]).toContain(res.statusCode)
 }
 
+async function createPaymentProvider(token: string, eventId: string) {
+  const res = await app.inject({
+    method: 'POST',
+    url: `/events/${eventId}/payments/providers`,
+    headers: auth(token),
+    payload: {
+      name: 'Instapay test provider',
+      paymentLink: 'https://payments.example.test/instapay',
+      instructions: 'Transfer the exact amount and attach the receipt.',
+    },
+  })
+  expectStatus(res, 201)
+  return res.json().data.id as string
+}
+
 async function createBus(token: string, eventId: string, seatPrice = 0) {
   const res = await app.inject({
     method: 'POST',
@@ -134,6 +149,9 @@ describe('public reservation integrity', () => {
       name: 'Guest One',
       email: 'duplicate@test.tkt',
       phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567',
       ticketTypeId,
     }
 
@@ -174,7 +192,10 @@ describe('public reservation integrity', () => {
       const reserve = await app.inject({
         method: 'POST',
         url: `/public/events/${eventId}/reservations`,
-        payload: { name: 'Fast Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+        payload: { name: 'Fast Guest', email, phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567', ticketTypeId },
       })
       expectStatus(reserve, 201)
       expect(reserve.json().data.qr).toBeNull()
@@ -231,7 +252,10 @@ describe('public reservation integrity', () => {
     const reserve = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations`,
-      payload: { name: 'PWA Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+      payload: { name: 'PWA Guest', email, phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567', ticketTypeId },
     })
     expectStatus(reserve, 201)
     const reservationCode = reserve.json().data.reservationCode as string
@@ -281,7 +305,10 @@ describe('public reservation integrity', () => {
     const reserve = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations`,
-      payload: { name: 'Resend Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+      payload: { name: 'Resend Guest', email, phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567', ticketTypeId },
     })
     expectStatus(reserve, 201)
     const reservationCode = reserve.json().data.reservationCode as string
@@ -330,7 +357,10 @@ describe('public reservation integrity', () => {
     const reserve = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations`,
-      payload: { name: 'Free Guest', email: `free-decision-${Date.now()}@test.tkt`, phone: '+20 100 123 4567', ticketTypeId },
+      payload: { name: 'Free Guest', email: `free-decision-${Date.now()}@test.tkt`, phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567', ticketTypeId },
     })
     expectStatus(reserve, 201)
     const ticketId = reserve.json().data.ticketId as string
@@ -384,6 +414,7 @@ describe('public reservation integrity', () => {
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Conference', 0)
     const transportTypeId = await createTicketType(admin.token, eventId, 'Conference + Bus', 100, true)
     const bus = await createBus(managerToken, eventId, 50)
+    const paymentProviderId = await createPaymentProvider(managerToken, eventId)
     const email = `transport-${Date.now()}@test.tkt`
 
     const noPhone = await app.inject({
@@ -397,7 +428,10 @@ describe('public reservation integrity', () => {
     const noSeat = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations`,
-      payload: { name: 'Transit Guest', email, phone: '+20 100 123 4567', ticketTypeId: transportTypeId },
+      payload: { name: 'Transit Guest', email, phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567', ticketTypeId: transportTypeId },
     })
     expectStatus(noSeat, 400)
     expect(noSeat.json().error.message).toContain('select exactly one seat')
@@ -409,6 +443,9 @@ describe('public reservation integrity', () => {
         name: 'Transit Guest',
         email,
         phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567',
         ticketTypeId: transportTypeId,
         busId: bus.id,
         seatIds: bus.seatIds.slice(0, 2),
@@ -424,6 +461,9 @@ describe('public reservation integrity', () => {
         name: 'Transit Guest',
         email,
         phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567',
         ticketTypeId: transportTypeId,
         busId: bus.id,
         seatIds: [bus.seatIds[0]],
@@ -443,9 +483,15 @@ describe('public reservation integrity', () => {
         name: 'Transit Guest',
         email,
         phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567',
         ticketTypeId: transportTypeId,
         busId: bus.id,
         seatIds: [bus.seatIds[0]],
+        paymentProviderId,
+        paymentReference: `instapay-${Date.now()}`,
+        paymentProofUrl: '/api/uploads/blob/uploads/test-receipt.png?token=preview',
         paymentAmount: 100,
         ticketDesign: {
           templateId: 'editorial-wide',
@@ -484,6 +530,9 @@ describe('public reservation integrity', () => {
         name: 'Second Transit Guest',
         email: `transport-second-${Date.now()}@test.tkt`,
         phone: '+20 100 123 4568',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567',
         ticketTypeId: transportTypeId,
         busId: bus.id,
         seatIds: [bus.seatIds[0]],
@@ -507,6 +556,7 @@ describe('public reservation integrity', () => {
     await assignStaff(admin.token, eventId, manager.userId, 'event_manager')
     const managerToken = await login(manager.email, manager.password)
     const ticketTypeId = await createTicketType(admin.token, eventId, 'Paid Guard', 50)
+    const paymentProviderId = await createPaymentProvider(managerToken, eventId)
     const emailSpy = vi.spyOn(getDeliveryAdapter('EMAIL'), 'send').mockResolvedValue({
       ok: true,
       provider: 'test',
@@ -521,7 +571,11 @@ describe('public reservation integrity', () => {
         name: 'Payment Guest',
         email: `payment-guard-${Date.now()}@test.tkt`,
         phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567',
         ticketTypeId,
+        paymentProviderId,
         paymentReference: `proof-guard-${Date.now()}`,
         paymentProofUrl: '/api/uploads/blob/uploads/proof-guard.png?token=expired&exp=1',
       },
@@ -609,7 +663,10 @@ describe('public reservation integrity', () => {
     const reserve = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations`,
-      payload: { name: 'Visible Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+      payload: { name: 'Visible Guest', email, phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567', ticketTypeId },
     })
     expectStatus(reserve, 201)
 
@@ -661,7 +718,10 @@ describe('public reservation integrity', () => {
     const reserve = await app.inject({
       method: 'POST',
       url: `/public/events/${eventId}/reservations`,
-      payload: { name: 'Purge Guest', email, phone: '+20 100 123 4567', ticketTypeId },
+      payload: { name: 'Purge Guest', email, phone: '+20 100 123 4567',
+        gender: 'prefer_not_to_say',
+        nationality: 'EG',
+        identityNumber: '29901011234567', ticketTypeId },
     })
     expectStatus(reserve, 201)
     const ticketId = reserve.json().data.ticketId as string
