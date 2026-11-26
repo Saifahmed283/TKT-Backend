@@ -494,7 +494,7 @@ export async function decideReservation(params: {
   /** Extra fields merged into the single ticket update (e.g. review metadata). */
   metadata?: Record<string, unknown>
   /** Callers that already loaded the event can avoid one more round-trip. */
-  event?: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; venueName: string | null; settings?: unknown }
+  event?: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; timezone?: string | null; venueName: string | null; settings?: unknown }
 }): Promise<{ ticket: any; credential: any | null; alreadyDecided: boolean; purged?: boolean; deliveryEventId?: string }> {
   const { eventId, ticketId, approved, actorUserId, reason, metadata: extraMetadata, event: loadedEvent } = params
 
@@ -503,7 +503,7 @@ export async function decideReservation(params: {
 
   const eventForCred = {
     id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt,
-    endAt: event.endAt, venueName: event.venueName, settings: event.settings,
+    endAt: event.endAt, timezone: event.timezone ?? 'UTC', venueName: event.venueName, settings: event.settings,
   }
   const decided = await prisma.$transaction(async (tx) => {
     const current = await tx.ticket.findFirst({
