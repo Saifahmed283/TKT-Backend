@@ -324,7 +324,9 @@ export async function accessRoutes(app: FastifyInstance) {
   // â”€â”€ Offline device registration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.post('/device/register', async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
-    await requirePermission(req, 'device.manage', { eventId })
+    // Scanners register their own device; they hold device.view but not the
+    // event-wide device.manage permission.
+    await requirePermission(req, 'device.view', { eventId, allowNarrowNoTarget: true })
     const body = registerSchema.parse(req.body)
 
     try {
@@ -357,7 +359,7 @@ export async function accessRoutes(app: FastifyInstance) {
   // ?? Device heartbeat (scan ops / network) ????????????????
   app.post('/device/heartbeat', async (req) => {
     const { eventId } = req.params as { eventId: string }
-    await requirePermission(req, 'device.heartbeat', { eventId })
+    await requirePermission(req, 'device.heartbeat', { eventId, allowNarrowNoTarget: true })
     const body = z.object({
       deviceId: z.string().min(1),
       networkStatus: z.enum(['ONLINE', 'OFFLINE', 'UNKNOWN']).optional(),
@@ -385,7 +387,8 @@ export async function accessRoutes(app: FastifyInstance) {
 
   app.post('/sync', async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
-    await requirePermission(req, 'access.scan', { eventId })
+    // Each queued item is re-checked against the operator's area below.
+    await requirePermission(req, 'access.scan', { eventId, allowNarrowNoTarget: true })
     const body = syncSchema.parse(req.body)
 
     const areaIds = [...new Set(body.items.map((item) => item.areaId))]
@@ -509,11 +512,15 @@ export async function accessRoutes(app: FastifyInstance) {
   // â”€â”€ Access logs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.get('/logs', async (req) => {
     const { eventId } = req.params as { eventId: string }
-    await requirePermission(req, 'access.logs.view', { eventId })
+    const ctx = await requirePermission(req, 'access.logs.view', { eventId, allowNarrowNoTarget: true })
     const { page = 1, pageSize = 25, result, areaId } = (req.query ?? {}) as { page?: number; pageSize?: number; result?: string; areaId?: string }
     const where: any = { eventId }
     if (result) where.result = result
-    if (areaId) where.areaId = areaId
+    if (ctx.eventScope === 'AREA') {
+      where.areaId = { in: areaId && ctx.areaIds.includes(areaId) ? [areaId] : ctx.areaIds }
+    } else if (areaId) {
+      where.areaId = areaId
+    }
 
     const pageNum = Math.max(1, Number(page))
     const size = Math.min(100, Math.max(1, Number(pageSize)))

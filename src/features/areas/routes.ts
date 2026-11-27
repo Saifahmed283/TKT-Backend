@@ -25,9 +25,14 @@ export async function areaRoutes(app: FastifyInstance) {
 
   app.get('/', async (req) => {
     const { eventId } = req.params as { eventId: string }
-    const ctx = await requirePermission(req, 'area.view', { eventId })
+    // Area-scoped staff (gate scanners) need to list their assigned gates.
+    // Filtering happens here, so the narrow scope is safe without a target.
+    const ctx = await requirePermission(req, 'area.view', { eventId, allowNarrowNoTarget: true })
     const areas = await prisma.area.findMany({
-      where: { eventId },
+      where: {
+        eventId,
+        ...(ctx.eventScope === 'AREA' ? { id: { in: ctx.areaIds } } : {}),
+      },
       select: {
         id: true, name: true, description: true, type: true, accessPolicy: true,
         capacity: true, location: true, active: true, createdAt: true,

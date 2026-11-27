@@ -110,7 +110,7 @@ export async function authRoutes(app: FastifyInstance) {
       sourceIp: req.ip,
     })
 
-    return reply.status(201).send({ data: { token: access, user: publicUser(user) } })
+    return reply.status(201).send({ data: { token: access, user: await publicUser(user.id) } })
   })
 
   app.post('/login', {
@@ -139,7 +139,7 @@ export async function authRoutes(app: FastifyInstance) {
       sourceIp: req.ip,
     })
 
-    return reply.send({ data: { token: access, user: publicUser(user) } })
+    return reply.send({ data: { token: access, user: await publicUser(user.id) } })
   })
 
   /**
@@ -222,6 +222,9 @@ function extractRefreshToken(req: any): string | undefined {
         await clearRefreshCookieAndRevoke(reply, token)
         throw errors.unauthorized('Account not found')
       }
+      // The refreshed user payload includes memberships, so RLS context must
+      // be established before reading those relations.
+      await updateDbContext({ userId: user.id, isAuth: true })
 
       // Rotate refresh token: revoke old, create new
       await prisma.refreshSession.update({
@@ -235,7 +238,7 @@ function extractRefreshToken(req: any): string | undefined {
       setRefreshCookie(reply, refresh)
       
       req.log.info({ userId: user.id }, 'auth.refresh: Success')
-      return reply.send({ data: { token: access, user: publicUser(user) } })
+      return reply.send({ data: { token: access, user: await publicUser(user.id) } })
     } catch (err) {
       if (err && typeof err === 'object' && 'statusCode' in err) throw err
       req.log.error({ err }, 'auth.refresh failed')
@@ -250,34 +253,45 @@ function extractRefreshToken(req: any): string | undefined {
   })
 
   app.get('/me', { preHandler: authenticate }, async (req) => {
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      select: {
-        id: true, name: true, email: true, phone: true, platformRole: true,
-        orgMemberships: {
-          select: {
-            role: true, status: true,
-            org: { select: { id: true, name: true, slug: true } },
-          },
-        },
-        eventMemberships: {
-          where: { status: 'ACTIVE' },
-          select: {
-            id: true, status: true,
-            role: { select: { code: true, name: true, scope: true, permissions: true } },
-            team: { select: { id: true, name: true } },
-            areas: { select: { area: { select: { id: true, name: true, type: true } } } },
-            event: { select: { id: true, name: true, status: true, type: true, startAt: true, org: { select: { id: true, name: true } } } },
-          },
-          orderBy: { createdAt: 'desc' },
-        },
-      },
-    })
-    if (!user) throw errors.notFound('User not found')
-    return { data: user }
+    return { data: await publicUser(req.user.id) }
   })
 }
 
-function publicUser(user: { id: string; name: string; email: string; platformRole: string | null }) {
-  return { id: user.id, name: user.name, email: user.email, platformRole: user.platformRole }
+/**
+ * Login and refresh must return the same shape as /auth/me. The dashboard,
+ * permission gates and gate scanner all read memberships from the auth user,
+ * so a minimal {id,name,email} payload makes them look role-less until a
+ * separate /auth/me call happens.
+ */
+async function publicUser(userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true, name: true, email: true, phone: true, platformRole: true,
+      orgMemberships: {
+        select: {
+          role: true, status: true,
+          org: { select: { id: true, name: true, slug: true } },
+        },
+      },
+      eventMemberships: {
+        where: { status: 'ACTIVE' },
+        select: {
+          id: true, status: true,
+          role: { select: { code: true, name: true, scope: true, permissions: true } },
+          team: { select: { id: true, name: true } },
+          areas: { select: { area: { select: { id: true, name: true, type: true } } } },
+          event: {
+            select: {
+              id: true, name: true, status: true, type: true, startAt: true,
+              org: { select: { id: true, name: true } },
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      },
+    },
+  })
+  if (!user) throw errors.notFound('User not found')
+  return user
 }
