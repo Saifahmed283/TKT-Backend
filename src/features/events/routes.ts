@@ -1,10 +1,13 @@
 ﻿import type { FastifyInstance } from 'fastify'
+import { randomBytes } from 'node:crypto'
 import { z } from 'zod'
 import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission, resolveOrgContext } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
+import { hashPassword } from '../../lib/auth.js'
+import { validatePasswordStrength } from '../../lib/passwordPolicy.js'
 import { publish, channelFor } from '../../lib/realtime.js'
 import { logActivity } from '../../lib/activity.js'
 import { EVENT_LEVEL_SCOPES } from '../../lib/rbac.js'
@@ -79,12 +82,39 @@ const updateEventSchema = z.object({
 
 const statusSchema = z.object({ status: z.enum(EVENT_STATUSES) })
 
+// A staff member can be assigned from an existing user, or created in the
+// same request from an email address. The second form powers the one-step
+// dashboard flow: no separate invite/accept/verify round trip.
 const memberSchema = z.object({
-  userId: z.string(),
+  userId: z.string().optional(),
+  email: z.string().email().optional(),
+  name: z.string().min(2).optional(),
+  password: z.string().optional(),
   roleId: z.string(),
   teamId: z.string().nullable().optional(),
   areaIds: z.array(z.string()).optional(),
+}).superRefine((value, ctx) => {
+  if (Boolean(value.userId) === Boolean(value.email)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['userId'], message: 'Provide either userId or email' })
+    return
+  }
+  if (value.password) {
+    const policy = validatePasswordStrength(value.password)
+    if (!policy.ok) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['password'], message: policy.reason })
+    }
+  }
 })
+
+function temporaryStaffPassword() {
+  // Always contains upper, lower and symbol, so it passes the password policy.
+  return `Staff!${randomBytes(16).toString('base64url')}`
+}
+
+function staffNameFromEmail(email: string) {
+  const local = email.split('@')[0]!.replace(/[._-]+/g, ' ').trim()
+  return local.length >= 2 ? local : `${local || 'Staff'} User`
+}
 
 const updateMemberSchema = z.object({
   roleId: z.string().optional(),
@@ -354,7 +384,7 @@ export async function eventRoutes(app: FastifyInstance) {
 
   app.post('/:eventId/members', async (req, reply) => {
     const { eventId } = req.params as { eventId: string }
-    const ctx = await requirePermission(req, 'event.members.assign', { eventId })
+    await requirePermission(req, 'event.members.assign', { eventId })
     const body = memberSchema.parse(req.body)
 
     const event = await prisma.event.findUnique({ where: { id: eventId }, select: { orgId: true, name: true } })
@@ -365,42 +395,77 @@ export async function eventRoutes(app: FastifyInstance) {
       const team = await prisma.team.findFirst({ where: { id: body.teamId, eventId } })
       if (!team) throw errors.badRequest('Team not found in this event')
     }
+    if (role.scope === 'TEAM' && !body.teamId) {
+      throw errors.badRequest('Select a team for this role')
+    }
+    if (role.scope === 'AREA' && !body.areaIds?.length) {
+      throw errors.badRequest('Select at least one area for this role')
+    }
     if (body.areaIds?.length) {
       const areaCount = await prisma.area.count({ where: { id: { in: body.areaIds }, eventId } })
       if (areaCount !== body.areaIds.length) throw errors.badRequest('One or more areas not found in this event')
     }
 
-    const existing = await prisma.eventMember.findUnique({
-      where: { eventId_userId: { eventId, userId: body.userId } },
-    })
-    if (existing) throw errors.conflict('User is already assigned to this event')
+    const normalizedEmail = body.email?.trim().toLowerCase()
+    let createdUser = false
+    let temporaryPassword: string | undefined
 
-    // Scope chain requires organization membership — grant it if missing
-    const orgMember = await prisma.organizationMember.findUnique({
-      where: { orgId_userId: { orgId: event.orgId, userId: body.userId } },
-    })
-    if (!orgMember) {
-      await prisma.organizationMember.create({
-        data: { orgId: event.orgId, userId: body.userId, role: 'VIEWER' },
+    // User creation, organization membership and event membership commit
+    // together. No invite acceptance or email verification is required.
+    const result = await prisma.$transaction(async (tx) => {
+      let user
+      if (body.userId) {
+        user = await tx.user.findUnique({ where: { id: body.userId } })
+        if (!user) throw errors.notFound('User not found')
+      } else {
+        user = await tx.user.findUnique({ where: { email: normalizedEmail! } })
+        if (!user) {
+          createdUser = true
+          temporaryPassword = body.password ?? temporaryStaffPassword()
+          user = await tx.user.create({
+            data: {
+              name: body.name?.trim() || staffNameFromEmail(normalizedEmail!),
+              email: normalizedEmail!,
+              passwordHash: await hashPassword(temporaryPassword),
+            },
+          })
+        }
+      }
+
+      const existing = await tx.eventMember.findUnique({
+        where: { eventId_userId: { eventId, userId: user.id } },
       })
-    }
+      if (existing) throw errors.conflict('User is already assigned to this event')
 
-    const member = await prisma.eventMember.create({
-      data: {
-        eventId,
-        userId: body.userId,
-        roleId: role.id,
-        teamId: body.teamId ?? null,
-        invitedBy: req.user.id,
-        areas: body.areaIds?.length
-          ? { create: body.areaIds.map((areaId) => ({ areaId })) }
-          : undefined,
-      },
+      // Scope chain requires organization membership — grant it if missing.
+      // VIEWER is enough: the event role supplies the actual dashboard permissions.
+      const orgMember = await tx.organizationMember.findUnique({
+        where: { orgId_userId: { orgId: event.orgId, userId: user.id } },
+      })
+      if (!orgMember) {
+        await tx.organizationMember.create({
+          data: { orgId: event.orgId, userId: user.id, role: 'VIEWER', status: 'ACTIVE' },
+        })
+      }
+
+      const member = await tx.eventMember.create({
+        data: {
+          eventId,
+          userId: user.id,
+          roleId: role.id,
+          teamId: body.teamId ?? null,
+          invitedBy: req.user.id,
+          areas: body.areaIds?.length
+            ? { create: body.areaIds.map((areaId) => ({ areaId })) }
+            : undefined,
+        },
+      })
+      return { member, userId: user.id, userName: user.name }
     })
 
     await prisma.notification.create({
       data: {
-        userId: body.userId, eventId,
+        userId: result.userId, eventId,
         type: 'MEMBER_ASSIGNED',
         title: `You were assigned to ${event.name ?? 'an event'}`,
         body: `Role: ${role.name}`,
@@ -410,13 +475,25 @@ export async function eventRoutes(app: FastifyInstance) {
       organizationId: event.orgId,
       eventId,
       actorUserId: req.user.id,
-      action: 'staff.assigned',
+      action: createdUser ? 'staff.created_and_assigned' : 'staff.assigned',
       resourceType: 'event_member',
-      resourceId: member.id,
-      newValue: { userId: body.userId, roleId: role.id, teamId: body.teamId ?? null, areaIds: body.areaIds ?? [] },
+      resourceId: result.member.id,
+      newValue: {
+        userId: result.userId,
+        email: normalizedEmail ?? null,
+        roleId: role.id,
+        teamId: body.teamId ?? null,
+        areaIds: body.areaIds ?? [],
+        createdUser,
+      },
       sourceIp: req.ip,
     })
-    return reply.status(201).send({ data: member })
+    return reply.status(201).send({
+      data: {
+        ...result.member,
+        ...(temporaryPassword ? { temporaryPassword } : {}),
+      },
+    })
   })
 
   app.patch('/:eventId/members/:memberId', async (req) => {
