@@ -109,7 +109,7 @@ export async function requirePermission(
   throw errors.forbidden()
 }
 
-function hasScopeAccess(
+export function hasScopeAccess(
   ctx: ScopeContext,
   permission: Permission,
   target?: { teamId?: string | null; areaId?: string | null },

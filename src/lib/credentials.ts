@@ -18,6 +18,20 @@ export type CredentialPayload = {
 
 const SHORT_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
+/** One include shape shared by gate scans so a badge needs a single DB read. */
+export const credentialInclude = {
+  attendee: true,
+  ticket: {
+    include: {
+      ticketType: true,
+      busSeats: {
+        select: { id: true, label: true, passengerName: true, bus: { select: { name: true } } },
+        orderBy: { label: 'asc' },
+      },
+    },
+  },
+}
+
 export async function generateUniqueShortCode(): Promise<string> {
   for (let attempt = 0; attempt < 20; attempt++) {
     let suffix = ''
@@ -92,6 +106,7 @@ export const credentialCode = {
 export async function verifyCredentialIntegrity(
   code: string,
   eventId: string,
+  client: any = prisma,
 ): Promise<{ credential: any; payload: CredentialPayload | null; signature: string | null; decoded: boolean; verified: boolean } | null> {
   const decoded = credentialCode.decode(code)
   if (decoded) {
@@ -99,15 +114,16 @@ export async function verifyCredentialIntegrity(
     if (decoded.payload.eventId !== eventId) {
       return { credential: null, payload: decoded.payload, signature: decoded.signature, decoded: true, verified: false }
     }
-    const credential = await prisma.credential.findUnique({ where: { id: decoded.payload.credId } })
+    const credential = await client.credential.findUnique({ where: { id: decoded.payload.credId }, include: credentialInclude })
     return { credential, payload: decoded.payload, signature: decoded.signature, decoded: true, verified: validSig }
   }
   // fallback: raw code / shortCode match (legacy badge codes)
   const normalized = code.trim().toUpperCase()
-  const credential = await prisma.credential.findFirst({
+  const credential = await client.credential.findFirst({
     where: normalized.startsWith('TKT-') && normalized.length <= 12
       ? { OR: [{ shortCode: normalized }, { code }] }
       : { code },
+    include: credentialInclude,
   })
   return credential ? { credential, payload: null, signature: null, decoded: false, verified: false } : null
 }

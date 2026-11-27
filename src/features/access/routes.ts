@@ -6,8 +6,11 @@ import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
 import { writeAudit } from '../../lib/audit.js'
 import { AuditActions } from '../../lib/audit-actions.js'
-import { verifyCredentialIntegrity, verifyPayload, publicKeyPem, credentialCode, type CredentialPayload } from '../../lib/credentials.js'
+import { verifyCredentialIntegrity, verifyPayload, publicKeyPem, credentialCode, credentialInclude, type CredentialPayload } from '../../lib/credentials.js'
 import { validateAccess, type AccessDecision } from '../../lib/access-engine.js'
+import type { ScopeContext } from '../../lib/rbac.js'
+import { hasScopeAccess } from '../../middleware/authorize.js'
+import { updateDbContext } from '../../lib/dbContext.js'
 import { createPublicKey, verify } from 'node:crypto'
 import { publish, channelFor } from '../../lib/realtime.js'
 import { logActivity } from '../../lib/activity.js'
@@ -71,13 +74,10 @@ export function decodeScanCandidates(raw: string): Array<{ code: string; source:
   }))
 }
 
-async function resolveCredentialByCode(code: string, eventId: string) {
-  const resolved = await verifyCredentialIntegrity(code, eventId)
+async function resolveCredentialByCode(code: string, eventId: string, client: any = prisma) {
+  const resolved = await verifyCredentialIntegrity(code, eventId, client)
   if (resolved?.credential) {
-    const credential = await prisma.credential.findUnique({
-      where: { id: resolved.credential.id },
-      include: { attendee: true, ticket: { include: { ticketType: true, busSeats: { select: { id: true, label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } } } } },
-    })
+    const credential = resolved.credential
     const tampered = resolved.decoded ? !resolved.verified : false
     return {
       credential,
@@ -90,13 +90,13 @@ async function resolveCredentialByCode(code: string, eventId: string) {
     } satisfies ResolvedScan
   }
 
-  const byReservationCode = await prisma.ticket.findFirst({
+  const byReservationCode = await client.ticket.findFirst({
     where: {
       eventId,
       OR: [{ reservationCode: code }, { metadata: { path: ['reservationCode'], equals: code } }],
     },
     select: {
-      credential: { include: { attendee: true, ticket: { include: { ticketType: true, busSeats: { select: { id: true, label: true, passengerName: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } } } } } },
+      credential: { include: credentialInclude },
     },
   })
   if (byReservationCode?.credential) {
@@ -114,12 +114,12 @@ async function resolveCredentialByCode(code: string, eventId: string) {
   return null
 }
 
-async function resolveScanCredential(rawCode: string, eventId: string): Promise<ResolvedScan> {
+async function resolveScanCredential(rawCode: string, eventId: string, client: any = prisma): Promise<ResolvedScan> {
   const candidates = decodeScanCandidates(rawCode)
   let tampered: ResolvedScan | null = null
 
   for (const candidate of candidates) {
-    const resolved = await resolveCredentialByCode(candidate.code, eventId)
+    const resolved = await resolveCredentialByCode(candidate.code, eventId, client)
     if (!resolved) continue
     if (resolved.tampered) {
       tampered = tampered ?? resolved
@@ -229,96 +229,162 @@ function evaluateAccess(input: AccessInput, credential: any): { decision: Access
   return { decision: previewDecision, preview: true }
 }
 
-async function recordScan(params: {
+type ScanLookup = {
+  event: { id: string; orgId: string; status: string; startAt: Date | null; endAt: Date | null }
+  area: { id: string; eventId: string; name: string; active: boolean; accessPolicy: string } | null
+  auth: {
+    platformRole: string | null
+    orgRole: string | null
+    eventMember: { scope: string; permissions: unknown; teamId: string | null } | null
+    areaIds: string[]
+  } | null
+}
+
+/** One SQL round trip for the event, gate area, and the operator's scope. */
+async function lookupScanContext(tx: any, userId: string, eventId: string, areaId: string): Promise<ScanLookup | null> {
+  const rows = await tx.$queryRaw<ScanLookup[]>`SELECT
+    jsonb_build_object(
+      'id', e.id,
+      'orgId', e."orgId",
+      'status', e.status,
+      'startAt', e."startAt",
+      'endAt', e."endAt"
+    ) AS event,
+    CASE WHEN a.id IS NULL THEN NULL ELSE jsonb_build_object(
+      'id', a.id,
+      'eventId', a."eventId",
+      'name', a.name,
+      'active', a.active,
+      'accessPolicy', a."accessPolicy"
+    ) END AS area,
+    CASE WHEN u.id IS NULL THEN NULL ELSE jsonb_build_object(
+      'platformRole', u."platformRole",
+      'orgRole', (
+        SELECT om.role FROM "OrganizationMember" om
+        WHERE om."orgId" = e."orgId" AND om."userId" = u.id AND om.status = 'ACTIVE'
+        LIMIT 1
+      ),
+      'eventMember', (
+        SELECT jsonb_build_object(
+          'scope', r.scope,
+          'permissions', r.permissions,
+          'teamId', em."teamId"
+        )
+        FROM "EventMember" em
+        JOIN "Role" r ON r.id = em."roleId"
+        WHERE em."eventId" = e.id AND em."userId" = u.id AND em.status = 'ACTIVE'
+        LIMIT 1
+      ),
+      'areaIds', COALESCE((
+        SELECT jsonb_agg(ma."areaId")
+        FROM "MemberArea" ma
+        JOIN "EventMember" em ON em.id = ma."eventMemberId"
+        WHERE em."eventId" = e.id AND em."userId" = u.id
+      ), '[]'::jsonb)
+    ) END AS auth
+  FROM "Event" e
+  LEFT JOIN "Area" a ON a.id = ${areaId} AND a."eventId" = e.id
+  LEFT JOIN "User" u ON u.id = ${userId} AND u.status = 'ACTIVE'
+  WHERE e.id = ${eventId}`
+  return rows[0] ?? null
+}
+
+/**
+ * Mirrors requirePermission('access.scan', { areaId }) using the single-row
+ * lookup above, avoiding several RLS-scoped round trips per scan.
+ */
+function authorizeScan(req: any, lookup: ScanLookup, areaId: string): ScopeContext {
+  const { event, auth } = lookup
+  const superCtx = (): ScopeContext => ({
+    organizationId: event.orgId,
+    eventId: event.id,
+    teamId: null,
+    areaIds: [],
+    eventScope: 'ORGANIZATION',
+    isSuperAdmin: true,
+    orgRole: null,
+  })
+
+  if (req.platformRole === 'super_admin' || auth?.platformRole === 'super_admin') return superCtx()
+  if (!auth?.orgRole) throw errors.forbidden()
+
+  const member = auth.eventMember
+  const permissions = Array.isArray(member?.permissions) ? (member!.permissions as string[]) : []
+  const eventScope = (member?.scope ?? (auth.orgRole === 'OWNER' || auth.orgRole === 'ADMIN' ? 'ORGANIZATION' : 'EVENT')) as ScopeContext['eventScope']
+  if (!permissions.includes('access.scan') && eventScope !== 'ORGANIZATION') throw errors.forbidden()
+
+  const ctx: ScopeContext = {
+    organizationId: event.orgId,
+    eventId: event.id,
+    teamId: member?.teamId ?? null,
+    areaIds: auth.areaIds ?? [],
+    eventScope,
+    isSuperAdmin: false,
+    orgRole: auth.orgRole,
+  }
+  if (!hasScopeAccess(ctx, 'access.scan', { areaId })) throw errors.forbidden()
+  return ctx
+}
+
+async function recordScanTx(tx: any, params: {
   eventId: string
   body: { areaId: string; deviceId?: string }
   credential: any
   decision: AccessDecision
-  ctx: { organizationId: string }
   req: any
-  area: any
   metadata?: Record<string, unknown>
   preview?: boolean
   consume?: boolean
 }) {
-  const result = await prisma.$transaction(async (tx) => {
-    let decision = params.decision
-    let consumed = false
+  let decision = params.decision
+  let consumed = false
 
-    if (params.consume && params.credential?.singleUse) {
-      const updated = await tx.credential.updateMany({
-        where: { id: params.credential.id, status: 'ACTIVE' },
-        data: { status: 'CONSUMED' },
-      })
-      if (updated.count === 0) {
-        decision = { result: 'DENIED', reason: 'ALREADY_USED' }
-      } else {
-        consumed = true
-        await tx.attendee.updateMany({
-          where: { id: params.credential.attendeeId },
-          data: { status: 'CHECKED_IN' },
-        })
-      }
-    }
-
-    const metadata = {
-      ...(params.metadata ?? {}),
-      ...(consumed ? { consumed: true } : {}),
-      ...(params.preview ? { preview: true } : {}),
-    }
-
-    const log = await tx.accessLog.create({
-      data: {
-        eventId: params.eventId,
-        credentialId: params.credential?.id ?? null,
-        attendeeId: params.credential?.attendeeId ?? null,
-        operatorUserId: params.req.user.id,
-        deviceId: params.body.deviceId ?? null,
-        areaId: params.body.areaId,
-        result: decision.result,
-        reason: decision.reason,
-        metadata: metadata as any,
-      },
+  if (params.consume && params.credential?.singleUse) {
+    const updated = await tx.credential.updateMany({
+      where: { id: params.credential.id, status: 'ACTIVE' },
+      data: { status: 'CONSUMED' },
     })
-    return { log, decision, consumed }
+    if (updated.count === 0) {
+      decision = { result: 'DENIED', reason: 'ALREADY_USED' }
+    } else {
+      consumed = true
+      await tx.attendee.updateMany({
+        where: { id: params.credential.attendeeId },
+        data: { status: 'CHECKED_IN' },
+      })
+    }
+  }
+
+  const metadata = {
+    ...(params.metadata ?? {}),
+    ...(consumed ? { consumed: true } : {}),
+    ...(params.preview ? { preview: true } : {}),
+  }
+
+  const log = await tx.accessLog.create({
+    data: {
+      eventId: params.eventId,
+      credentialId: params.credential?.id ?? null,
+      attendeeId: params.credential?.attendeeId ?? null,
+      operatorUserId: params.req.user.id,
+      deviceId: params.body.deviceId ?? null,
+      areaId: params.body.areaId,
+      result: decision.result,
+      reason: decision.reason,
+      metadata: metadata as any,
+    },
   })
 
-  const auditAction = params.preview
-    ? AuditActions.ACCESS_PREVIEW
-    : result.decision.result === 'GRANTED'
-      ? AuditActions.ACCESS_GRANTED
-      : AuditActions.ACCESS_DENIED
-
-  void afterResponse(
-    params.req,
-    'access.audit',
-    {
-      userId: params.req.user.id,
-      orgId: params.ctx.organizationId,
-      eventId: params.eventId,
-      isInternal: true,
-    },
-    () => writeAudit({
-      organizationId: params.ctx.organizationId,
-      eventId: params.eventId,
-      actorUserId: params.req.user.id,
-      action: auditAction,
-      resourceType: 'access_log',
-      resourceId: result.log.id,
-      newValue: {
-        areaId: params.body.areaId,
-        credentialId: params.credential?.id ?? null,
-        reason: result.decision.reason,
-        parseSource: (params.metadata as any)?.parseSource ?? null,
-        lookupMethod: (params.metadata as any)?.lookupMethod ?? null,
-        preview: Boolean(params.preview),
-        consumed: result.consumed,
-      },
-      sourceIp: params.req.ip,
-    }),
-  )
-
-  return result
+  return {
+    log,
+    decision,
+    consumed,
+    auditAction: params.preview
+      ? AuditActions.ACCESS_PREVIEW
+      : decision.result === 'GRANTED'
+        ? AuditActions.ACCESS_GRANTED
+        : AuditActions.ACCESS_DENIED,
+  }
 }
 
 const registerSchema = z.object({
@@ -352,76 +418,84 @@ export async function accessRoutes(app: FastifyInstance) {
     const { eventId } = req.params as { eventId: string }
     const body = scanSchema.parse(req.body)
 
-    const ctx = await requirePermission(req, 'access.scan', { eventId, target: { areaId: body.areaId } })
+    // Scope the RLS context to the event before opening the transaction so
+    // authorization, credential lookup, and the write all share one context.
+    await updateDbContext({
+      userId: req.user.id,
+      eventId,
+      eventIds: [eventId],
+      isSuperAdmin: req.platformRole === 'super_admin',
+    })
 
-    const [event, area, resolvedScan] = await Promise.all([
-      prisma.event.findUnique({
-        where: { id: eventId },
-        select: { id: true, status: true, startAt: true, endAt: true },
-      }),
-      prisma.area.findUnique({
-        where: { id: body.areaId },
-        select: { id: true, eventId: true, name: true, active: true, accessPolicy: true },
-      }),
-      resolveScanCredential(body.code, eventId),
-    ])
-    if (!event) throw errors.notFound('Event not found')
-    if (!area || area.eventId !== eventId) {
-      throw errors.badRequest('Area not found in this event')
-    }
+    const scan = await prisma.$transaction(async (tx) => {
+      const lookup = await lookupScanContext(tx, req.user.id, eventId, body.areaId)
+      if (!lookup) throw errors.notFound('Event not found')
+      const { event, area } = lookup
+      if (!area || area.eventId !== eventId) {
+        throw errors.badRequest('Area not found in this event')
+      }
 
-    const credential: any = resolvedScan.credential
-    const commonMetadata = {
-      parseSource: resolvedScan.parseSource,
-      lookupMethod: resolvedScan.lookupMethod,
-      verified: resolvedScan.verified,
-    }
+      const ctx = authorizeScan(req, lookup, body.areaId)
 
-    if (resolvedScan.tampered) {
-      const decision: AccessDecision = { result: 'DENIED', reason: 'INVALID_CREDENTIAL' }
-      await recordScan({
+      const resolvedScan = await resolveScanCredential(body.code, eventId, tx)
+      const credential: any = resolvedScan.credential
+      let metadata: Record<string, unknown> = {
+        parseSource: resolvedScan.parseSource,
+        lookupMethod: resolvedScan.lookupMethod,
+        verified: resolvedScan.verified,
+      }
+
+      let decision: AccessDecision
+      let preview = false
+      if (resolvedScan.tampered) {
+        decision = { result: 'DENIED', reason: 'INVALID_CREDENTIAL' }
+        metadata = { ...metadata, tampered: true }
+      } else {
+        const evaluated = evaluateAccess(accessInputFor(credential, event, area, ctx), credential)
+        decision = evaluated.decision
+        preview = evaluated.preview
+      }
+
+      const recorded = await recordScanTx(tx, {
         eventId,
         body,
         credential,
         decision,
-        ctx,
         req,
-        area,
-        metadata: { ...commonMetadata, tampered: true },
+        metadata,
+        preview,
+        consume: decision.result === 'GRANTED' && !preview,
       })
-      return reply.send({
-        data: {
-          ...decision,
+
+      return { event, area, resolvedScan, credential, recorded, preview }
+    })
+
+    const { event, area, resolvedScan, credential, recorded, preview } = scan
+    const finalDecision = recorded.decision
+
+    void afterResponse(
+      req,
+      'access.audit',
+      { userId: req.user.id, orgId: event.orgId, eventId, isInternal: true },
+      () => writeAudit({
+        organizationId: event.orgId,
+        eventId,
+        actorUserId: req.user.id,
+        action: recorded.auditAction,
+        resourceType: 'access_log',
+        resourceId: recorded.log.id,
+        newValue: {
+          areaId: body.areaId,
           credentialId: credential?.id ?? null,
-          attendee: credential
-            ? { id: credential.attendee.id, name: credential.attendee.name, category: credential.attendee.category }
-            : null,
-          ticketType: credential?.ticket?.ticketType.name ?? null,
+          reason: finalDecision.reason,
           parseSource: resolvedScan.parseSource,
           lookupMethod: resolvedScan.lookupMethod,
-          validFrom: credential?.validFrom?.toISOString?.() ?? null,
-          validUntil: credential?.validUntil?.toISOString?.() ?? null,
-          eventStatus: event.status,
-          preview: false,
+          preview,
+          consumed: recorded.consumed,
         },
-      })
-    }
-
-    const input = accessInputFor(credential, event, area, ctx)
-    const { decision, preview } = evaluateAccess(input, credential)
-    const recorded = await recordScan({
-      eventId,
-      body,
-      credential,
-      decision,
-      ctx,
-      req,
-      area,
-      metadata: commonMetadata,
-      preview,
-      consume: decision.result === 'GRANTED' && !preview,
-    })
-    const finalDecision = recorded.decision
+        sourceIp: req.ip,
+      }),
+    )
 
     publish(channelFor.access(eventId), 'scan', {
       id: recorded.log.id,

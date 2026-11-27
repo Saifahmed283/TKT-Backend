@@ -27,11 +27,15 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
 
   let platformRole = req.platformRole
   if (platformRole === undefined) {
-    const user = await prisma.user.findUnique({
-      where: { id: claims.sub },
-      select: { platformRole: true },
-    })
-    platformRole = user?.platformRole ?? null
+    if (claims.platformRole !== undefined) {
+      platformRole = claims.platformRole
+    } else {
+      const user = await prisma.user.findUnique({
+        where: { id: claims.sub },
+        select: { platformRole: true },
+      })
+      platformRole = user?.platformRole ?? null
+    }
     req.platformRole = platformRole
   }
   if (platformRole === 'super_admin') {

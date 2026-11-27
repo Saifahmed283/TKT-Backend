@@ -11,6 +11,7 @@ export type AccessClaims = {
   email: string
   name: string
   type: 'access'
+  platformRole?: string | null
 }
 
 export type RefreshClaims = {
@@ -26,8 +27,8 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
   return bcrypt.compare(password, hash)
 }
 
-export async function signAccessToken(user: { id: string; email: string; name: string }): Promise<string> {
-  return new SignJWT({ type: 'access', email: user.email, name: user.name })
+export async function signAccessToken(user: { id: string; email: string; name: string; platformRole?: string | null }): Promise<string> {
+  return new SignJWT({ type: 'access', email: user.email, name: user.name, platformRole: user.platformRole ?? null })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(user.id)
     .setIssuedAt()
