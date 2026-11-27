@@ -3,6 +3,7 @@ import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
 import { requirePermission } from '../../middleware/authorize.js'
+import { egyptDateKey } from '../../lib/time.js'
 
 export async function reportRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate)
@@ -25,7 +26,7 @@ export async function reportRoutes(app: FastifyInstance) {
 
     const dayMap = new Map<string, number>()
     for (const row of byDay) {
-      const day = row.timestamp.toISOString().slice(0, 10)
+      const day = egyptDateKey(row.timestamp)
       dayMap.set(day, (dayMap.get(day) ?? 0) + row._count)
     }
 

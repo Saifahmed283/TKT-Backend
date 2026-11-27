@@ -481,7 +481,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     if (region) region.textContent = runtime.region || '—'
     if (nodeVersion) nodeVersion.textContent = runtime.node || '—'
     if (environment) environment.textContent = runtime.environment || '—'
-    if (lastChecked) lastChecked.textContent = new Date().toLocaleTimeString()
+    if (lastChecked) lastChecked.textContent = new Date().toLocaleTimeString('en-GB', { timeZone: 'Africa/Cairo', hour: '2-digit', minute: '2-digit', hour12: true })
 
     if (refreshBtn) refreshBtn.disabled = false
   }

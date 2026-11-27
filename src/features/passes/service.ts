@@ -12,6 +12,7 @@ import {
   verifyGuestPassToken,
 } from '../../lib/pass-tokens.js'
 import { canIssueReservationCredential, issueReservationCredential, reservationApprovalOf, reservationPaymentOf } from '../reservations/service.js'
+import { EGYPT_TIME_ZONE, formatEgyptTicketDateTime } from '../../lib/time.js'
 
 const THEMES = ['royal-gold', 'rose-blush', 'lilac-dream', 'emerald-wild', 'midnight-sky']
 const HEX = /^#[0-9a-f]{6}$/i
@@ -417,7 +418,7 @@ export async function issuePassForTicket(params: { ticketId: string; actorUserId
         name: ticket.event.name,
         startAt: ticket.event.startAt,
         endAt: ticket.event.endAt,
-        timezone: ticket.event.timezone ?? 'UTC',
+        timezone: ticket.event.timezone ?? EGYPT_TIME_ZONE,
         venueName: ticket.event.venueName,
         settings: ticket.event.settings,
       },
@@ -475,14 +476,7 @@ export async function deliverPassEmail(ticketId: string, token: string): Promise
   })
   if (!ticket) throw errors.notFound('Ticket not found')
 
-  const dateLabel = new Intl.DateTimeFormat('en-GB', {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZone: ticket.event.timezone || 'UTC',
-  }).format(ticket.event.startAt)
+  const dateLabel = formatEgyptTicketDateTime(ticket.event.startAt)
   const seat = ticket.busSeats.map((row) => `${row.bus?.name ? `${row.bus.name} ` : ''}${row.label}`).join(', ')
 
   if (!config.pass.siteUrl || !config.pass.serviceToken) {
@@ -618,14 +612,7 @@ export async function getGuestPass(token: string) {
   const settings = parseJson(ticket.event.settings) ?? {}
   const branding = parseJson(settings.branding)
   const subtitle = typeof branding?.tagline === 'string' ? branding.tagline : undefined
-  const dateLabel = new Intl.DateTimeFormat('en-GB', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZone: ticket.event.timezone || 'UTC',
-  }).format(ticket.event.startAt)
+  const dateLabel = formatEgyptTicketDateTime(ticket.event.startAt)
   const seat = ticket.busSeats.map((row) => `${row.bus?.name ? `${row.bus.name} ` : ''}${row.label}`).join(', ')
 
   return {

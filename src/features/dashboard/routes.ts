@@ -3,6 +3,7 @@ import { prisma } from '../../lib/db.js'
 import { errors } from '../../lib/errors.js'
 import { authenticate } from '../../middleware/auth.js'
 import { updateDbContext } from '../../lib/dbContext.js'
+import { egyptDateKey } from '../../lib/time.js'
 
 const ACTIVE_WINDOW_MS = 5 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -115,12 +116,12 @@ export async function dashboardRoutes(app: FastifyInstance) {
 
     const counts: Record<string, number> = {}
     for (const t of publicTickets) {
-      const day = t.issuedAt.toISOString().slice(0, 10)
+      const day = egyptDateKey(t.issuedAt)
       counts[day] = (counts[day] ?? 0) + 1
     }
     const reservations = Array.from({ length: 14 }).map((_, i) => {
       const d = new Date(Date.now() - (13 - i) * DAY_MS)
-      const key = d.toISOString().slice(0, 10)
+      const key = egyptDateKey(d)
       return { date: key, count: counts[key] ?? 0 }
     })
 

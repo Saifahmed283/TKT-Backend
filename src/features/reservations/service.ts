@@ -12,6 +12,7 @@ import { addOutboxEvent } from '../../lib/outbox.js'
 import { dispatchEventWebhooks } from '../integrations/dispatch.js'
 import { logActivity } from '../../lib/activity.js'
 import { purgeReservationTx } from './purge.js'
+import { EGYPT_TIME_ZONE, formatEgyptTicketDateTime } from '../../lib/time.js'
 
 export type ReservationApproval = 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED'
 export type ReservationPayment = 'NOT_REQUIRED' | 'PENDING' | 'CONFIRMED' | 'FAILED' | 'REFUNDED'
@@ -164,21 +165,10 @@ function ticketDesignFromMetadata(metadata: unknown): StoredTicketDesign | null 
   }
 }
 
-function ticketDateLabel(date: Date, timezone = 'UTC'): string {
-  const options: Intl.DateTimeFormatOptions = {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZone: timezone || 'UTC',
-  }
-  try {
-    return new Intl.DateTimeFormat('en-GB', options).format(date)
-  } catch {
-    return new Intl.DateTimeFormat('en-GB', { ...options, timeZone: 'UTC' }).format(date)
-  }
+function ticketDateLabel(date: Date, _timezone = 'Africa/Cairo'): string {
+  // The event timezone field is legacy-compatibility data. Ticket copy is
+  // canonicalised to Egypt local time on a 12-hour clock everywhere.
+  return formatEgyptTicketDateTime(date)
 }
 
 export async function resendReservationCredential(params: {
@@ -505,7 +495,7 @@ export async function decideReservation(params: {
 
   const eventForCred = {
     id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt,
-    endAt: event.endAt, timezone: event.timezone ?? 'UTC', venueName: event.venueName, settings: event.settings,
+    endAt: event.endAt, timezone: event.timezone ?? EGYPT_TIME_ZONE, venueName: event.venueName, settings: event.settings,
   }
   const decided = await prisma.$transaction(async (tx) => {
     const current = await tx.ticket.findFirst({

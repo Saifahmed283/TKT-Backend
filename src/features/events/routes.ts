@@ -55,7 +55,7 @@ const createEventSchema = z.object({
   domain: z.enum(EVENT_DOMAIN_CODES).optional(),
   startAt: z.coerce.date(),
   endAt: z.coerce.date().optional(),
-  timezone: z.string().default('UTC'),
+  timezone: z.string().default('Africa/Cairo'),
   venueName: z.string().optional(),
   venueAddress: z.string().optional(),
 })
