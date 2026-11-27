@@ -167,8 +167,10 @@ export async function passRoutes(app: FastifyInstance) {
       role: membership?.role ?? null,
     })
     return {
-      url: `${config.pass.siteUrl.replace(/\/$/, '')}/api/admin/handoff?token=${encodeURIComponent(token)}`,
-      expiresInSeconds: config.pass.handoffTtlSeconds,
+      data: {
+        url: `${config.pass.siteUrl.replace(/\/$/, '')}/api/admin/handoff?token=${encodeURIComponent(token)}`,
+        expiresInSeconds: config.pass.handoffTtlSeconds,
+      },
     }
   })
 }

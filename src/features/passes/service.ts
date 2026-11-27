@@ -598,6 +598,7 @@ export async function getGuestPass(token: string) {
         event: { select: { id: true, name: true, startAt: true, endAt: true, timezone: true, venueName: true, settings: true, org: { select: { name: true } } } },
         passDesign: { select: { id: true, config: true } },
         ticketType: { select: { id: true, name: true } },
+        credential: { select: { code: true, shortCode: true } },
         busSeats: { select: { label: true, bus: { select: { name: true } } }, orderBy: { label: 'asc' } },
       },
     })
@@ -630,6 +631,7 @@ export async function getGuestPass(token: string) {
   return {
     ticket: {
       id: ticket.reservationCode ?? ticket.id,
+      scanCode: ticket.credential?.shortCode ?? ticket.credential?.code ?? null,
       name: ticket.attendee.name ?? ticket.reservationName ?? 'Guest',
       seat: seat || 'General Admission',
       eventTitle: ticket.event.name,
