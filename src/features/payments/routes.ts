@@ -285,11 +285,12 @@ export async function paymentRoutes(app: FastifyInstance) {
         event: ticket.event,
       })
 
-      // QR email delivery is durable outbox work, never part of the request.
-      // An SMTP stall must not make the admin's confirm request time out.
-      if (decided.deliveryEventId) {
-        const deliveryEventId = decided.deliveryEventId
-        afterResponse(req, 'payment review delivery', { eventId }, () => processOutboxEventIds([deliveryEventId]))
+      // Pass delivery is durable outbox work. Await it before responding so a
+      // serverless runtime cannot freeze mid-delivery; outbox retries still
+      // absorb SMTP failures without losing the event.
+      const deliveryEventIds = decided.deliveryEventIds ?? (decided.deliveryEventId ? [decided.deliveryEventId] : [])
+      if (deliveryEventIds.length > 0) {
+        await afterResponse(req, 'payment review delivery', { eventId }, () => processOutboxEventIds(deliveryEventIds))
       }
       publish(channelFor.reservation(eventId), confirmedPayment ? 'reservation.approved' : 'reservation.rejected', {
         ticketId,

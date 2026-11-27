@@ -41,6 +41,7 @@ import { dashboardRoutes } from './features/dashboard/routes.js'
 import { busRoutes } from './features/buses/routes.js'
 import { metaRoutes } from './features/meta/routes.js'
 import { siteContentRoutes } from './features/site-content/routes.js'
+import { passRoutes, publicPassRoutes } from './features/passes/routes.js'
 import { registerCleanupEndpoint } from './features/internal/cleanup.js'
 import { assertRoleCatalogValid } from './lib/roleAliases.js'
 import { syncSystemRoles } from './lib/roleSync.js'
@@ -576,6 +577,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(realtimeRoutes, { prefix: '/realtime' })
   await app.register(publicRoutes, { prefix: '/public' })
   await app.register(siteContentRoutes, { prefix: '/site-content' })
+  await app.register(passRoutes, { prefix: '/passes' })
+  await app.register(publicPassRoutes, { prefix: '/public/passes' })
 
   // Vercel Cron reaches the serverless handler (dist/app.js), so the protected
   // cleanup route must be part of the app rather than only src/server.ts.

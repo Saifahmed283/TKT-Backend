@@ -285,7 +285,6 @@ export async function reservationRoutes(app: FastifyInstance) {
               seatIds,
               notes: body.notes?.trim() || null,
               transportIncluded,
-              ...(body.ticketDesign ? { ticketDesign: body.ticketDesign } : {}),
             },
           },
         })
@@ -315,19 +314,6 @@ export async function reservationRoutes(app: FastifyInstance) {
           seatRows = await tx.busSeat.findMany({ where: { id: { in: seatIds } } })
         }
 
-        const ticketForOutbox = {
-          id: ticket.id,
-          eventId,
-          metadata: ticket.metadata,
-          price: ticket.price,
-          status: ticket.status,
-          reservationCode: ticket.reservationCode,
-          approvalStatus: ticket.approvalStatus,
-          paymentStatus: ticket.paymentStatus,
-          attendee: { id: attendee.id, name: body.name, email: body.email, phone: body.phone ?? null },
-          ticketType: { id: ticketType.id, name: ticketType.name, price: ticketType.price },
-        }
-
         if (paid) {
           const submittedPayment = Boolean(body.paymentReference || body.paymentProofUrl || paymentProvider)
           // No email is sent at submission. The ticket-looking "reservation
@@ -343,9 +329,11 @@ export async function reservationRoutes(app: FastifyInstance) {
             })
           }
         } else {
-          await queueOutbox('CREDENTIAL_ISSUED', {
-            event: { id: event.id, orgId: event.orgId, name: event.name, startAt: event.startAt, endAt: event.endAt, timezone: event.timezone, venueName: event.venueName, settings: event.settings },
-            ticket: ticketForOutbox,
+          // Free reservations are approved immediately: send the TKT-PASS link
+          // instead of the old QR-only credential email.
+          await queueOutbox('PASS_ISSUED', {
+            ticketId: ticket.id,
+            actorUserId: null,
           })
         }
 
@@ -410,9 +398,10 @@ export async function reservationRoutes(app: FastifyInstance) {
       publish(channelFor.reservation(eventId), 'reservation.capacity_locked', { ticketTypeId: ticketType.id })
     }
 
-    // Process only this request's events after the response is sent. The global
-    // cron still drains anything left behind if a worker dies mid-flight.
-    afterResponse(req, 'reservation outbox', { eventId }, () => processOutboxEventIds(outboxEventIds))
+    // Await this request's outbox events before responding. A serverless
+    // runtime can freeze immediately after the response, which would strand
+    // a delivery with PROCESSING status; the global cron remains a backstop.
+    await afterResponse(req, 'reservation outbox', { eventId }, () => processOutboxEventIds(outboxEventIds))
 
     return reply.code(201).send({
       data: {

@@ -11,6 +11,7 @@ export type OutboxEventType =
   | 'PAYMENT_APPROVED'
   | 'PAYMENT_REJECTED'
   | 'CREDENTIAL_ISSUED'
+  | 'PASS_ISSUED'
   | 'EMAIL_SEND'
   | 'WEBHOOK_DISPATCH'
   | 'ACCESS_CODE_REDEEMED'
@@ -165,6 +166,7 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
   const { publish, channelFor } = await import('./realtime.js')
   const { writeAudit } = await import('./audit.js')
   const { AuditActions } = await import('./audit-actions.js')
+  const { issuePassForTicket, deliverPassEmail } = await import('../features/passes/service.js')
   switch (event.eventType) {
     case 'EMAIL_SEND': {
       const { to, subject, html } = event.payload as { to: string; subject: string; html: string }
@@ -193,6 +195,16 @@ async function processEvent(event: { eventType: OutboxEventType; payload: Prisma
         credential: issued.credential,
       })
       if (!delivered) throw new Error('Credential email delivery failed; see the delivery attempt for details')
+      break
+    }
+
+    case 'PASS_ISSUED': {
+      const { ticketId, actorUserId } = event.payload as { ticketId: string; actorUserId?: string | null }
+      if (!ticketId) throw new Error('PASS_ISSUED is missing ticketId')
+      // Mint first: the email link is useless without the token hash stored on
+      // the ticket. Delivery failures throw so the outbox retries the whole job.
+      const issued = await issuePassForTicket({ ticketId, actorUserId })
+      await deliverPassEmail(ticketId, issued.token)
       break
     }
 

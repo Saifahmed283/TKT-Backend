@@ -87,6 +87,7 @@ model Organization {
   members   OrganizationMember[]
   events    Event[]
   folders   OrganizationFolder[]
+  passDesigns PassDesign[]
   roles     Role[]
   auditLogs AuditLog[]
 }
@@ -130,6 +131,7 @@ model OrganizationFolder {
   orgId     String
   name      String
   color     String?
+  settings  Json?
   sortOrder Int      @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -139,6 +141,37 @@ model OrganizationFolder {
 
   @@index([orgId])
   @@unique([orgId, name])
+}
+
+enum PassDesignStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum PassIssueStatus {
+  NOT_ISSUED
+  ISSUED
+  DELIVERED
+  FAILED
+  REVOKED
+}
+
+model PassDesign {
+  id          String           @id @default(cuid())
+  orgId       String
+  eventId     String           @unique
+  status      PassDesignStatus @default(ACTIVE)
+  config      Json
+  createdById String?
+  updatedById String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  event   Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tickets Ticket[]
+
+  @@index([orgId, status])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -242,6 +275,7 @@ model Event {
   deliveryLogs     CredentialDeliveryAttempt[]
   paymentProviders PaymentProvider[]
   accessCodes           AccessCode[]
+  passDesign            PassDesign?
   devices               Device[]
   staffProfiles         StaffProfile[]
   workforceApplications WorkforceApplication[]
@@ -609,12 +643,25 @@ model Ticket {
   // Secure access token (hashed) for reservation lookup — separate from public reservationCode
   accessTokenHash     String?
   accessTokenExpiresAt DateTime?
+  // TKT-PASS guest pass state. The raw token is never stored.
+  passDesignId        String?
+  passIssueStatus     PassIssueStatus           @default(NOT_ISSUED)
+  passConfig          Json?
+  passSessionId       String?                   @unique
+  passTokenHash       String?                   @unique
+  passTokenExpiresAt  DateTime?
+  passIssuedAt        DateTime?
+  passOpenedAt        DateTime?
+  passCustomizedAt    DateTime?
+  passLastDeliveryAt  DateTime?
+  passDeliveryAttempts Int                       @default(0)
 
   attendee          Attendee                    @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
   ticketType        TicketType                  @relation(fields: [ticketTypeId], references: [id])
   event             Event                       @relation(fields: [eventId], references: [id], onDelete: Cascade)
   paymentProvider   PaymentProvider?            @relation(fields: [paymentProviderId], references: [id], onDelete: SetNull)
   credential        Credential?
+  passDesign        PassDesign?                 @relation(fields: [passDesignId], references: [id], onDelete: SetNull)
   approvedBy        User?                       @relation("TicketApprovedBy", fields: [approvedById], references: [id])
   paymentReviewedBy User?                       @relation("TicketPaymentReview", fields: [paymentReviewedById], references: [id])
   deliveryLogs      CredentialDeliveryAttempt[]
@@ -629,6 +676,8 @@ model Ticket {
   // Covers soldCount()'s ticketTypeId + status filter on every reservation.
   @@index([ticketTypeId, status])
   @@index([accessTokenHash])
+  @@index([passDesignId, passIssueStatus])
+  @@index([eventId, passIssueStatus])
 }
 
 enum CredentialType {
@@ -1093,6 +1142,7 @@ enum OutboxEventType {
   PAYMENT_APPROVED
   PAYMENT_REJECTED
   CREDENTIAL_ISSUED
+  PASS_ISSUED
   EMAIL_SEND
   WEBHOOK_DISPATCH
   ACCESS_CODE_REDEEMED

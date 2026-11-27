@@ -143,9 +143,9 @@ export async function reservationRoutes(app: FastifyInstance) {
       actorName: req.user.name,
       reason,
     })
-    if (result.deliveryEventId) {
-      const deliveryEventId = result.deliveryEventId
-      afterResponse(req, 'reservation decision delivery', { eventId }, () => processOutboxEventIds([deliveryEventId]))
+    const deliveryEventIds = result.deliveryEventIds ?? (result.deliveryEventId ? [result.deliveryEventId] : [])
+    if (deliveryEventIds.length > 0) {
+      await afterResponse(req, 'reservation decision delivery', { eventId }, () => processOutboxEventIds(deliveryEventIds))
     }
     publish(channelFor.reservation(eventId), approved ? 'reservation.approved' : 'reservation.rejected', {
       ticketId,

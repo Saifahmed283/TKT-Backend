@@ -497,7 +497,7 @@ export async function decideReservation(params: {
   metadata?: Record<string, unknown>
   /** Callers that already loaded the event can avoid one more round-trip. */
   event?: { id: string; orgId: string; name: string; startAt: Date; endAt: Date | null; timezone?: string | null; venueName: string | null; settings?: unknown }
-}): Promise<{ ticket: any; credential: any | null; alreadyDecided: boolean; purged?: boolean; deliveryEventId?: string }> {
+}): Promise<{ ticket: any; credential: any | null; alreadyDecided: boolean; purged?: boolean; deliveryEventId?: string; deliveryEventIds?: string[] }> {
   const { eventId, ticketId, approved, actorUserId, reason, metadata: extraMetadata, event: loadedEvent } = params
 
   const event = loadedEvent ?? await prisma.event.findUnique({ where: { id: eventId } })
@@ -521,7 +521,7 @@ export async function decideReservation(params: {
     const approval = reservationApprovalOf(current)
     if (approval !== 'PENDING') {
       const same = (approved && approval === 'APPROVED') || (!approved && approval === 'REJECTED')
-      if (same) return { ticket: current, credential: current.credential, alreadyDecided: true, purged: false, deliveryEventId: undefined as string | undefined }
+      if (same) return { ticket: current, credential: current.credential, alreadyDecided: true, purged: false, deliveryEventId: undefined as string | undefined, deliveryEventIds: [] as string[] }
       throw errors.conflict('Reservation is not awaiting approval')
     }
 
@@ -579,40 +579,19 @@ export async function decideReservation(params: {
         where: { id: current.attendeeId },
         data: { status: 'CONFIRMED' },
       })
-      const deliveryEventId = await addOutboxEvent(tx, 'CREDENTIAL_ISSUED', {
-        event: eventForCred,
-        ticket: {
-          id: ticket.id,
-          eventId,
-          metadata: ticket.metadata,
-          price: ticket.price,
-          status: ticket.status,
-          reservationCode: reservationCodeOf(ticket),
-          reservationEmail: ticket.reservationEmail ?? null,
-          reservationPhone: ticket.reservationPhone ?? null,
-          reservationName: ticket.reservationName ?? null,
-          approvalStatus: ticket.approvalStatus,
-          paymentStatus: ticket.paymentStatus,
-          deliveryAttempts: ticket.deliveryAttempts ?? 0,
-          attendee: {
-            id: current.attendee.id,
-            name: current.attendee.name,
-            email: current.attendee.email ?? null,
-            phone: current.attendee.phone ?? null,
-          },
-          ticketType: {
-            id: current.ticketType.id,
-            name: current.ticketType.name,
-            price: current.ticketType.price,
-          },
-        },
-      } as any)
+      // PASS_ISSUED supersedes the old QR-only credential email: it mints the
+      // signed pass link and emails the customizable TKT-PASS to the attendee.
+      const deliveryEventId = await addOutboxEvent(tx, 'PASS_ISSUED', {
+        ticketId: ticket.id,
+        actorUserId,
+      })
       return {
         ticket: { ...ticket, attendee: current.attendee, ticketType: current.ticketType },
         credential: ticket.credential,
         alreadyDecided: false,
         purged: false,
         deliveryEventId,
+        deliveryEventIds: [deliveryEventId],
       }
     }
 
@@ -635,11 +614,11 @@ export async function decideReservation(params: {
         footer: 'TKT · Control center for live events',
       }),
     })
-    return { ticket: snapshot, credential: null, alreadyDecided: false, purged: true, deliveryEventId }
+    return { ticket: snapshot, credential: null, alreadyDecided: false, purged: true, deliveryEventId, deliveryEventIds: [deliveryEventId] }
   }, { maxWait: 10_000, timeout: 30_000 })
 
   if (decided.alreadyDecided) {
-    return { ticket: decided.ticket, credential: decided.credential, alreadyDecided: true }
+    return { ticket: decided.ticket, credential: decided.credential, alreadyDecided: true, deliveryEventIds: [] }
   }
 
   let credential = decided.credential
@@ -680,5 +659,6 @@ export async function decideReservation(params: {
     alreadyDecided: false,
     purged: decided.purged,
     deliveryEventId: decided.deliveryEventId,
+    deliveryEventIds: decided.deliveryEventIds ?? (decided.deliveryEventId ? [decided.deliveryEventId] : []),
   }
 }
