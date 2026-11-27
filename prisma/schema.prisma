@@ -287,9 +287,11 @@ model Event {
   buses                 Bus[]
 
   @@index([orgId])
+  @@index([orgId, startAt])
   @@index([folderId])
   @@index([status])
   @@index([startAt])
+  @@index([status, startAt])
 }
 
 enum EventMemberStatus {
@@ -465,6 +467,8 @@ model Attendee {
 
   @@index([eventId])
   @@index([eventId, email])
+  @@index([eventId, status])
+  @@index([eventId, createdAt])
 }
 
 enum TicketTier {
@@ -669,6 +673,7 @@ model Ticket {
   busSeats          BusSeat[]
 
   @@index([eventId])
+  @@index([eventId, status, ticketTypeId])
   @@index([attendeeId])
   @@index([eventId, approvalStatus])
   @@index([eventId, paymentStatus])
@@ -723,6 +728,8 @@ model Credential {
 
   @@unique([ticketId])
   @@index([eventId])
+  @@index([eventId, issuedAt])
+  @@index([eventId, status, issuedAt])
   @@index([attendeeId])
   @@index([status])
 }
@@ -777,6 +784,7 @@ model AccessLog {
   area       Area?       @relation(fields: [areaId], references: [id])
 
   @@index([eventId, timestamp])
+  @@index([eventId, areaId, timestamp])
   @@index([credentialId])
   @@index([areaId])
   @@index([operatorUserId])
@@ -828,6 +836,7 @@ model Device {
 
   @@unique([name, publicKey])
   @@index([eventId, status])
+  @@index([eventId, lastSeenAt])
   @@index([ownerId])
   @@index([lastSeenAt])
 }
@@ -1032,6 +1041,7 @@ model Notification {
   event Event? @relation(fields: [eventId], references: [id], onDelete: Cascade)
 
   @@index([userId, readAt])
+  @@index([userId, createdAt])
   @@index([eventId])
 }
 
@@ -1433,6 +1443,7 @@ model BusSeat {
 
   @@unique([busId, row, col])
   @@index([busId, state])
+  @@index([ticketId])
   @@index([groupId])
   @@index([holdToken])
 }
