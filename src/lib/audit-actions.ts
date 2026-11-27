@@ -6,6 +6,7 @@ export const AuditActions = {
   CREDENTIAL_DELIVERY_FAILED: 'credential.delivery.failed',
   ACCESS_GRANTED: 'access.granted',
   ACCESS_DENIED: 'access.denied',
+  ACCESS_PREVIEW: 'access.preview',
   PAYMENT_PROVIDER_CREATED: 'payment.provider.created',
   PAYMENT_PROVIDER_UPDATED: 'payment.provider.updated',
   PAYMENT_PROVIDER_DELETED: 'payment.provider.deleted',
