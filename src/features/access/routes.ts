@@ -15,6 +15,7 @@ import { createPublicKey, verify } from 'node:crypto'
 import { publish, channelFor } from '../../lib/realtime.js'
 import { logActivity } from '../../lib/activity.js'
 import { afterResponse } from '../../lib/background.js'
+import { reservationApprovalOf, reservationPaymentOf } from '../reservations/service.js'
 
 const scanSchema = z.object({
   code: z.string().min(4),
@@ -164,11 +165,14 @@ function accessInputFor(
   event: { id: string; status: string },
   area: { id: string; active: boolean; accessPolicy: string } | null,
   ctx: { areaIds: string[]; eventScope: string; isSuperAdmin: boolean },
+  options: { tampered?: boolean } = {},
 ): AccessInput {
+  const ticket = credential?.ticket
   return {
     credential: credential
       ? {
           id: credential.id,
+          eventId: credential.eventId,
           status: credential.status,
           validFrom: credential.validFrom,
           validUntil: credential.validUntil,
@@ -176,11 +180,12 @@ function accessInputFor(
           allowReentry: credential.allowReentry,
           areaIds: credential.areaIds,
           code: credential.code,
-          attendeeStatus: credential.attendee?.status,
-          ticketStatus: credential.ticket?.status ?? null,
-          ticketTypeName: credential.ticket?.ticketType?.name ?? null,
-          reservationApprovalStatus: credential.ticket?.approvalStatus ?? null,
-          reservationPaymentStatus: credential.ticket?.paymentStatus ?? null,
+          tampered: options.tampered === true || credential.eventId !== event.id,
+          attendeeStatus: credential.attendee?.status ?? null,
+          ticketStatus: ticket?.status ?? null,
+          ticketTypeName: ticket?.ticketType?.name ?? null,
+          reservationApprovalStatus: ticket ? reservationApprovalOf(ticket) : null,
+          reservationPaymentStatus: ticket ? reservationPaymentOf(ticket) : null,
         }
       : null,
     event: { id: event.id, status: event.status },
@@ -339,17 +344,18 @@ async function recordScanTx(tx: any, params: {
   let decision = params.decision
   let consumed = false
 
-  if (params.consume && params.credential?.singleUse) {
+  if (params.consume && params.credential?.singleUse && !params.credential.allowReentry) {
     const updated = await tx.credential.updateMany({
-      where: { id: params.credential.id, status: 'ACTIVE' },
+      where: { id: params.credential.id, eventId: params.eventId, status: 'ACTIVE' },
       data: { status: 'CONSUMED' },
     })
     if (updated.count === 0) {
+      // Another gate consumed the credential between read and write. Fail closed.
       decision = { result: 'DENIED', reason: 'ALREADY_USED' }
     } else {
       consumed = true
       await tx.attendee.updateMany({
-        where: { id: params.credential.attendeeId },
+        where: { id: params.credential.attendeeId, eventId: params.eventId },
         data: { status: 'CHECKED_IN' },
       })
     }
@@ -439,22 +445,19 @@ export async function accessRoutes(app: FastifyInstance) {
 
       const resolvedScan = await resolveScanCredential(body.code, eventId, tx)
       const credential: any = resolvedScan.credential
-      let metadata: Record<string, unknown> = {
+      const metadata: Record<string, unknown> = {
         parseSource: resolvedScan.parseSource,
         lookupMethod: resolvedScan.lookupMethod,
         verified: resolvedScan.verified,
+        ...(resolvedScan.tampered ? { tampered: true } : {}),
       }
 
-      let decision: AccessDecision
-      let preview = false
-      if (resolvedScan.tampered) {
-        decision = { result: 'DENIED', reason: 'INVALID_CREDENTIAL' }
-        metadata = { ...metadata, tampered: true }
-      } else {
-        const evaluated = evaluateAccess(accessInputFor(credential, event, area, ctx), credential)
-        decision = evaluated.decision
-        preview = evaluated.preview
-      }
+      const evaluated = evaluateAccess(
+        accessInputFor(credential, event, area, ctx, { tampered: resolvedScan.tampered }),
+        credential,
+      )
+      const decision = evaluated.decision
+      const preview = evaluated.preview
 
       const recorded = await recordScanTx(tx, {
         eventId,
@@ -645,47 +648,45 @@ export async function accessRoutes(app: FastifyInstance) {
       const area = await prisma.area.findFirst({ where: { id: item.areaId, eventId } })
       const itemCtx = await requirePermission(req, 'access.scan', { eventId, target: { areaId: item.areaId } })
 
-      const decision = validateAccess({
-        credential: credential
-          ? {
-              id: credential.id,
-              status: credential.status,
-              validFrom: credential.validFrom,
-              validUntil: credential.validUntil,
-              singleUse: credential.singleUse,
-              allowReentry: credential.allowReentry,
-              areaIds: credential.areaIds,
-              code: credential.code,
-              attendeeStatus: credential.attendee?.status,
-              ticketStatus: credential.ticket?.status ?? null,
-              ticketTypeName: credential.ticket?.ticketType.name ?? null,
-              reservationApprovalStatus: credential.ticket?.approvalStatus ?? null,
-              reservationPaymentStatus: credential.ticket?.paymentStatus ?? null,
-            }
-          : null,
-        event: { id: eventId, status: event.status },
-        area: area ? { id: area.id, active: area.active, accessPolicy: area.accessPolicy } : null,
-        operator: { areaIds: itemCtx.areaIds, eventScope: itemCtx.eventScope, isSuperAdmin: itemCtx.isSuperAdmin },
-      })
+      const decision = validateAccess(accessInputFor(
+        credential,
+        { id: eventId, status: event.status },
+        area ? { id: area.id, active: area.active, accessPolicy: area.accessPolicy } : null,
+        itemCtx,
+        { tampered: resolvedScan.tampered },
+      ))
 
       const localDecision = item.decision === 'GRANTED' ? 'GRANTED' : 'DENIED'
-      const match = localDecision === decision.result
+      let match = localDecision === decision.result
+      let authoritativeDecision = decision
 
-      // Only accept offline grants when they match the authoritative result
-      const accepted = match
+      // Only accept offline grants when they match the authoritative result and
+      // the single-use credential can still be consumed atomically.
+      let accepted = match
       if (match && decision.result === 'GRANTED' && credential) {
-        await prisma.credential.updateMany({
-          where: { id: credential.id, status: 'ACTIVE' },
-          data: { status: 'CONSUMED' },
-        })
-        await prisma.attendee.update({ where: { id: credential.attendeeId }, data: { status: 'CHECKED_IN' } }).catch(() => {})
+        if (credential.singleUse && !credential.allowReentry) {
+          const updated = await prisma.credential.updateMany({
+            where: { id: credential.id, eventId, status: 'ACTIVE' },
+            data: { status: 'CONSUMED' },
+          })
+          if (updated.count === 0) {
+            match = false
+            accepted = false
+            authoritativeDecision = { result: 'DENIED', reason: 'ALREADY_USED' }
+          } else {
+            await prisma.attendee.updateMany({
+              where: { id: credential.attendeeId, eventId },
+              data: { status: 'CHECKED_IN' },
+            })
+          }
+        }
       }
       if (!match) {
         conflicts.push({
           localId: item.localId,
           localDecision,
-          authoritativeDecision: decision.result,
-          reason: decision.reason,
+          authoritativeDecision: authoritativeDecision.result,
+          reason: authoritativeDecision.reason,
           message: 'Offline decision disagreed with the authoritative server state',
         })
       }
@@ -698,8 +699,8 @@ export async function accessRoutes(app: FastifyInstance) {
           operatorUserId: req.user.id,
           deviceId: device.id,
           areaId: area?.id ?? null,
-          result: decision.result,
-          reason: decision.reason,
+          result: authoritativeDecision.result,
+          reason: authoritativeDecision.reason,
           timestamp: item.timestamp,
           offline: true,
           localSignature: item.signature,
@@ -716,7 +717,7 @@ export async function accessRoutes(app: FastifyInstance) {
       results.push({
         localId: item.localId,
         accepted,
-        authoritative: decision,
+        authoritative: authoritativeDecision,
         credentialId: credential?.id ?? null,
         parseSource: resolvedScan.parseSource,
         lookupMethod: resolvedScan.lookupMethod,

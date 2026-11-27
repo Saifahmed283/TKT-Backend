@@ -114,16 +114,22 @@ export async function verifyCredentialIntegrity(
     if (decoded.payload.eventId !== eventId) {
       return { credential: null, payload: decoded.payload, signature: decoded.signature, decoded: true, verified: false }
     }
-    const credential = await client.credential.findUnique({ where: { id: decoded.payload.credId }, include: credentialInclude })
+    // Scope the lookup to the event as well as the signed id so a valid token
+    // from another event can never resolve against this event's gate.
+    const credential = await client.credential.findFirst({
+      where: { id: decoded.payload.credId, eventId },
+      include: credentialInclude,
+    })
     return { credential, payload: decoded.payload, signature: decoded.signature, decoded: true, verified: validSig }
   }
   // fallback: raw code / shortCode match (legacy badge codes)
   const normalized = code.trim().toUpperCase()
   const credential = await client.credential.findFirst({
     where: normalized.startsWith('TKT-') && normalized.length <= 12
-      ? { OR: [{ shortCode: normalized }, { code }] }
-      : { code },
+      ? { eventId, OR: [{ shortCode: normalized }, { code }] }
+      : { eventId, code },
     include: credentialInclude,
   })
-  return credential ? { credential, payload: null, signature: null, decoded: false, verified: false } : null
+  if (!credential || credential.eventId !== eventId) return null
+  return { credential, payload: null, signature: null, decoded: false, verified: false }
 }
